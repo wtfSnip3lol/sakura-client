@@ -22,9 +22,10 @@ function makeEl() {
   };
 }
 
-function runFrame({ readyWithScriptData }) {
+function runFrame({ readyWithScriptData, hostname }) {
   const posted = [];
   const pluginCalls = [];
+  const listeners = [];
   const doc = {
     readyState: 'complete',
     body: makeEl(),
@@ -54,10 +55,10 @@ function runFrame({ readyWithScriptData }) {
 
   const win = {
     document: doc,
-    location: { hostname: 'games.crazygames.com', href: 'https://games.crazygames.com/en_US/skillwarz/index.html' },
+    location: { hostname: hostname || 'skillwarz.game-files.crazygames.com', href: 'https://' + (hostname || 'skillwarz.game-files.crazygames.com') + '/skillwarz.html' },
     console: { log() {}, warn() {}, error() {}, info() {}, debug() {} },
     UnityWebModkit: { Runtime },
-    addEventListener() {},
+    addEventListener(t, fn) { listeners.push([t, fn]); },
     setTimeout(fn) { pending.push(fn); return 0; },
     navigator: {},
     performance: { getEntriesByType: () => [] },
@@ -93,6 +94,10 @@ let failed = 0;
 function check(name, cond, detail) {
   console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}` + (cond ? '' : `\n        -> ${detail}`));
   if (!cond) failed++;
+}
+
+function runAs(hostname, ready) {
+  return runFrame({ readyWithScriptData: ready, hostname: hostname });
 }
 
 // --- Case 1: context becomes available -------------------------------
@@ -141,11 +146,32 @@ check('every report carries elapsedMs',
 // --- Case 3: conflict detection --------------------------------------
 {
   const orig = src;
-  const docWithOverlay = makeEl();
-  docWithOverlay.id = 'sakura-sw';
   // sanity: the conflict warning path exists in the source
   check('conflict warning for the old probe is implemented',
     /CONFLICT/.test(orig), 'no CONFLICT warning in source');
+}
+
+// --- Case 4: the wrapper must NOT arm --------------------------------
+// Regression: Unity runs in *.game-files.crazygames.com. The
+// games.crazygames.com loader used to be treated as "the game frame", so UWMK
+// was armed one level too high and preload() waited for a .data fetch that
+// never happened in that context.
+{
+  const w = runAs('games.crazygames.com', true);
+  check('wrapper does NOT arm UWMK',
+    !w.fatal && w.pluginCalls.length === 0,
+    w.fatal || `armed ${w.pluginCalls.length}x in the wrapper`);
+  check('wrapper does not emit a probe report',
+    !(w.reports && w.reports.length),
+    'wrapper emitted a probe report');
+
+  const p = runAs('skillwarz.game-files.crazygames.com', true);
+  check('player DOES arm UWMK',
+    !p.fatal && p.pluginCalls.length === 1,
+    p.fatal || `armed ${p.pluginCalls.length}x in the player`);
+  check('report identifies the player frame',
+    !!(p.report && p.report.frameRole === 'player'),
+    JSON.stringify(p.report && p.report.frameRole));
 }
 
 console.log(`\ntarget: ${target}`);

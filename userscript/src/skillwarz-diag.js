@@ -22,17 +22,42 @@
 (() => {
   "use strict";
 
+  // CrazyGames nests THREE documents:
+  //   www.crazygames.com        portal (Next.js)      -> paints the panel
+  //   games.crazygames.com      gameframe loader      -> creates the player
+  //   *.game-files.crazygames.com  Unity player       -> THIS is where Unity runs
+  // Everything that matters (WebAssembly.instantiate, the .data fetch) happens
+  // in the third document. Probing the second is like inspecting a launcher.
   var HOST = location.hostname || "";
-  var IS_FRAME = /(^|\.)games\.crazygames\.com$/.test(HOST);
-  var IS_PORTAL = /(^|\.)(www\.)?crazygames\.com$/.test(HOST) && !IS_FRAME;
-  if (!IS_FRAME && !IS_PORTAL) return;
+  var IS_PORTAL = /(^|\.)www\.crazygames\.com$/.test(HOST);
+  var IS_WRAPPER = /(^|\.)games\.crazygames\.com$/.test(HOST);
+  var IS_PLAYER = /(^|\.)crazygames\.com$/.test(HOST) && !IS_PORTAL && !IS_WRAPPER;
+  var ROLE = IS_PORTAL ? "portal" : IS_WRAPPER ? "wrapper" : "player";
+  if (!IS_PORTAL && !IS_WRAPPER && !IS_PLAYER) return;
 
   var ACCENT = "#ff8fb1";
   var CHANNEL = "__sakura_sw_diag_v1";
   var MARK0 = "===SAKURA-SKILLWARZ-BEGIN===";
   var MARK1 = "===SAKURA-SKILLWARZ-END===";
 
-  function tag() { return IS_FRAME ? "SW-FRAME" : "PORTAL"; }
+  function tag() { return "SW-" + ROLE.toUpperCase(); }
+
+  /* ================================================================== *
+   * WRAPPER SIDE — relay only. The player posts to window.top directly,
+   * but relaying here keeps the chain alive if the nesting ever changes.
+   * ================================================================== */
+  if (IS_WRAPPER) {
+    window.addEventListener("message", function (e) {
+      var d = e.data;
+      if (!d || d.__sakura !== CHANNEL) return;
+      try {
+        if (window.parent && window.parent !== window) window.parent.postMessage(d, "*");
+        if (window.top && window.top !== window) window.top.postMessage(d, "*");
+      } catch (_) {}
+    });
+    console.log("%c[sakura] SW-WRAPPER ACTIVE (relay only)", "color:" + ACCENT);
+    return;
+  }
 
   /* ================================================================== *
    * PORTAL SIDE — paint the panel, receive the report
@@ -205,8 +230,8 @@
     try { if (window.top && window.top !== window) window.top.postMessage(msg, "*"); } catch (_) {}
   }
 
-  console.log("%c[sakura] SW-FRAME ACTIVE", "color:" + ACCENT + ";font-weight:700", { host: HOST, href: location.href });
-  up("hello", { host: HOST });
+  console.log("%c[sakura] SW-PLAYER ACTIVE", "color:" + ACCENT + ";font-weight:700", { host: HOST, href: location.href });
+  up("hello", { host: HOST, role: ROLE });
 
   /* ---------------------------------------------------------------- *
    * Instrumentation. UWMK talks exclusively through the console
@@ -331,6 +356,7 @@
       elapsedMs: Date.now() - T0,
       frame: location.href.slice(0, 120),
       host: HOST,
+      frameRole: ROLE,
       scriptRan: !!window.__SAKURA_SW__,
       overlayEl: !!document.getElementById("sakura-sw"),
       uwmk: !!RT,
