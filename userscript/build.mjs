@@ -134,7 +134,25 @@ const HEADER_KOUR = `// ==UserScript==
 `;
 write("dist/sakura.kour.user.js", HEADER_KOUR + "\n" + vendor + "\n;\n" + kourCode);
 
-// 5. Mirror the Cookie Clicker payload into the launcher's resources/ folder so
+// 5. SkillWarz standalone userscript. Lives in a cross-origin CrazyGames iframe,
+// so it must NOT use @noframes, and it inlines UWMK because it has to patch
+// fetch / WebAssembly.instantiate before Unity's boot scripts run. Deliberately
+// NOT added to the universal loader: the loader is @noframes and would never
+// execute inside the game frame.
+const HEADER_SW = `// ==UserScript==
+// @name         Sakura SkillWarz (probe)
+// @namespace    local.sakura.skillwarz
+// @version      ${pkg.version}
+// @description  Sakura overlay + read-only runtime probe for SkillWarz (Unity WebGL on CrazyGames). Writes nothing to game memory.
+// @match        https://games.crazygames.com/*
+// @run-at       document-start
+// @grant        none
+// ==/UserScript==
+`;
+const swSrc = fs.readFileSync(path.join(here, "src", "skillwarz.js"), "utf8");
+write("dist/sakura.skillwarz.user.js", HEADER_SW + "\n" + vendor + "\n;\n" + await obfuscate(swSrc));
+
+// 6. Mirror the Cookie Clicker payload into the launcher's resources/ folder so
 // `npm run build` here keeps the Electron app in sync. The launcher resolves
 // it as resources/sakura-cookieclicker.js (see src/main.js GAMES.cookieclicker).
 try {
