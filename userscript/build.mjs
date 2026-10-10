@@ -152,6 +152,35 @@ const HEADER_SW = `// ==UserScript==
 const swSrc = fs.readFileSync(path.join(here, "src", "skillwarz.js"), "utf8");
 write("dist/sakura.skillwarz.user.js", HEADER_SW + "\n" + vendor + "\n;\n" + await obfuscate(swSrc));
 
+// 7. SkillWarz self-diagnosing probe. Matched on BOTH the portal and the game
+// frame: the frame probes itself and postMessage()s up, the portal paints the
+// result. That is the only way to report cross-frame state — a console snippet
+// in the portal cannot reach the frame. UWMK is gated to games.crazygames.com so
+// it never patches the portal's own fetch/WebAssembly.
+const HEADER_SWD = `// ==UserScript==
+// @name         Sakura SkillWarz (auto-diagnose)
+// @namespace    local.sakura.skillwarz.diag
+// @version      ${pkg.version}
+// @description  One-step SkillWarz diagnosis - runs in the game frame, reports to the CrazyGames page automatically. Read-only; writes nothing to game memory.
+// @match        https://www.crazygames.com/*
+// @match        https://games.crazygames.com/*
+// @run-at       document-start
+// @grant        none
+// ==/UserScript==
+`;
+const SWD_VENDOR_BLOCK = `
+// ── UWMK, game frame only ─────────────────────────────────────────────
+// Inlined because the frame must patch fetch / WebAssembly.instantiate
+// before Unity's boot scripts compile the WASM. Scoped to the game host so
+// the CrazyGames portal keeps its own untouched fetch/WebAssembly.
+if (/(^|\\.)games\\.crazygames\\.com$/.test(location.hostname || "")) {
+${vendor}
+;
+}
+`;
+const swdSrc = fs.readFileSync(path.join(here, "src", "skillwarz-diag.js"), "utf8");
+write("dist/sakura.skillwarz.diag.user.js", HEADER_SWD + SWD_VENDOR_BLOCK + "\n" + await obfuscate(swdSrc));
+
 // 6. Mirror the Cookie Clicker payload into the launcher's resources/ folder so
 // `npm run build` here keeps the Electron app in sync. The launcher resolves
 // it as resources/sakura-cookieclicker.js (see src/main.js GAMES.cookieclicker).
