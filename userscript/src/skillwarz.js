@@ -350,7 +350,7 @@
       var RT = window.UnityWebModkit && window.UnityWebModkit.Runtime;
       if (!RT || typeof RT.createPlugin !== "function") { ARM.error = "Runtime.createPlugin unavailable"; return; }
       ARM.attempted = true;
-      RT.createPlugin({ name: "sakura-skillwarz", version: "2.0.0", referencedAssemblies: ASSEMBLIES.slice() });
+      RT.createPlugin({ name: "sakura-skillwarz", version: "2.0.1", referencedAssemblies: ASSEMBLIES.slice() });
       ARM.ok = true;
     } catch (err) { ARM.error = String((err && err.message) || err); }
   })();
@@ -363,6 +363,87 @@
   function bitsOf(f) { _f32[0] = f; return _i32[0]; }
   function floatOf(b) { _i32[0] = b | 0; return _f32[0]; }
 
+  /* ---- Heap access -------------------------------------------------
+   * Read the WASM heap directly instead of going through ValueWrapper.
+   *
+   * v2.0.0 used ValueWrapper.readField and got an EMPTY survey against a live
+   * game: capture worked (4/4 hooks, real pointers) but every field read came
+   * back unusable, and the blanket catch(_){} made that indistinguishable from
+   * "this class has no readable fields". readField returns undefined whenever
+   * UWMK cannot resolve window.unityInstance / unityGame / game, and the
+   * payload then threw on .val() of undefined and swallowed it.
+   *
+   * The heap is reached directly here, which is the one dependency-free path,
+   * and every read reports a reason on failure instead of disappearing.
+   * HEAPU8 is re-resolved each call: Emscripten replaces it when the WASM
+   * memory grows, so caching the reference goes stale mid-match.
+   */
+  var READS = { ok: 0, failed: 0, lastError: null };
+
+  function heapBytes() {
+    try {
+      var g = (typeof window !== "undefined")
+        ? (window.unityInstance || window.unityGame || window.game)
+        : null;
+      if (g && g.Module && g.Module.HEAPU8 && g.Module.HEAPU8.buffer) return g.Module.HEAPU8;
+    } catch (_) {}
+    return null;
+  }
+
+  function heapView() {
+    var b = heapBytes();
+    if (!b) return null;
+    try { return new DataView(b.buffer, b.byteOffset, b.byteLength); } catch (_) { return null; }
+  }
+
+  // rd(addr, kind) -> number, or undefined with READS.lastError set.
+  function rd(addr, kind) {
+    var v = heapView();
+    if (!v) {
+      READS.failed++;
+      READS.lastError = READS.lastError || "no HEAPU8 (Unity instance not exposed as window.unityInstance/unityGame/game)";
+      return undefined;
+    }
+    if (addr < 0 || addr + 4 > v.byteLength) {
+      READS.failed++;
+      READS.lastError = READS.lastError || ("address 0x" + addr.toString(16) + " past heap end 0x" + v.byteLength.toString(16));
+      return undefined;
+    }
+    try {
+      READS.ok++;
+      switch (kind) {
+        case "u8": return v.getUint8(addr);
+        case "i8": return v.getInt8(addr);
+        case "i16": return v.getInt16(addr, true);
+        case "u16": return v.getUint16(addr, true);
+        case "i32": return v.getInt32(addr, true);
+        case "u32": return v.getUint32(addr, true);
+        case "f32": return v.getFloat32(addr, true);
+        case "f64": return v.getFloat64(addr, true);
+        default: return v.getInt32(addr, true);
+      }
+    } catch (e) {
+      READS.failed++;
+      READS.lastError = READS.lastError || String((e && e.message) || e).slice(0, 120);
+      return undefined;
+    }
+  }
+
+  function wr(addr, kind, value) {
+    var v = heapView();
+    if (!v || addr < 0 || addr + 4 > v.byteLength) return false;
+    try {
+      switch (kind) {
+        case "u8": case "i8": v.setUint8(addr, value & 0xff); break;
+        case "i16": case "u16": v.setInt16(addr, value | 0, true); break;
+        case "i32": case "u32": v.setInt32(addr, value | 0, true); break;
+        case "f32": v.setFloat32(addr, value, true); break;
+        default: v.setInt32(addr, value | 0, true);
+      }
+      return true;
+    } catch (_) { return false; }
+  }
+
   // key/hidden/inited/fake/fakeActive offsets per struct kind.
   var LAYOUT = {
     obfF: { key: 0x00, hidden: 0x04, inited: 0x0c, fake: 0x10, active: 0x14 },
@@ -370,14 +451,18 @@
     obfB: { key: 0x00, hidden: 0x04, inited: 0x08, fake: 0x09, active: 0x0a }
   };
 
-  function readObf(vw, base, kind) {
+  // Returns null when a component read fails. Every failure is counted and
+  // described rather than silently dropping the field.
+  function readObf(ptr, base, kind) {
     var L = LAYOUT[kind];
     if (!L) return null;
-    var key = vw.readField(base + L.key, "u8").val() & 0xff;
-    var hid = vw.readField(base + L.hidden, "i32").val() | 0;
-    var init = vw.readField(base + L.inited, "u8").val() & 1;
-    var fake = kind === "obfF" ? vw.readField(base + L.fake, "f32").val() : vw.readField(base + L.fake, kind === "obfI" ? "i32" : "u8").val();
-    var act = vw.readField(base + L.active, "u8").val() & 1;
+    var key = rd(ptr + base + L.key, "u8");
+    var hid = rd(ptr + base + L.hidden, "i32");
+    var init = rd(ptr + base + L.inited, "u8");
+    var fake = rd(ptr + base + L.fake, kind === "obfF" ? "f32" : kind === "obfI" ? "i32" : "u8");
+    var act = rd(ptr + base + L.active, "u8");
+    if (key === undefined || hid === undefined || fake === undefined || act === undefined) return null;
+    key &= 0xff; hid |= 0; init = (init || 0) & 1; act &= 1;
     var real;
     if (kind === "obfF") real = floatOf(hid ^ key);
     else if (kind === "obfI") real = (hid ^ key) | 0;
@@ -389,22 +474,21 @@
   // ObscuredCheatingDetector compares real vs fake every frame and flags it.
   // Clearing fakeValueActive makes currentRawValue return the decrypted value,
   // so the two sides are trivially consistent again.
-  function writeObf(vw, base, kind, value) {
+  function writeObf(ptr, base, kind, value) {
     var L = LAYOUT[kind];
     if (!L) return false;
-    try {
-      var cur = readObf(vw, base, kind);
-      var key = cur.key;
-      var hidden;
-      if (kind === "obfF") hidden = bitsOf(value) ^ key;
-      else if (kind === "obfI") hidden = (value | 0) ^ key;
-      else hidden = ((value ? 1 : 0) & 0xff) ^ key;
-      vw.writeField(base + L.hidden, "i32", hidden | 0);
-      vw.writeField(base + L.fake, kind === "obfF" ? "f32" : kind === "obfI" ? "i32" : "u8",
-                    kind === "obfF" ? value : kind === "obfI" ? (value | 0) : (value ? 1 : 0));
-      vw.writeField(base + L.active, "u8", 0);
-      return true;
-    } catch (_) { return false; }
+    var cur = readObf(ptr, base, kind);
+    if (!cur) return false;
+    var key = cur.key;
+    var hidden;
+    if (kind === "obfF") hidden = bitsOf(value) ^ key;
+    else if (kind === "obfI") hidden = (value | 0) ^ key;
+    else hidden = ((value ? 1 : 0) & 0xff) ^ key;
+    var fakeKind = kind === "obfF" ? "f32" : kind === "obfI" ? "i32" : "u8";
+    var fakeVal = kind === "obfF" ? value : kind === "obfI" ? (value | 0) : (value ? 1 : 0);
+    return wr(ptr + base + L.hidden, "i32", hidden | 0)
+        && wr(ptr + base + L.fake, fakeKind, fakeVal)
+        && wr(ptr + base + L.active, "u8", 0);
   }
 
   /* ---------------------------------------------------------------- *
@@ -493,39 +577,66 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
   var SNAPSHOT = null;
   var DIFF = [];
 
+  // className() proves a captured pointer really is the IL2CPP object we think
+  // it is. If it returns null the pointer is stale or not an object header, and
+  // that is a very different failure from "heap unreachable" - worth separating
+  // instead of reporting both as an empty survey.
+  function className(ptr) {
+    try {
+      if (!VW || !ptr) return null;
+      var n = new VW(ptr).getClassName();
+      return n === undefined ? null : n;
+    } catch (_) { return null; }
+  }
+
   function survey() {
     var out = {};
+    READS.ok = 0; READS.failed = 0; READS.lastError = null;
     var types = Object.keys(SK_FIELDS);
     for (var t = 0; t < types.length; t++) {
       var typeName = types[t];
       var rec = INSTANCES[typeName];
-      if (!rec || !rec.ptr || !VW) continue;
+      if (!rec || !rec.ptr) continue;
       // SK_FIELDS[typeName] is a flat [[offset, kind], ...] list.
       var fields = SK_FIELDS[typeName] || [];
       var rows = [];
-      var vw = null;
       for (var i = 0; i < fields.length; i++) {
         var off = fields[i][0];
         var kind = fields[i][1];
-        try {
-          if (!vw) vw = new VW(rec.ptr);
-          if (kind.indexOf("obf") === 0) {
-            var d = readObf(vw, off, kind);
-            if (!d) continue;
-            rows.push({
-              o: off, k: kind, v: d.real, fake: d.fake, act: d.act, inited: d.init,
-              raw: "key=" + d.key + " hid=" + d.hidden + " fake=" + d.fake + (d.act ? " ACTIVE" : "")
-            });
-          } else {
-            var r = vw.readField(off, kind);
-            if (!r) continue;
-            rows.push({ o: off, k: kind, v: r.val(), raw: "" });
-          }
-        } catch (_) {}
+        if (kind.indexOf("obf") === 0) {
+          var d = readObf(rec.ptr, off, kind);
+          if (!d) continue;
+          rows.push({
+            o: off, k: kind, v: d.real, fake: d.fake, act: d.act, inited: d.init,
+            raw: "key=" + d.key + " hid=" + d.hidden + " fake=" + d.fake + (d.act ? " ACTIVE" : "")
+          });
+        } else {
+          var r = rd(rec.ptr + off, kind);
+          if (r === undefined) continue;
+          rows.push({ o: off, k: kind, v: r, raw: "" });
+        }
       }
       if (rows.length) out[typeName] = rows;
     }
     return out;
+  }
+
+  function globals() {
+    var want = ["unityInstance", "unityGame", "game", "unityInstanceWrapper"];
+    var o = {};
+    for (var i = 0; i < want.length; i++) {
+      var k = want[i];
+      var t = typeof window[k];
+      o[k] = t === "undefined" ? "undefined" : t;
+    }
+    try {
+      var g = window.unityInstance || window.unityGame || window.game;
+      o.hasModule = !!(g && g.Module);
+      o.heapU8 = !!(g && g.Module && g.Module.HEAPU8);
+      o.heapBytes = o.heapU8 ? g.Module.HEAPU8.length : 0;
+    } catch (_) { o.hasModule = false; o.heapU8 = false; }
+    o.valueWrapper = typeof VW;
+    return o;
   }
 
   function flat(sv) {
@@ -577,13 +688,15 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       instances[t] = "0x" + INSTANCES[t].ptr.toString(16);
       if (INSTANCES[t].replaced) replaced.push(t);
     }
+    var classNames = {};
+    for (var cn in INSTANCES) classNames[cn] = className(INSTANCES[cn].ptr);
 
     var sv = {};
     var surveyError = null;
     try { sv = survey(); } catch (e) { surveyError = String((e && e.message) || e); }
 
     var report = {
-      version: "2.0.0",
+      version: "2.0.1",
       when: new Date().toISOString(),
       elapsedMs: Date.now() - T0,
       frame: location.href.slice(0, 120),
@@ -598,14 +711,35 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       hooksApplied: hooksApplied(),
       hookErrors: HOOK_ERRORS.slice(0, 8),
       instances: instances,
+      classNames: classNames,
       instancesReplaced: replaced,
       survey: sv,
+      surveyRows: Object.keys(sv).reduce(function (n, k) { return n + sv[k].length; }, 0),
+      reads: { ok: READS.ok, failed: READS.failed, lastError: READS.lastError },
+      globals: globals(),
       diff: DIFF.slice(0, 40),
       uwmkLog: UWMK_LOG.slice(0, 20),
       warnings: []
     };
     if (surveyError) report.warnings.push("survey failed: " + surveyError);
     if (ARM.error) report.warnings.push("UWMK arming failed: " + ARM.error);
+
+    // An empty survey must never read as "nothing to see". Name the blocker.
+    if (report.surveyRows === 0 && Object.keys(report.instances).length > 0) {
+      report.warnings.push(
+        "captured " + Object.keys(report.instances).length + " object(s) but read 0 fields. " +
+        (READS.lastError ? "Reason: " + READS.lastError : "No read failed, so every offset was skipped by type.")
+      );
+    }
+    if (report.globals && !report.globals.heapU8) {
+      report.warnings.push(
+        "game.Module.HEAPU8 not reachable via window.unityInstance/unityGame/game. " +
+        "Field reads cannot work until the WASM heap is exposed under one of those names."
+      );
+    }
+    if (report.globals && !report.globals.valueWrapper || report.globals.valueWrapper === "undefined") {
+      report.warnings.push("window.UnityWebModkit.ValueWrapper is missing - capture is running blind.");
+    }
 
     // The single most likely cause of "hooked but nothing captured": the
     // signature did not match, so Update() was never wrapped.
@@ -637,7 +771,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     try { return collect(); }
     catch (err) {
       return {
-        version: "2.0.0", when: new Date().toISOString(), elapsedMs: Date.now() - T0,
+        version: "2.0.1", when: new Date().toISOString(), elapsedMs: Date.now() - T0,
         host: HOST, uwmk: !!(window.UnityWebModkit && window.UnityWebModkit.Runtime),
         il2CppContext: false, arm: ARM, hooksTotal: HOOKS.length, hooksApplied: 0,
         instances: {}, survey: {}, collectError: String((err && err.message) || err)
