@@ -69,11 +69,12 @@ no `PlayerController`, `Shooter`, `Health`, `Weapon` or `Recoil` class, and any
 hook written against those names is silently skipped by UWMK with
 `Hook '…' skipped - method not found in scriptData`.
 
-Only four hooks are registered:
+Only five hooks are registered:
 
 | Hook | Type | Method | Why |
 | --- | --- | --- | --- |
 | `god` | prefix (block) | `OHealth.InitiateTakeHealth(int)` | the funnel all incoming damage passes through |
+| `godDie` | prefix (block) | `OHealth.LocalDie(Player,OShooter,string,bool)` | backstop — blocks the actual death call |
 | `noRecoil` | prefix (block) | `…Overtide.RecoilMotion.Tick()` | stops the recoil springs advancing |
 | `capShooter` | postfix | `OShooter.SetGameRunning(bool)` | captures the local `OShooter` once a match starts |
 | `capMove` | postfix | `…Overtide.Movement.IsGrounded()` | captures the local `Movement`, then disables itself |

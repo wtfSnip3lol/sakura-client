@@ -173,6 +173,10 @@
       // damage goes through (the PunRPC RPCTakeHealth feeds into it), so
       // blocking it is enough for god mode.
       regPrefix("god", "OHealth", "InitiateTakeHealth", ["i32", "i32"], undefined, BLOCK, !!settings.god);
+      // Backstop for the same feature. LocalDie is the local player's actual
+      // death call, so blocking it means nothing can kill you even if some
+      // damage path slips past InitiateTakeHealth.
+      regPrefix("godDie", "OHealth", "LocalDie", ["i32", "i32", "i32", "i32", "i32"], undefined, BLOCK, !!settings.god);
       // RecoilMotion.Tick() advances the recoil springs. Skipping it removes
       // recoil without disturbing the weapon's damage/fire-rate fields.
       regPrefix("noRecoil", "LegionPlatforms.Overtide.RecoilMotion", "Tick", ["i32"], undefined, BLOCK, !!settings.noRecoil);
@@ -613,8 +617,8 @@
       if (id === "combat") {
         return [
           statusCard(),
-          moduleCard("God Mode", "Blocks OHealth.InitiateTakeHealth, the funnel every damage goes through.", settings.god,
-            (v) => { settings.god = v; save(); setHook("god", v); }, []),
+          moduleCard("God Mode", "Blocks OHealth.InitiateTakeHealth and OHealth.LocalDie, so nothing can hurt or kill you.", settings.god,
+            (v) => { settings.god = v; save(); setHook("god", v); setHook("godDie", v); }, []),
           moduleCard("No Recoil", "Skips RecoilMotion.Tick so the recoil springs never advance.", settings.noRecoil,
             (v) => { settings.noRecoil = v; save(); setHook("noRecoil", v); }, []),
           moduleCard("No Spread", "Zeroes spread and maxes accuracy on your weapon every 200ms.", settings.noSpread,
