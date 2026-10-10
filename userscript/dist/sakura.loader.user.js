@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sakura Client
 // @namespace    local.sakura.client
-// @version      1.3.1
+// @version      1.3.2
 // @description  Sakura Client loader — full client on Clutcher.io, clean keystrokes overlay on AstraStrike
 // @match        https://www.clutcher.io/*
 // @match        https://clutcher.io/*

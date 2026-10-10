@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sakura Kour (kourstrike.io)
 // @namespace    local.sakura.kour
-// @version      1.3.1
+// @version      1.3.2
 // @description  Sakura menu for KourStrike.io — combat/movement/visuals over UWMK hooks + overlay
 // @match        https://kourstrike.io/*
 // @match        https://www.kourstrike.io/*
