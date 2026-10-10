@@ -45,27 +45,52 @@
     window.addEventListener("message", function (e) {
       var d = e.data;
       if (!d || d.__sakura !== CHANNEL) return;
-      if (d.kind === "hello") { panel().setStatus("game frame detected (" + (d.host || "?") + ") — probing…", "wait"); return; }
-      if (d.kind === "report") { last = d.report; panel().setReport(d.report); }
+      try {
+        if (d.kind === "hello") { panel().setStatus("game frame detected (" + (d.host || "?") + ") — probing…", "wait"); return; }
+        if (d.kind === "report") { last = d.report; panel().setReport(d.report); }
+      } catch (err) {
+        console.warn("%c[sakura] panel update failed", "color:" + ACCENT, err);
+      }
     });
 
-    function mount() {
-      if (document.body) return true;
-      var s = document.createElement("style");
-      s.textContent = "#sakura-sw-diag{all:initial}";
-      (document.head || document.documentElement).appendChild(s);
-      var d = document.createElement("div");
-      d.id = "sakura-sw-diag";
-      (document.body || document.documentElement).appendChild(d);
-      return true;
+    // NOTE: the panel is strictly a viewer. It must never be able to throw and
+    // kill the probe, so every DOM touch below is guarded and panel() degrades
+    // to NOOP instead of raising.
+    var NOOP = { setStatus: function () {}, setReport: function () {} };
+
+    function ensureRoot() {
+      var el = document.getElementById("sakura-sw-diag");
+      if (el) return el;
+      if (!document.body || !document.body.appendChild) return null;
+      try {
+        if (!document.getElementById("sakura-sw-diag-css")) {
+          var s = document.createElement("style");
+          s.id = "sakura-sw-diag-css";
+          s.textContent = "#sakura-sw-diag{all:initial}";
+          (document.head || document.documentElement).appendChild(s);
+        }
+        el = document.createElement("div");
+        el.id = "sakura-sw-diag";
+        document.body.appendChild(el);
+        return el;
+      } catch (_) { return null; }
     }
 
     function panel() {
-      var root = document.getElementById("sakura-sw-diag");
-      if (root && root.dataset.ready) return root.api;
-      if (!mount()) return { setStatus: function () {}, setReport: function () {} };
-      root = document.getElementById("sakura-sw-diag");
+      var root = ensureRoot();
+      if (!root) return NOOP;
+      if (root.dataset.api) return root.api;
+      try {
+        return build(root);
+      } catch (err) {
+        root.dataset.api = "1";
+        root.api = NOOP;
+        console.warn("%c[sakura] panel disabled", "color:" + ACCENT, err);
+        return NOOP;
+      }
+    }
 
+    function build(root) {
       root.style.cssText =
         "position:fixed;left:12px;top:12px;z-index:2147483000;width:min(52vw,620px);max-height:78vh;" +
         "background:#150c1d;color:#f7eef5;border:1px solid rgba(255,143,177,.5);border-radius:14px;" +
@@ -85,28 +110,30 @@
       var statusEl = root.querySelector("#skd-status");
       var outEl = root.querySelector("#skd-out");
       var copyBtn = root.querySelector("#skd-copy");
+      var closeBtn = root.querySelector("#skd-x");
       var payload = null;
 
-      root.querySelector("#skd-x").onclick = function () { root.remove(); };
-      copyBtn.onclick = function () {
+      if (closeBtn) closeBtn.onclick = function () { try { root.remove(); } catch (_) {} };
+      if (copyBtn) copyBtn.onclick = function () {
         var text = MARK0 + "\n" + (payload ? JSON.stringify(payload, null, 1) : "") + "\n" + MARK1;
-        var done = function () { copyBtn.textContent = "Copied"; };
+        var done = function () { if (copyBtn) copyBtn.textContent = "Copied"; };
         if (navigator.clipboard && navigator.clipboard.writeText) {
           navigator.clipboard.writeText(text).then(done, function () { legacy(); });
         } else legacy();
         function legacy() {
           var ta = document.createElement("textarea");
-          ta.value = text; document.body.appendChild(ta); ta.select();
+          ta.value = text;
+          if (!document.body) return;
+          document.body.appendChild(ta); ta.select();
           try { document.execCommand("copy"); done(); } catch (_) {}
           ta.remove();
         }
       };
 
-      root.dataset.ready = "1";
-
       // Timeout banner: distinguishes "slow game" from "never injected".
       setTimeout(function () {
         if (payload) return;
+        if (!statusEl || !outEl) return;
         statusEl.textContent = "no report after 45s — not injected into frame?";
         statusEl.style.color = "#ffb3c7";
         outEl.textContent =
@@ -120,26 +147,34 @@
           "Reload the game page once and watch this panel again.";
       }, 45000);
 
-      return {
+      var api = {
         setStatus: function (t, kind) {
+          if (!statusEl) return;
           statusEl.textContent = t;
           statusEl.style.color = kind === "wait" ? "#bda9c9" : ACCENT;
         },
         setReport: function (rep) {
           payload = rep;
-          copyBtn.style.display = "";
+          if (copyBtn) copyBtn.style.display = "";
           var ok = rep.scriptData;
-          statusEl.textContent = ok
-            ? "OK · " + rep.typeCount + " types · " + (rep.targetsFound || []).length + " targets"
-            : "scriptData not ready (uwmk=" + rep.uwmk + ")";
-          statusEl.style.color = ok ? "#7ee0a8" : "#ffb3c7";
-          var brief = JSON.parse(JSON.stringify(rep));
-          if (brief.targets) for (var k in brief.targets) brief.targets[k].methods = brief.targets[k].methods.slice(0, 12);
-          outEl.textContent = JSON.stringify(brief, null, 1);
+          if (statusEl) {
+            statusEl.textContent = ok
+              ? "OK · " + rep.typeCount + " types · " + (rep.targetsFound || []).length + " targets"
+              : "scriptData not ready (uwmk=" + rep.uwmk + ")";
+            statusEl.style.color = ok ? "#7ee0a8" : "#ffb3c7";
+          }
+          try {
+            var brief = JSON.parse(JSON.stringify(rep));
+            if (brief.targets) for (var k in brief.targets) brief.targets[k].methods = brief.targets[k].methods.slice(0, 12);
+            if (outEl) outEl.textContent = JSON.stringify(brief, null, 1);
+          } catch (_) { if (outEl) outEl.textContent = String(rep); }
           console.log("%c[sakura] SkillWarz report received", "color:" + ACCENT + ";font-weight:700", rep);
           console.log(MARK0 + "\n" + JSON.stringify(rep, null, 1) + "\n" + MARK1);
         }
       };
+      root.dataset.api = "1";
+      root.api = api;
+      return api;
     }
 
     // Paint as soon as there is a DOM, but never later than needed.
@@ -250,7 +285,26 @@
     (function poll() {
       var RT = (window.UnityWebModkit && window.UnityWebModkit.Runtime) || null;
       var ok = RT && RT.il2CppContext && RT.il2CppContext.scriptData;
-      if (ok || tries > 90) { emit(collect()); return; }
+      if (ok || tries > 90) {
+        // Always emit something. A probe that throws silently is worse than
+        // useless, it reads as "not injected".
+        var rep;
+        try { rep = collect(); }
+        catch (err) {
+          rep = {
+            when: new Date().toISOString(),
+            frame: location.href.slice(0, 120),
+            host: HOST,
+            scriptRan: !!window.__SAKURA_SW__,
+            uwmk: !!RT,
+            il2CppContext: !!(RT && RT.il2CppContext),
+            scriptData: null,
+            collectError: String((err && err.message) || err)
+          };
+        }
+        emit(rep);
+        return;
+      }
       tries++;
       setTimeout(poll, 1000);
     })();
