@@ -1,16 +1,23 @@
-# Sakura Client — loader + 3 site payloads
+# Sakura Client — universal loader + 3 site payloads
 
-One installable userscript that detects the site, then loads the matching file from GitHub:
+One installable userscript that detects the site and runs the matching payload:
 
 - **clutcher.io** → `sakura.clutcher.js` (keystrokes + ambience / world FX + Lunar menu with HUD, World and Beta tabs — zero dev features; Beta is always on, Lunar is the default look)
 - **astrastrike.fun** → `sakura.astra.js` (clean mode: keyboard-only QWER/ASDFC overlay + same minimal menu, HUD tab only, game untouched)
-- **kourstrike.io** → `sakura.kour.user.js` (standalone install, UWMK v1.1.0 inlined — full Combat/Movement/Visual/Misc/Safety menu over IL2CPP hooks + overlay; runs at document-start)
+- **kourstrike.io** → inlined into the loader (UWMK v1.1.0 + obfuscated payload — full Combat/Movement/Visual/Misc/Safety menu over IL2CPP hooks + overlay)
+
+The first two are fetched from GitHub at DOM-ready. KourStrike is **inlined**, because UWMK has to
+patch `fetch` / `WebAssembly.instantiate` before Unity's boot scripts compile the WASM — a network
+fetch at document-start always loses that race.
 
 ## Install (users)
 
 1. Install [Tampermonkey](https://www.tampermonkey.net/) / Violentmonkey.
 2. Open `dist/sakura.loader.user.js` (raw on GitHub) → Tampermonkey prompts to install.
-3. The loader fetches the right payload for the site you're on. Press **Insert** or click the ❀ button for the menu.
+3. Press **Insert** or click the ❀ button for the menu.
+
+KourStrike-only players can install `dist/sakura.kour.user.js` instead — same payload, without the
+other two sites. Installing both is safe; the payload self-guards against running twice.
 
 ## Setup (you — one time)
 
@@ -30,19 +37,19 @@ One installable userscript that detects the site, then loads the matching file f
 ```text
 userscript/
   package.json   # only dep: javascript-obfuscator (+ sakura.rawBase URL)
-  build.mjs      # loader + obfuscation build (+ kour standalone bundle)
+  build.mjs      # loader + obfuscation build (inlines kour, + standalone kour bundle)
   src/
-    loader.js    # site detector — the only installed file (stays readable)
+    loader.js    # clutcher/astra site detector — the only installed file (stays readable)
     clutcher.js  # full client source — edit here
     astra.js     # clean overlay source — edit here
     kour.js      # kourstrike menu source — edit here (needs vendor/uwmk.js)
   vendor/
-    uwmk.js      # UnityWebModkit bundle (Recte UWMK experimental) — inlined into kour build
+    uwmk.js      # UnityWebModkit bundle (Recte UWMK experimental) — inlined, never obfuscated
   dist/          # commit all four
-    sakura.loader.user.js  # installable (plain)
-    sakura.clutcher.js     # obfuscated payload
-    sakura.astra.js        # obfuscated payload
-    sakura.kour.user.js    # installable standalone (UWMK + kour, plain, document-start)
+    sakura.loader.user.js  # THE installable script (kour inlined, document-start)
+    sakura.clutcher.js     # obfuscated payload (fetched at DOM-ready)
+    sakura.astra.js        # obfuscated payload (fetched at DOM-ready)
+    sakura.kour.user.js    # standalone kour-only install (UWMK + obfuscated kour)
 ```
 
 ## Edit → build
@@ -54,7 +61,9 @@ npm run dev     # plain payloads -> dist/ (debugging)
 
 ## Notes
 
-- Only the two payloads are obfuscated ([`javascript-obfuscator`](https://www.npmjs.com/package/javascript-obfuscator)). The loader stays readable so anyone can audit what it fetches.
+- All three payloads are obfuscated ([`javascript-obfuscator`](https://www.npmjs.com/package/javascript-obfuscator)). The loader and the vendored UWMK bundle stay readable — UWMK is third-party webpack output, and obfuscating it is slow and risks breaking it.
+- The loader itself is plain so anyone can audit what it fetches.
 - Obfuscator options keep `renameGlobals: false`, `selfDefending: false`, `debugProtection: false`, `transformObjectKeys: false` so the game page keeps working.
-- Each payload no-ops on the wrong host, so even a mix-up loads nothing foreign.
+- Each payload no-ops on the wrong host, so even a mix-up loads nothing foreign. The inlined kour block is wrapped in its own hostname check, so UWMK's fetch/WASM patches never install on clutcher.io or astrastrike.fun.
+- The loader runs at `document-start` for kour's sake; clutcher/astra payloads are held back until `DOMContentLoaded` since they append to `document.body` at top level.
 - If a site's CSP blocks the injected `<script>` tag, the loader retries via eval fallback.

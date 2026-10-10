@@ -1,8 +1,12 @@
-/* Sakura Kour — KOURSTRIKE payload (unobfuscated source).
- * Built with `npm run build` into dist/sakura.kour.user.js (standalone userscript,
- * UWMK bundle inlined — no runtime fetch, runs at document-start).
- * Requires window.UnityWebModkit (inlined above this payload in the built file).
- * No-ops on any other host.
+/* Sakura Kour — KOURSTRIKE payload.
+ * Obfuscated by build.mjs, then shipped two ways:
+ *   1. inlined into dist/sakura.loader.user.js (the universal loader), and
+ *   2. as dist/sakura.kour.user.js (standalone userscript, for kour only).
+ * Both inline the UWMK bundle and run at document-start, because UWMK has to
+ * patch fetch / WebAssembly.instantiate before Unity's boot scripts run.
+ * Requires window.UnityWebModkit, defined just above this payload in the build.
+ * No-ops on any other host, and no-ops if a previous copy is already running
+ * (i.e. the loader and the standalone script are both installed).
  *
  * Field offsets are from the Il2CppDumper dump.cs (KourStrike 4.15):
  *   PlayerController: mouseSensitivity 0x68, groundAccel 0x6C, airAccel 0x70,
@@ -16,6 +20,8 @@
 (() => {
   "use strict";
   if (!/(^|\.)kourstrike\.io$/.test(location.hostname || "")) return;
+  if (window.__SAKURA_KOUR__) return;
+  window.__SAKURA_KOUR__ = true;
 
   var ACCENT = "#ff6b9d";
   var ACCENT_HI = "#ffb3c6";
