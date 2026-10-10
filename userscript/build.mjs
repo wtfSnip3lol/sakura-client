@@ -34,7 +34,7 @@ const HEADER = `// ==UserScript==
 // @name         Sakura Client
 // @namespace    local.sakura.client
 // @version      ${pkg.version}
-// @description  Sakura Client — Clutcher.io full client, AstraStrike clean overlay, KourStrike UWMK menu
+// @description  Sakura Client — Clutcher.io full client, AstraStrike clean overlay, Overtide/KourStrike UWMK menu, Cookie Clicker Sakura visual recode
 // @match        https://www.clutcher.io/*
 // @match        https://clutcher.io/*
 // @match        https://astrastrike.fun/*
@@ -43,6 +43,7 @@ const HEADER = `// ==UserScript==
 // @match        https://www.kourstrike.io/*
 // @match        https://overtide.io/*
 // @match        https://www.overtide.io/*
+// @match        https://orteil.dashnet.org/cookieclicker*
 // @run-at       document-start
 // @grant        none
 // @noframes
@@ -110,7 +111,7 @@ if (!loaderSrc.includes("__SAKURA_RAW_BASE__")) throw new Error("src/loader.js m
 write("dist/sakura.loader.user.js", HEADER + KOUR_BLOCK + "\n" + loaderSrc.replaceAll("__SAKURA_RAW_BASE__", BASE));
 
 // 2 + 3. Payloads (obfuscated)
-for (const [src, rel] of [["src/clutcher.js", "dist/sakura.clutcher.js"], ["src/astra.js", "dist/sakura.astra.js"]]) {
+for (const [src, rel] of [["src/clutcher.js", "dist/sakura.clutcher.js"], ["src/astra.js", "dist/sakura.astra.js"], ["src/cookie.js", "dist/sakura.cc.js"]]) {
   const code = fs.readFileSync(path.join(here, src), "utf8");
   write(rel, await obfuscate(code));
 }

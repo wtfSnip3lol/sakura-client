@@ -29,10 +29,13 @@
 
   var IS_CLUTCHER = /(^|\.)clutcher\.io$/.test(HOST);
   var IS_ASTRA = /(^|\.)astrastrike\.fun$/.test(HOST);
-  if (!IS_CLUTCHER && !IS_ASTRA) return;
+  var IS_COOKIE = /(^|\.)orteil\.dashnet\.org$/.test(HOST) && /\/cookieclicker/i.test(location.pathname || "");
+  if (!IS_CLUTCHER && !IS_ASTRA && !IS_COOKIE) return;
 
   var BASE = "__SAKURA_RAW_BASE__";
-  var FILE = IS_CLUTCHER ? "sakura.clutcher.js" : "sakura.astra.js";
+  var FILE = IS_CLUTCHER ? "sakura.clutcher.js"
+            : IS_ASTRA ? "sakura.astra.js"
+            : "sakura.cc.js";
 
   function run(code) {
     // Run in page context so canvas/DOM access behaves identically on both sites.

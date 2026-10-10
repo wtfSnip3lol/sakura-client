@@ -2,6 +2,7 @@
 
 One installable userscript that detects the site and runs the matching payload:
 
+- **orteil.dashnet.org/cookieclicker** -> sakura.cc.js (visual recode only: Sakura night palette, Zen Maru Gothic / Outfit typography, glass store, 2-3 column layout, falling petal canvas. No cheats, no save edits, no game globals touched.)
 - **clutcher.io** → `sakura.clutcher.js` (keystrokes + ambience / world FX + Lunar menu with HUD, World and Beta tabs — zero dev features; Beta is always on, Lunar is the default look)
 - **astrastrike.fun** → `sakura.astra.js` (clean mode: keyboard-only QWER/ASDFC overlay + same minimal menu, HUD tab only, game untouched)
 - **overtide.io** / **kourstrike.io** → inlined into the loader (UWMK v1.1.0 + obfuscated payload — full Combat/Movement/Visual/Misc/Safety menu over IL2CPP hooks + overlay). These two domains ship the **identical** `Assembly-CSharp` build (verified: `global-metadata.dat` differs only in branding strings, and both produce a byte-identical `dump.cs`), so one payload covers both.
@@ -112,6 +113,36 @@ OvertideWeapon  defaultDamage 0x4C(i32)  cachedDamage 0x54(i32)
 **Safe Mode** (Safety tab) skips UWMK entirely and runs the overlay only — use
 it if a build change ever stops the hooks from resolving.
 
+## Cookie Clicker (visual recode only)
+
+`sakura.cc.js` targets the official game at `https://orteil.dashnet.org/cookieclicker/`.
+It is purely cosmetic by design - no cheating, no save tampering, no modification of
+the game's globals or logic. It injects exactly three things:
+
+1. one `<style>` block,
+2. one fixed petal `<canvas>` with `pointer-events:none`,
+3. a small floating toggle.
+
+Selectors were taken from introspecting the live 2.058 DOM rather than from memory,
+which turned up three things that shaped the design:
+
+- The bakery is drawn on `#backgroundCanvas`, and the game applies a **1s transition
+  to its opacity**. A running transition outranks inline styles, so `opacity` can
+  never be forced on it. `filter` is not transitioned, so the scene is dimmed with
+  `filter: saturate() brightness()` instead.
+- Building rows are separate `<canvas class="rowCanvas">` elements per building, so
+  they can only be dimmed, not restyled.
+- There are no CSS custom properties in the game; it ships an old stylesheet and
+  uses Tahoma/Arial. The theme defines its own `--sk-*` variables and `!important`
+  overrides.
+
+The Sakura backdrop lives on `<html>` as a `background-image`. A `body::before` at
+`z-index:-2` was tried first and never paints, because it falls behind body's own
+background box.
+
+Toggle panel: master switch plus wide layout, frosted panels, fonts, cookie glow,
+soft geometry, petals and a petal-density slider. Everything persists to
+`localStorage` under `sakura.cc.v1`.
 ## Notes
 
 - All three payloads are obfuscated ([`javascript-obfuscator`](https://www.npmjs.com/package/javascript-obfuscator)). The loader and the vendored UWMK bundle stay readable — UWMK is third-party webpack output, and obfuscating it is slow and risks breaking it.
