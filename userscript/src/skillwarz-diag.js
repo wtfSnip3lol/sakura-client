@@ -310,6 +310,92 @@
     }
   })();
 
+  /* ---------------------------------------------------------------- *
+   * Boundary tracing. We know metadata resolved and the .wasm was
+   * fetched, yet searchWasmBinary/handleBuffer never ran. That means
+   * Unity's instantiate call bypassed UWMK's patch. Find out where it
+   * actually goes instead of guessing.
+   * ---------------------------------------------------------------- */
+  var WASM_TAPS = [];
+  var RT_TAPS = [];
+  var REJECTIONS = [];
+  var WORKERS = [];
+
+  (function tapWasm() {
+    try {
+      if (typeof WebAssembly === "undefined") return;
+      var fns = ["instantiateStreaming", "instantiate"];
+      for (var i = 0; i < fns.length; i++) {
+        (function (name) {
+          var cur = WebAssembly[name];
+          if (typeof cur !== "function" || cur.__sakuraTapped) return;
+          var wrapped = function () {
+            try {
+              var a = arguments[0];
+              var desc;
+              if (a && typeof a.then === "function") desc = "Promise<Response>";
+              else if (a && typeof a === "object" && a.url) desc = "Response " + String(a.url).slice(0, 140);
+              else desc = Object.prototype.toString.call(a);
+              if (WASM_TAPS.length < 24) {
+                WASM_TAPS.push({ fn: name, arg: desc, atMs: Date.now() - T0 });
+              }
+            } catch (_) {}
+            return cur.apply(this, arguments);
+          };
+          wrapped.__sakuraTapped = true;
+          try { Object.defineProperty(wrapped, "name", { value: cur.name, configurable: true }); } catch (_) {}
+          WebAssembly[name] = wrapped;
+        })(fns[i]);
+      }
+    } catch (_) {}
+  })();
+
+  (function tapWorkers() {
+    try {
+      var OW = window.Worker;
+      if (typeof OW !== "function") return;
+      // A Proxy keeps instanceof/prototype behaviour intact, which a plain
+      // replacement function would not.
+      window.Worker = new Proxy(OW, {
+        construct: function (target, args) {
+          try {
+            var u = args[0];
+            var s = typeof u === "string" ? u : (u && u.url) || String(u);
+            if (WORKERS.length < 12) WORKERS.push(String(s).slice(0, 160));
+          } catch (_) {}
+          return new (Function.prototype.bind.apply(target, [null].concat(args)))();
+        }
+      });
+    } catch (_) {}
+  })();
+
+  (function tapRuntime() {
+    try {
+      var RT = window.UnityWebModkit && window.UnityWebModkit.Runtime;
+      if (!RT) return;
+      var names = ["searchWasmBinary", "handleBuffer", "loadGlobalMetadata", "onWebAssemblyInstantiateStreaming", "onWebAssemblyInstantiate"];
+      for (var i = 0; i < names.length; i++) {
+        (function (m) {
+          if (typeof RT[m] !== "function") return;
+          var orig = RT[m];
+          RT[m] = function () {
+            if (RT_TAPS.length < 24) RT_TAPS.push(m + "(" + arguments.length + ") @" + (Date.now() - T0) + "ms");
+            return orig.apply(this, arguments);
+          };
+        })(names[i]);
+      }
+    } catch (_) {}
+  })();
+
+  window.addEventListener("unhandledrejection", function (ev) {
+    try {
+      var r = ev && ev.reason;
+      if (REJECTIONS.length < 12) {
+        REJECTIONS.push(String((r && (r.message || r)) || r).slice(0, 240));
+      }
+    } catch (_) {}
+  });
+
   var TARGETS = [
     "FPScontroller", "HealthScript", "WeaponManager", "WeaponNew", "WeaponController",
     "EnemyBot", "BotManager", "BotSpawner", "NPC_Cotroller", "GG_GameManager",
@@ -333,7 +419,7 @@
     for (var j = 0; j < NET_LOG.length; j++) {
       if (out.indexOf(NET_LOG[j]) === -1) out.push(NET_LOG[j]);
     }
-    return { perfTotal: perfTotal, urls: out.slice(0, 30) };
+    return { perfTotal: perfTotal, urls: out.slice(0, 80) };
   }
 
   function globals() {
@@ -369,7 +455,18 @@
       uwmkPlugins: RT && RT.plugins ? RT.plugins.map(function (p) { return p.name; }) : null,
       metadataReady: !!(RT && RT.globalMetadata),
       wasmInstantiateHooked: !!(RT && RT.instantiate),
-      uwmkLog: UWMK_LOG.slice(0, 40)
+      uwmkLog: UWMK_LOG.slice(0, 40),
+      // Boundary tracing: did Unity's instantiate ever reach us?
+      wasmCalls: WASM_TAPS.slice(0, 24),
+      rtCalls: RT_TAPS.slice(0, 24),
+      workers: WORKERS.slice(0, 12),
+      rejections: REJECTIONS.slice(0, 12),
+      metadataImageDefs: (RT && RT.globalMetadata && RT.globalMetadata.imageDefs) ? RT.globalMetadata.imageDefs.length : null,
+      wasmPatch: {
+        instantiateTapped: !!(typeof WebAssembly !== "undefined" && WebAssembly.instantiate && WebAssembly.instantiate.__sakuraTapped),
+        streamingTapped: !!(typeof WebAssembly !== "undefined" && WebAssembly.instantiateStreaming && WebAssembly.instantiateStreaming.__sakuraTapped),
+        rtHasOriginals: !!(RT && RT.instantiate && RT.instantiateStreaming)
+      }
     };
 
     // Confirm at runtime that the served build matches the dump we analysed.

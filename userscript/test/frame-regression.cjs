@@ -142,6 +142,11 @@ check('every report carries arming state',
 check('every report carries elapsedMs',
   !!(b.reports && b.reports.every(r => r && typeof r.elapsedMs === 'number')),
   'a report was missing elapsedMs');
+check('every report carries boundary-tracing fields',
+  !!(b.reports && b.reports.every(r => r
+    && Array.isArray(r.wasmCalls) && Array.isArray(r.rtCalls)
+    && Array.isArray(r.workers) && r.wasmPatch)),
+  'a report was missing wasmCalls/rtCalls/workers/wasmPatch');
 
 // --- Case 3: conflict detection --------------------------------------
 {
