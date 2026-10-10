@@ -77,7 +77,7 @@ function runFrame({ readyWithScriptData }) {
     fn(win, doc, win.location, win.console, win.navigator, win.setTimeout, WebAssembly);
     // Drain the probe's poll chain (bounded).
     let guard = 0;
-    while (pending.length && guard++ < 200) {
+    while (pending.length && guard++ < 5000) {
       const q = pending.shift();
       q();
     }
@@ -85,8 +85,8 @@ function runFrame({ readyWithScriptData }) {
     return { fatal: e.message };
   }
 
-  const report = posted.filter(m => m && m.kind === 'report').map(m => m.report).pop();
-  return { pluginCalls, report };
+  const reports = posted.filter(m => m && m.kind === 'report').map(m => m.report);
+  return { pluginCalls, reports, report: reports[reports.length - 1] };
 }
 
 let failed = 0;
@@ -123,6 +123,20 @@ check('reports failure instead of hanging silent',
 check('failure report carries the arming state',
   !!(b.report && b.report.arm),
   'arm missing from failure report');
+
+// --- Heartbeat: the panel must never be blank ------------------------
+check('posts a report immediately, before anything resolves',
+  !!(b.reports && b.reports.length >= 1),
+  'no immediate report');
+check('keeps heartbeating while waiting',
+  !!(b.reports && b.reports.length > 5),
+  `only ${b.reports ? b.reports.length : 0} reports`);
+check('every report carries arming state',
+  !!(b.reports && b.reports.every(r => r && r.arm)),
+  'a report was missing arm');
+check('every report carries elapsedMs',
+  !!(b.reports && b.reports.every(r => r && typeof r.elapsedMs === 'number')),
+  'a report was missing elapsedMs');
 
 // --- Case 3: conflict detection --------------------------------------
 {

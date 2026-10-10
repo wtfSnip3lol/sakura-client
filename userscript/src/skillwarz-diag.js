@@ -130,22 +130,23 @@
         }
       };
 
-      // Timeout banner: distinguishes "slow game" from "never injected".
+      // Timeout banner: only fires if the frame NEVER posted a single report.
       setTimeout(function () {
         if (payload) return;
         if (!statusEl || !outEl) return;
-        statusEl.textContent = "no report after 45s — not injected into frame?";
+        statusEl.textContent = "no report at all after 60s — frame not injected?";
         statusEl.style.color = "#ffb3c7";
         outEl.textContent =
-          "No report after 45 seconds.\n\n" +
-          "The game frame (games.crazygames.com) never posted anything.\n\n" +
+          "The game frame (games.crazygames.com) never posted a single report.\n\n" +
           "This panel proves the userscript IS installed and running on the portal,\n" +
           "so the remaining suspects are:\n\n" +
           "  1. Tampermonkey is not injecting into the cross-origin iframe.\n" +
           "  2. This script has not been reloaded since install (needs a page reload).\n" +
           "  3. The game frame redirects to a host that does not match @match.\n\n" +
+          "If you DO see a live phase counter, the frame is fine and the probe is\n" +
+          "still waiting on Unity - that is normal on a cold cache.\n\n" +
           "Reload the game page once and watch this panel again.";
-      }, 45000);
+      }, 60000);
 
       var api = {
         setStatus: function (t, kind) {
@@ -157,11 +158,19 @@
           payload = rep;
           if (copyBtn) copyBtn.style.display = "";
           var ok = rep.scriptData;
+          var secs = Math.round((rep.elapsedMs || 0) / 1000);
           if (statusEl) {
+            // Name the current phase instead of a bare "not ready" - the probe
+            // stays quiet while UWMK downloads and parses metadata.
+            var phase = ok ? "OK"
+              : rep.metadataReady ? "parsing wasm"
+              : rep.uwmkStarted ? "downloading metadata"
+              : rep.arm && rep.arm.ok ? "armed, waiting for fetch"
+              : "arming";
             statusEl.textContent = ok
               ? "OK · " + rep.typeCount + " types · " + (rep.targetsFound || []).length + " targets"
-              : "scriptData not ready (uwmk=" + rep.uwmk + ")";
-            statusEl.style.color = ok ? "#7ee0a8" : "#ffb3c7";
+              : phase + " · " + secs + "s";
+            statusEl.style.color = ok ? "#7ee0a8" : "#ffd48a";
           }
           try {
             var brief = JSON.parse(JSON.stringify(rep));
@@ -258,6 +267,7 @@
    * il2CppContext can never be built.
    * ---------------------------------------------------------------- */
   var ARM = { attempted: false, ok: false, error: null };
+  var T0 = (window.__SAKURA_SW__ && window.__SAKURA_SW__.at) || Date.now();
   (function armUwmk() {
     try {
       var RT = window.UnityWebModkit && window.UnityWebModkit.Runtime;
@@ -318,6 +328,7 @@
 
     var report = {
       when: new Date().toISOString(),
+      elapsedMs: Date.now() - T0,
       frame: location.href.slice(0, 120),
       host: HOST,
       scriptRan: !!window.__SAKURA_SW__,
@@ -391,34 +402,40 @@
     up("report", { report: report });
   }
 
+  function safeCollect() {
+    try { return collect(); }
+    catch (err) {
+      // A throwing probe must still report; silence reads as "not injected".
+      return {
+        when: new Date().toISOString(),
+        elapsedMs: Date.now() - T0,
+        frame: location.href.slice(0, 120),
+        host: HOST,
+        scriptRan: !!window.__SAKURA_SW__,
+        uwmk: !!(window.UnityWebModkit && window.UnityWebModkit.Runtime),
+        il2CppContext: false,
+        scriptData: null,
+        arm: ARM,
+        uwmkLog: UWMK_LOG.slice(0, 40),
+        collectError: String((err && err.message) || err)
+      };
+    }
+  }
+
   function run() {
+    // Arming UWMK makes the game block on a metadata download + wasm parse, so
+    // the probe is quiet for a long time on a cold cache. Report constantly
+    // instead: the panel must always show live state, never a scary "not
+    // injected" verdict about a question that simply has not resolved yet.
+    var MAX_TRIES = 300;
     var tries = 0;
+    emit(safeCollect());
     (function poll() {
       var RT = (window.UnityWebModkit && window.UnityWebModkit.Runtime) || null;
       var ok = RT && RT.il2CppContext && RT.il2CppContext.scriptData;
-      if (ok || tries > 90) {
-        // Always emit something. A probe that throws silently is worse than
-        // useless, it reads as "not injected".
-        var rep;
-        try { rep = collect(); }
-        catch (err) {
-          rep = {
-            when: new Date().toISOString(),
-            frame: location.href.slice(0, 120),
-            host: HOST,
-            scriptRan: !!window.__SAKURA_SW__,
-            uwmk: !!RT,
-            il2CppContext: !!(RT && RT.il2CppContext),
-            scriptData: null,
-            arm: ARM,
-            uwmkLog: UWMK_LOG.slice(0, 40),
-            collectError: String((err && err.message) || err)
-          };
-        }
-        emit(rep);
-        return;
-      }
+      if (ok || tries > MAX_TRIES) { emit(safeCollect()); return; }
       tries++;
+      if (tries % 10 === 0) emit(safeCollect());
       setTimeout(poll, 1000);
     })();
   }
