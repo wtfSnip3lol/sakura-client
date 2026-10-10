@@ -8,13 +8,19 @@
  * No-ops on any other host, and no-ops if a previous copy is already running
  * (i.e. the loader and the standalone script are both installed).
  *
- * Field offsets are from the Il2CppDumper dump.cs (KourStrike 4.15):
- *   PlayerController: mouseSensitivity 0x68, groundAccel 0x6C, airAccel 0x70,
- *     airFriction 0x74, groundLimit 0x78, airLimit 0x84, gravity 0x94,
- *     friction 0x98, jumpHeight 0x9C, autoJump 0xA9(u8)
- *   Shooter: playerController 0x74, currentLocalWeapon 0xE0, lastShootTime 0x1B8
- *   Weapon: staticInstabilityAdd 0x30, fireRate 0x88, damage 0x9C(i32),
- *     instabilityMultiplier 0xA4
+ * Class names and offsets verified against Il2CppDumper dump.cs (KourStrike,
+ * dumped 2026-10-10). The game prefixes its components with "O" and keeps the
+ * character/weapon layer in the LegionPlatforms.Overtide namespace:
+ *   OHealth  (global)   maxHealth 0x4C(i32)  currentHealth 0x50(i32)
+ *   OShooter (global)   currentLocalWeapon 0x38 (-> OvertideWeapon), health 0x58
+ *   LegionPlatforms.Overtide.Movement
+ *     acceleration 0x1C, accelerationInAir 0x20, speedWalking 0x28,
+ *     speedAiming 0x2C, speedCrouching 0x30, speedRunning 0x34,
+ *     gravity 0x48, jumpGravity 0x4C, jumpForce 0x50, lastJumpTime 0x9C
+ *   LegionPlatforms.Overtide.OvertideWeapon
+ *     defaultDamage 0x4C(i32), cachedDamage 0x54(i32), cachedAmmo 0x5C(i32),
+ *     cachedFireRate 0x60(f32), cachedAccuracy 0x68(f32), spread 0x88(f32),
+ *     fireRate 0x8C(f32)
  */
 
 (() => {
@@ -36,7 +42,6 @@
     // visuals
     keystrokes: true, ksPos: "bl", ksScale: 1, ksCps: true,
     fps: true, crosshair: true, chSize: 1, chColor: "#ff6b9d",
-    enemyCount: true,
     // misc
     adblock: true,
     // protection
@@ -56,8 +61,7 @@
     uwmk: !!window.UnityWebModkit,
     hooksOk: 0, hooksTotal: 0,
     gameLoaded: false,
-    enemiesVisible: -1,
-    pcs: 0, shooters: 0,
+    movements: 0, shooters: 0,
     safeMode: !!settings.safeMode,
     lastError: ""
   };
@@ -76,13 +80,26 @@
   // ── UWMK hooks (registered synchronously at document-start, before WASM loads) ──
   var VW = null, plugin = null;
   var hookRefs = {};   // name -> hook (for .enabled toggling)
-  var pcs = [];        // captured PlayerController this-ptrs
-  var shooters = [];   // captured Shooter this-ptrs
+  var movs = [];       // captured Movement this-ptrs
+  var shooters = [];   // captured OShooter this-ptrs
   var origCache = new Map(); // ptr -> Map(offset -> original number)
 
   function addPtr(list, v) {
     if (!v || list.includes(v) || list.length > 64) return;
     list.push(v);
+  }
+  // Called from a postfix hook: records `this`, and for the per-frame capture
+  // hook switches itself off so we stop paying a JS call every single frame.
+  function capture(list, self, st, key) {
+    var p = 0;
+    try { p = self && self.val ? self.val() : 0; } catch (_) {}
+    if (!p) return;
+    addPtr(list, p);
+    st[key] = list.length;
+    if (key === "movements" && list.length) {
+      var h = hookRefs.capMove;
+      if (h) { try { h.enabled = false; } catch (_) {} }
+    }
   }
   function orig(ptr, off, type) {
     var m = origCache.get(ptr);
@@ -97,6 +114,15 @@
   }
   function writeNum(ptr, off, type, val) {
     try { new VW(ptr).writeField(off, type, val); } catch (_) {}
+  }
+  function readPtr(ptr, off) {
+    try { var r = new VW(ptr).readField(off, "u32"); return r ? r.val() : 0; } catch (_) { return 0; }
+  }
+  // Writes base*mult, where base is the value seen the first time this
+  // pointer+offset was touched. Nothing is written at all when base is null.
+  function scale(ptr, off, type, mult) {
+    var o = orig(ptr, off, type);
+    if (o != null) writeNum(ptr, off, type, o * mult);
   }
 
   function regPrefix(name, type, method, params, ret, cb, enabled) {
@@ -138,43 +164,37 @@
       VW = window.UnityWebModkit.ValueWrapper;
       plugin = window.UnityWebModkit.Runtime.createPlugin({
         name: "SakuraKour",
-        version: "1.0.0",
+        version: "1.1.0",
         referencedAssemblies: ["Assembly-CSharp.dll"]
       });
 
       // — Combat —
-      regPrefix("godRpc", "Health", "RPCTakeHealth", ["i32", "i32"], undefined, BLOCK, !!settings.god);
-      regPrefix("godInit", "Health", "InitiateTakeHealth", ["i32", "i32"], undefined, BLOCK, !!settings.god);
-      regPrefix("noRecoil", "Recoil", "RecoilFire", ["i32", "f32", "f32", "f32"], undefined, BLOCK, !!settings.noRecoil);
-      regPostfix("infAmmo", "Shooter", "GetCurrentAmmo", ["i32"], "i32", (res) => {
-        if (settings.infAmmoExp && res) { try { res.set(999); } catch (_) {} }
+      // OHealth.InitiateTakeHealth(int) is the single funnel every incoming
+      // damage goes through (the PunRPC RPCTakeHealth feeds into it), so
+      // blocking it is enough for god mode.
+      regPrefix("god", "OHealth", "InitiateTakeHealth", ["i32", "i32"], undefined, BLOCK, !!settings.god);
+      // RecoilMotion.Tick() advances the recoil springs. Skipping it removes
+      // recoil without disturbing the weapon's damage/fire-rate fields.
+      regPrefix("noRecoil", "LegionPlatforms.Overtide.RecoilMotion", "Tick", ["i32"], undefined, BLOCK, !!settings.noRecoil);
+
+      // — Capture the local objects —
+      // OShooter.SetGameRunning(bool) fires once when a match actually starts.
+      regPostfix("capShooter", "OShooter", "SetGameRunning", ["i32", "i32"], undefined, (_res, self) => {
+        capture(shooters, self, status, "shooters");
+      }, true);
+      // Movement.IsGrounded() is polled by the movement loop, so it reliably
+      // hands us the local Movement instance. It's per-frame, so the hook
+      // switches itself off as soon as it has something to hand over.
+      regPostfix("capMove", "LegionPlatforms.Overtide.Movement", "IsGrounded", ["i32"], "i32", (_res, self) => {
+        capture(movs, self, status, "movements");
       }, true);
 
-      // — Capture local objects (these run once per spawn) —
-      regPostfix("capShooter", "Shooter", "Start", ["i32"], undefined, (_res, self) => {
-        try { addPtr(shooters, self.val()); status.shooters = shooters.length; } catch (_) {}
-      }, true);
-      regPostfix("capPC", "PlayerController", "Start", ["i32"], undefined, (_res, self) => {
-        try { addPtr(pcs, self.val()); status.pcs = pcs.length; } catch (_) {}
-      }, true);
-
-      // — Enemy counter: piggyback the game's own aim-assist visibility query —
-      regPostfix("visCount", "PlayerController", "GetVisiblePlayers", ["i32", "f32"], "i32", (res) => {
-        if (!settings.enemyCount) return;
-        try {
-          if (!res) return;
-          var arr = res.val();
-          if (!arr) { status.enemiesVisible = 0; return; }
-          // IL2CPP SzArray (32-bit wasm): klass(0) monitor(4) length(8) data(12)
-          var len = new VW(arr).readField(8, "u32");
-          status.enemiesVisible = len ? len.val() : 0;
-        } catch (_) {}
-      }, true);
-
-      // — Protection: ACTk detector neutering removed — hooking Update() on the
-      // generic base ACTkDetectorBase<T> never resolved ("method not found"),
-      // and UWMK lacks reflection APIs to call StopDetection directly.
-      // If ACTk causes issues, use Safe Mode (no hooks at all).
+      // Everything else (spread, damage, ammo, fire rate, speed, gravity, jump)
+      // is a plain field write in the tick below — no hook, no trampoline.
+      //
+      // No ACTk detector neutering: Update() lives on the generic
+      // ACTkDetectorBase<T> and never resolves, and UWMK has no reflection API
+      // to call StopDetection. Safe Mode is the escape hatch instead.
     }
   } catch (e) {
     console.warn("[sakura-kour] UWMK init failed:", e && e.message);
@@ -185,60 +205,67 @@
     if (h) { try { h.enabled = !!on; } catch (_) {} }
   }
 
-  // Rapid-fire helper: keep lastShootTime in the past so the next shot is always ready.
-  // Shooter.lastShootTime @ 0x1B8 (plain float — direction-safe, unlike fireRate units).
-  setInterval(() => {
-    if (!settings.rapidExp || !VW) return;
-    if (!window.unityInstance) return;
-    try {
-      for (var s = 0; s < shooters.length; s++) writeNum(shooters[s], 0x1B8, "f32", -9999);
-    } catch (_) {}
-  }, 200);
-
-  // Movement + weapon plain-field writer (500ms — also repairs game overwrites).
-  // Skips entirely when everything is default so game memory is never touched.
+  // Field writer (200ms - fast enough to beat the game's own re-derivation).
+  // Scaled fields are written as base*mult, where base is captured the first
+  // time that pointer+offset is seen, so nothing at all is touched while a
+  // slider sits at its default.
   setInterval(() => {
     if (!VW || !window.unityInstance) return;
     var sp = (Number(settings.speedPct) || 100) / 100;
     var jp = (Number(settings.jumpPct) || 100) / 100;
     var gp = (Number(settings.gravityPct) || 100) / 100;
-    var moveOn = sp !== 1 || jp !== 1 || gp !== 1;
-    if (!moveOn && !settings.bhop && !settings.noSpread && !settings.damageExp) return;
+    var dmg = Math.max(1, Number(settings.damageValue) || 150);
+
+    var wantMove = sp !== 1 || jp !== 1 || gp !== 1 || settings.bhop;
+    var wantGun = settings.noSpread || settings.damageExp ||
+                 settings.infAmmoExp || settings.rapidExp;
+    if (!wantMove && !wantGun) return;
+
+    // -- Movement (LegionPlatforms.Overtide.Movement) --
     try {
-      for (var i = 0; i < pcs.length; i++) {
-        var p = pcs[i];
-        if (moveOn) {
-          var gl = orig(p, 0x78, "f32"), al = orig(p, 0x84, "f32");
-          var ga = orig(p, 0x6C, "f32"), aa = orig(p, 0x70, "f32");
-          var jh = orig(p, 0x9C, "f32"), gr = orig(p, 0x94, "f32");
-          if (gl != null) writeNum(p, 0x78, "f32", gl * sp);
-          if (al != null) writeNum(p, 0x84, "f32", al * sp);
-          if (ga != null) writeNum(p, 0x6C, "f32", ga * sp);
-          if (aa != null) writeNum(p, 0x70, "f32", aa * sp);
-          if (jh != null) writeNum(p, 0x9C, "f32", jh * jp);
-          if (gr != null) writeNum(p, 0x94, "f32", gr * gp);
+      for (var i = 0; i < movs.length; i++) {
+        var m = movs[i];
+        if (!m) continue;
+        if (sp !== 1) {
+          scale(m, 0x28, "f32", sp);   // speedWalking
+          scale(m, 0x2C, "f32", sp);   // speedAiming
+          scale(m, 0x30, "f32", sp);   // speedCrouching
+          scale(m, 0x34, "f32", sp);   // speedRunning
+          scale(m, 0x1C, "f32", sp);   // acceleration
+          scale(m, 0x20, "f32", sp);   // accelerationInAir
         }
-        writeNum(p, 0xA9, "u8", settings.bhop ? 1 : 0);
+        if (jp !== 1) scale(m, 0x50, "f32", jp);   // jumpForce
+        if (gp !== 1) {
+          scale(m, 0x48, "f32", gp);               // gravity
+          scale(m, 0x4C, "f32", gp);               // jumpGravity
+        }
+        // Bunny-hop: push lastJumpTime into the past so the jump cooldown is
+        // always expired. Hold space and you keep bouncing.
+        if (settings.bhop) writeNum(m, 0x9C, "f32", -999);
       }
-      // Weapon tunables via each shooter's currentLocalWeapon (Shooter + 0xE0).
-      for (var s2 = 0; s2 < shooters.length; s2++) {
-        var w = null;
-        try {
-          var r = new VW(shooters[s2]).readField(0xE0, "u32");
-          w = r ? r.val() : 0;
-        } catch (_) {}
+    } catch (_) {}
+
+    // -- Weapon (OShooter.currentLocalWeapon @0x38 -> OvertideWeapon) --
+    try {
+      for (var s = 0; s < shooters.length; s++) {
+        var w = readPtr(shooters[s], 0x38);
         if (!w) continue;
-        if (settings.noSpread) {
-          var im = orig(w, 0xA4, "f32"), sa = orig(w, 0x30, "f32");
-          if (im != null) writeNum(w, 0xA4, "f32", 0);
-          if (sa != null) writeNum(w, 0x30, "f32", 0);
-        }
         if (settings.damageExp) {
-          writeNum(w, 0x9C, "i32", Math.max(1, Number(settings.damageValue) || 150));
+          writeNum(w, 0x4C, "i32", dmg);   // defaultDamage
+          writeNum(w, 0x54, "i32", dmg);   // cachedDamage
+        }
+        if (settings.noSpread) {
+          writeNum(w, 0x88, "f32", 0);     // spread
+          writeNum(w, 0x68, "f32", 1);     // cachedAccuracy
+        }
+        if (settings.infAmmoExp) writeNum(w, 0x5C, "i32", 999);   // cachedAmmo
+        if (settings.rapidExp) {
+          scale(w, 0x8C, "f32", 0.1);     // fireRate
+          writeNum(w, 0x60, "f32", 0.1);  // cachedFireRate
         }
       }
     } catch (_) {}
-  }, 500);
+  }, 200);
 
   // Game-load + applied-hook status ticker.
   setInterval(() => {
@@ -406,7 +433,6 @@
       };
       line("SAKURA KOUR v1.1", "#ff6b9d");
       if (settings.fps) line(fpsVal + " FPS");
-      if (settings.enemyCount) line("enemies: " + (status.enemiesVisible >= 0 ? status.enemiesVisible : "—"));
       if (!status.gameLoaded) line("waiting for game…", "rgba(255,180,190,0.6)");
       ctx.restore();
     }
@@ -568,19 +594,16 @@
       var hookTxt = status.safeMode
         ? "SAFE MODE — overlay only, no hooks (reload to exit)"
         : status.uwmk
-          ? ("UWMK bound — hooks applied " + status.hooksOk + "/" + status.hooksTotal +
+          ? ("UWMK bound " + status.hooksOk + "/" + status.hooksTotal + " hooks" +
              " | game " + (status.gameLoaded ? "loaded" : "loading") +
-             " | players " + status.pcs)
+             " | shooter " + (status.shooters ? "held" : "none") +
+             " | movement " + (status.movements ? "held" : "none"))
           : "UWMK MISSING — overlay only (reinstall the userscript)";
       if (status.lastError) hookTxt += " | ERR: " + status.lastError;
       return moduleCard("Status", hookTxt, status.uwmk, null, [
-        row("240 FPS unlock", "tries QC command + Application fps", actionBtn("Apply", () => {
+        row("240 FPS unlock", "calls UnityEngine.Application.set_targetFrameRate", actionBtn("Apply", () => {
           try {
-            if (plugin) {
-              try { plugin.call("PlayerInputHandler", "SetTargetFrameRate", [240]); } catch (_) {}
-              try { plugin.call("UnityEngine.Application", "set_targetFrameRate", [240]); } catch (_) {}
-            }
-            try { window.unityInstanceWrapper && window.unityInstanceWrapper.sendMessage("MainManager", "OnDaReveresedFinishedJS", "x"); } catch (_) {}
+            if (plugin) plugin.call("UnityEngine.Application", "set_targetFrameRate", [240]);
           } catch (_) {}
         }))
       ]);
@@ -590,35 +613,35 @@
       if (id === "combat") {
         return [
           statusCard(),
-          moduleCard("God Mode", "Blocks incoming damage RPCs (Health.RPCTakeHealth + InitiateTakeHealth).", settings.god,
-            (v) => { settings.god = v; save(); setHook("godRpc", v); setHook("godInit", v); }, []),
-          moduleCard("No Recoil", "Blocks Recoil.RecoilFire.", settings.noRecoil,
+          moduleCard("God Mode", "Blocks OHealth.InitiateTakeHealth, the funnel every damage goes through.", settings.god,
+            (v) => { settings.god = v; save(); setHook("god", v); }, []),
+          moduleCard("No Recoil", "Skips RecoilMotion.Tick so the recoil springs never advance.", settings.noRecoil,
             (v) => { settings.noRecoil = v; save(); setHook("noRecoil", v); }, []),
-          moduleCard("No Spread", "Zeroes instability on your current weapon every 500ms.", settings.noSpread,
+          moduleCard("No Spread", "Zeroes spread and maxes accuracy on your weapon every 200ms.", settings.noSpread,
             (v) => { settings.noSpread = v; save(); }, []),
-          moduleCard("Rapid Fire [EXP]", "Keeps Shooter.lastShootTime in the past. Server may still gate shots.", settings.rapidExp,
+          moduleCard("Rapid Fire [EXP]", "Scales OvertideWeapon.fireRate to 10%. Server may still gate shots.", settings.rapidExp,
             (v) => { settings.rapidExp = v; save(); }, []),
-          moduleCard("Damage [EXP]", "Overwrites Weapon.damage. Bannable if server validates.", settings.damageExp,
+          moduleCard("Damage [EXP]", "Overwrites OvertideWeapon damage. Bannable if the server validates.", settings.damageExp,
             (v) => { settings.damageExp = v; save(); }, [
               row("Damage value", null, rangeField(settings.damageValue, 10, 500, 5, (v2) => { settings.damageValue = v2; save(); }))
             ]),
-          moduleCard("Infinite Ammo [EXP]", "GetCurrentAmmo always returns 999. Only works if the game gates on it.", settings.infAmmoExp,
+          moduleCard("Infinite Ammo [EXP]", "Refills the weapon's cached ammo to 999 every 200ms.", settings.infAmmoExp,
             (v) => { settings.infAmmoExp = v; save(); },
-            [note("If reloads still drain, the decrement bypasses this getter.")])
+            [note("If reloads still drain, the decrement happens elsewhere.")])
         ];
       }
       if (id === "move") {
         return [
-          moduleCard("Speed", "Scales ground/air limits + acceleration.", settings.speedPct !== 100,
+          moduleCard("Speed", "Scales all four Movement speed limits plus acceleration.", settings.speedPct !== 100,
             null, [
               row("Speed %", "100 = default", rangeField(settings.speedPct, 50, 300, 5, (v) => { settings.speedPct = v; save(); }))
             ]),
-          moduleCard("Jump / Gravity", "Scales jump height + gravity.", settings.jumpPct !== 100 || settings.gravityPct !== 100,
+          moduleCard("Jump / Gravity", "Scales Movement.jumpForce and both gravity values.", settings.jumpPct !== 100 || settings.gravityPct !== 100,
             null, [
               row("Jump %", null, rangeField(settings.jumpPct, 50, 300, 5, (v) => { settings.jumpPct = v; save(); })),
               row("Gravity %", "lower = floaty", rangeField(settings.gravityPct, 10, 200, 5, (v) => { settings.gravityPct = v; save(); }))
             ]),
-          moduleCard("Bunny-hop", "Sets PlayerController.autoJump.", settings.bhop,
+          moduleCard("Bunny-hop", "Zeroes Movement.lastJumpTime so the jump cooldown never applies.", settings.bhop,
             (v) => { settings.bhop = v; save(); }, [])
         ];
       }
@@ -635,10 +658,10 @@
               row("Size", null, rangeField(settings.chSize, 0.5, 2.5, 0.1, (v) => { settings.chSize = v; save(); })),
               row("Color", null, colorField(settings.chColor, (v) => { settings.chColor = v; save(); }))
             ]),
-          moduleCard("Counters", "FPS + visible-enemy counter.", settings.fps || settings.enemyCount,
+          moduleCard("Counters", "FPS overlay.", settings.fps,
             null, [
               row("FPS counter", null, toggleSwitch(settings.fps, (v) => { settings.fps = v; save(); })),
-              row("Enemy counter", "from aim-assist query", toggleSwitch(settings.enemyCount, (v) => { settings.enemyCount = v; save(); }))
+              note("No enemy counter: this build has no GetVisiblePlayers to piggyback on.")
             ])
         ];
       }
@@ -750,13 +773,14 @@
           var d = cards[ci].querySelector(".sk-mdesc");
           if (d && (d.textContent.indexOf("UWMK") === 0 || d.textContent.indexOf("SAFE") === 0)) {
             d.textContent = status.safeMode
-              ? "SAFE MODE — overlay only, no hooks (reload to exit)"
+              ? "SAFE MODE - overlay only, no hooks (reload to exit)"
               : status.uwmk
-                ? ("UWMK bound — hooks applied " + status.hooksOk + "/" + status.hooksTotal +
+                ? ("UWMK bound " + status.hooksOk + "/" + status.hooksTotal + " hooks" +
                    " | game " + (status.gameLoaded ? "loaded" : "loading") +
-                   " | players " + status.pcs +
+                   " | shooter " + (status.shooters ? "held" : "none") +
+                   " | movement " + (status.movements ? "held" : "none") +
                    (status.lastError ? " | ERR: " + status.lastError : ""))
-                : "UWMK MISSING — overlay only (reinstall the userscript)";
+                : "UWMK MISSING - overlay only (reinstall the userscript)";
           }
         }
       }, 1000);

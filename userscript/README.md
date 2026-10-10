@@ -59,6 +59,47 @@ npm run build   # obfuscated payloads -> dist/
 npm run dev     # plain payloads -> dist/ (debugging)
 ```
 
+## KourStrike internals
+
+Class names and field offsets come from an `Il2CppDumper` dump of the current
+build (`global-metadata.dat`, 2026-10-10). The game `O`-prefixes its components
+and keeps the character/weapon layer in `LegionPlatforms.Overtide` — so there is
+no `PlayerController`, `Shooter`, `Health`, `Weapon` or `Recoil` class, and any
+hook written against those names is silently skipped by UWMK with
+`Hook '…' skipped - method not found in scriptData`.
+
+Only four hooks are registered:
+
+| Hook | Type | Method | Why |
+| --- | --- | --- | --- |
+| `god` | prefix (block) | `OHealth.InitiateTakeHealth(int)` | the funnel all incoming damage passes through |
+| `noRecoil` | prefix (block) | `…Overtide.RecoilMotion.Tick()` | stops the recoil springs advancing |
+| `capShooter` | postfix | `OShooter.SetGameRunning(bool)` | captures the local `OShooter` once a match starts |
+| `capMove` | postfix | `…Overtide.Movement.IsGrounded()` | captures the local `Movement`, then disables itself |
+
+Everything else (spread, damage, ammo, fire rate, speed, jump, gravity, bhop) is
+a plain field write on a 200 ms tick, so there is no trampoline and no per-frame
+JS callback. Scaled fields are written as `base x multiplier`, where `base` is
+the value captured the first time that pointer+offset is seen — nothing is
+written at all while a slider sits at its default.
+
+Verified offsets:
+
+```text
+OHealth   maxHealth 0x4C(i32)   currentHealth 0x50(i32)
+OShooter  currentLocalWeapon 0x38 (-> OvertideWeapon)   health 0x58
+Movement  acceleration 0x1C  accelerationInAir 0x20  speedWalking 0x28
+          speedAiming 0x2C    speedCrouching 0x30   speedRunning 0x34
+          gravity 0x48        jumpGravity 0x4C       jumpForce 0x50
+          lastJumpTime 0x9C
+OvertideWeapon  defaultDamage 0x4C(i32)  cachedDamage 0x54(i32)
+                cachedAmmo 0x5C(i32)     cachedFireRate 0x60(f32)
+                cachedAccuracy 0x68(f32) spread 0x88(f32)  fireRate 0x8C(f32)
+```
+
+**Safe Mode** (Safety tab) skips UWMK entirely and runs the overlay only — use
+it if a build change ever stops the hooks from resolving.
+
 ## Notes
 
 - All three payloads are obfuscated ([`javascript-obfuscator`](https://www.npmjs.com/package/javascript-obfuscator)). The loader and the vendored UWMK bundle stay readable — UWMK is third-party webpack output, and obfuscating it is slow and risks breaking it.
