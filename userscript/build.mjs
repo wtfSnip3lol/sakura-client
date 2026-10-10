@@ -134,34 +134,23 @@ const HEADER_KOUR = `// ==UserScript==
 `;
 write("dist/sakura.kour.user.js", HEADER_KOUR + "\n" + vendor + "\n;\n" + kourCode);
 
-// 5. SkillWarz standalone userscript. Lives in a cross-origin CrazyGames iframe,
-// so it must NOT use @noframes, and it inlines UWMK because it has to patch
-// fetch / WebAssembly.instantiate before Unity's boot scripts run. Deliberately
-// NOT added to the universal loader: the loader is @noframes and would never
-// execute inside the game frame.
+// 5. SkillWarz client. Ships as ONE script, matched on the portal and on the
+// game frame: the frame arms UWMK, hooks the game and postMessage()s its state
+// up, while the portal paints the panel. A console snippet on the portal cannot
+// read the frame — same-origin policy — so the script has to live in both.
+//
+// It deliberately does NOT supersede itself into the universal loader: that is
+// @noframes and would never execute inside the game frame at all.
+//
+// The old v1.9.8 diag build is folded into this file (src/skillwarz.js) rather
+// than shipped beside it. Two installed copies both patch
+// WebAssembly.instantiate and both clear UnityCache; that conflict produced the
+// old CONFLICT warning and is not worth keeping alive.
 const HEADER_SW = `// ==UserScript==
-// @name         Sakura SkillWarz (probe)
+// @name         Sakura SkillWarz
 // @namespace    local.sakura.skillwarz
 // @version      ${pkg.version}
-// @description  Sakura overlay + read-only runtime probe for SkillWarz (Unity WebGL on CrazyGames). Writes nothing to game memory.
-// @match        https://games.crazygames.com/*
-// @run-at       document-start
-// @grant        none
-// ==/UserScript==
-`;
-const swSrc = fs.readFileSync(path.join(here, "src", "skillwarz.js"), "utf8");
-write("dist/sakura.skillwarz.user.js", HEADER_SW + "\n" + vendor + "\n;\n" + await obfuscate(swSrc));
-
-// 7. SkillWarz self-diagnosing probe. Matched on BOTH the portal and the game
-// frame: the frame probes itself and postMessage()s up, the portal paints the
-// result. That is the only way to report cross-frame state — a console snippet
-// in the portal cannot reach the frame. UWMK is gated to games.crazygames.com so
-// it never patches the portal's own fetch/WebAssembly.
-const HEADER_SWD = `// ==UserScript==
-// @name         Sakura SkillWarz (auto-diagnose)
-// @namespace    local.sakura.skillwarz.diag
-// @version      ${pkg.version}
-// @description  One-step SkillWarz diagnosis - runs in the game frame, reports to the CrazyGames page automatically. Read-only; writes nothing to game memory.
+// @description  SkillWarz client - ACTk-aware value reader and inspector. Runs in the game frame, reports to the page automatically.
 // @match        https://www.crazygames.com/*
 // @match        https://games.crazygames.com/*
 // @match        https://*.game-files.crazygames.com/*
@@ -170,7 +159,7 @@ const HEADER_SWD = `// ==UserScript==
 // @grant        none
 // ==/UserScript==
 `;
-const SWD_VENDOR_BLOCK = `
+const SW_VENDOR_BLOCK = `
 // ── UWMK, game frame only ─────────────────────────────────────────────
 // Inlined because the frame must patch fetch / WebAssembly.instantiate
 // before Unity's boot scripts compile the WASM. Scoped to the game host so
@@ -187,8 +176,8 @@ ${vendor}
 ;
 }
 `;
-const swdSrc = fs.readFileSync(path.join(here, "src", "skillwarz-diag.js"), "utf8");
-write("dist/sakura.skillwarz.diag.user.js", HEADER_SWD + SWD_VENDOR_BLOCK + "\n" + await obfuscate(swdSrc));
+const swSrc = fs.readFileSync(path.join(here, "src", "skillwarz.js"), "utf8");
+write("dist/sakura.skillwarz.user.js", HEADER_SW + SW_VENDOR_BLOCK + "\n" + await obfuscate(swSrc));
 
 // 6. Mirror the Cookie Clicker payload into the launcher's resources/ folder so
 // `npm run build` here keeps the Electron app in sync. The launcher resolves
