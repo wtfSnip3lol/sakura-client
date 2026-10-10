@@ -47,7 +47,14 @@
     // protection
     actkKill: true,
     // boot: overlay only, no UWMK/WASM hooks at all (applies on reload)
-    safeMode: false
+    safeMode: false,
+    // Which IL2CPP hooks get installed at all. ALL OFF by default: a hook
+    // replaces a WASM table entry with a JS trampoline, and a signature that
+    // does not match the real method throws "function signature mismatch" the
+    // moment that method is called. Enabling one of these installs a trampoline
+    // for the whole page load, so changes apply on reload, not immediately.
+    // Enable them one at a time to find out which one your build chokes on.
+    hookGod: false, hookGodDie: false, hookNoRecoil: false, hookCapture: false
   };
   var settings = { ...DEFAULTS };
   try {
@@ -172,24 +179,24 @@
       // OHealth.InitiateTakeHealth(int) is the single funnel every incoming
       // damage goes through (the PunRPC RPCTakeHealth feeds into it), so
       // blocking it is enough for god mode.
-      regPrefix("god", "OHealth", "InitiateTakeHealth", ["i32", "i32"], undefined, BLOCK, !!settings.god);
+      if (settings.hookGod) regPrefix("god", "OHealth", "InitiateTakeHealth", ["i32", "i32"], undefined, BLOCK, !!settings.god);
       // Backstop for the same feature. LocalDie is the local player's actual
       // death call, so blocking it means nothing can kill you even if some
       // damage path slips past InitiateTakeHealth.
-      regPrefix("godDie", "OHealth", "LocalDie", ["i32", "i32", "i32", "i32", "i32"], undefined, BLOCK, !!settings.god);
+      if (settings.hookGodDie) regPrefix("godDie", "OHealth", "LocalDie", ["i32", "i32", "i32", "i32", "i32"], undefined, BLOCK, !!settings.god);
       // RecoilMotion.Tick() advances the recoil springs. Skipping it removes
       // recoil without disturbing the weapon's damage/fire-rate fields.
-      regPrefix("noRecoil", "LegionPlatforms.Overtide.RecoilMotion", "Tick", ["i32"], undefined, BLOCK, !!settings.noRecoil);
+      if (settings.hookNoRecoil) regPrefix("noRecoil", "LegionPlatforms.Overtide.RecoilMotion", "Tick", ["i32"], undefined, BLOCK, !!settings.noRecoil);
 
       // — Capture the local objects —
       // OShooter.SetGameRunning(bool) fires once when a match actually starts.
-      regPostfix("capShooter", "OShooter", "SetGameRunning", ["i32", "i32"], undefined, (_res, self) => {
+      if (settings.hookCapture) regPostfix("capShooter", "OShooter", "SetGameRunning", ["i32", "i32"], undefined, (_res, self) => {
         capture(shooters, self, status, "shooters");
       }, true);
       // Movement.IsGrounded() is polled by the movement loop, so it reliably
       // hands us the local Movement instance. It's per-frame, so the hook
       // switches itself off as soon as it has something to hand over.
-      regPostfix("capMove", "LegionPlatforms.Overtide.Movement", "IsGrounded", ["i32"], "i32", (_res, self) => {
+      if (settings.hookCapture) regPostfix("capMove", "LegionPlatforms.Overtide.Movement", "IsGrounded", ["i32"], "i32", (_res, self) => {
         capture(movs, self, status, "movements");
       }, true);
 
@@ -598,7 +605,7 @@
       var hookTxt = status.safeMode
         ? "SAFE MODE — overlay only, no hooks (reload to exit)"
         : status.uwmk
-          ? ("UWMK bound " + status.hooksOk + "/" + status.hooksTotal + " hooks" +
+          ? ("UWMK bound " + (status.hooksTotal ? status.hooksOk + "/" + status.hooksTotal + " hooks" : "0 hooks armed (all off)") +
              " | game " + (status.gameLoaded ? "loaded" : "loading") +
              " | shooter " + (status.shooters ? "held" : "none") +
              " | movement " + (status.movements ? "held" : "none"))
@@ -684,7 +691,19 @@
             location.reload();
           },
           [note("Applies on reload. If matches load in safe mode, the freeze is hook-related — tell me the hooks-applied count.")]),
-        moduleCard("ACTk Killer", "Disables CodeStage detectors at startup via StopDetection(). Keep ON.", settings.actkKill,
+        moduleCard("Hook risk switches", "Each one installs a WASM trampoline for the whole page load. ALL OFF by default - a signature that does not match the real method throws 'function signature mismatch' the moment it is called. Turn them on one at a time, reload, and see which one your build chokes on.", settings.hookGod || settings.hookGodDie || settings.hookNoRecoil || settings.hookCapture,
+          (v) => {
+            settings.hookGod = v; settings.hookGodDie = v;
+            settings.hookNoRecoil = v; settings.hookCapture = v;
+            save(); location.reload();
+          },
+          [
+            note("Applies on reload."),
+            row("god (OHealth.InitiateTakeHealth)", null, toggleSwitch(settings.hookGod, (v) => { settings.hookGod = v; save(); })),
+            row("godDie (OHealth.LocalDie)", null, toggleSwitch(settings.hookGodDie, (v) => { settings.hookGodDie = v; save(); })),
+            row("noRecoil (RecoilMotion.Tick)", null, toggleSwitch(settings.hookNoRecoil, (v) => { settings.hookNoRecoil = v; save(); })),
+            row("capture (SetGameRunning + IsGrounded)", "no cheats work without this", toggleSwitch(settings.hookCapture, (v) => { settings.hookCapture = v; save(); }))
+          ]),        moduleCard("ACTk Killer", "Disables CodeStage detectors at startup via StopDetection(). Keep ON.", settings.actkKill,
           (v) => {
             settings.actkKill = v; save();
           },
@@ -779,7 +798,7 @@
             d.textContent = status.safeMode
               ? "SAFE MODE - overlay only, no hooks (reload to exit)"
               : status.uwmk
-                ? ("UWMK bound " + status.hooksOk + "/" + status.hooksTotal + " hooks" +
+                ? ("UWMK bound " + (status.hooksTotal ? status.hooksOk + "/" + status.hooksTotal + " hooks" : "0 hooks armed (all off)") +
                    " | game " + (status.gameLoaded ? "loaded" : "loading") +
                    " | shooter " + (status.shooters ? "held" : "none") +
                    " | movement " + (status.movements ? "held" : "none") +

@@ -69,7 +69,17 @@ no `PlayerController`, `Shooter`, `Health`, `Weapon` or `Recoil` class, and any
 hook written against those names is silently skipped by UWMK with
 `Hook '…' skipped - method not found in scriptData`.
 
-Only five hooks are registered:
+Only five hooks exist, and **all five are opt-in and default to OFF** — see
+*Hook risk switches* in the Safety tab. A hook replaces a WASM table entry with a
+JS trampoline, and if the declared signature doesn't match the real method the
+page throws `RuntimeError: function signature mismatch` the moment that method
+is first called. Shipping them on by default meant a single bad signature bricks
+the game on match entry, so a fresh install registers zero trampolines and the
+game behaves as vanilla.
+
+To use a cheat: flip its switch, **reload**, then enable the feature. Toggle the
+four switches individually — whichever one makes `function signature mismatch`
+reappear is the one your build doesn't like.
 
 | Hook | Type | Method | Why |
 | --- | --- | --- | --- |
