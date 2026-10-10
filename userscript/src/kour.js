@@ -25,7 +25,7 @@
 
 (() => {
   "use strict";
-  if (!/(^|\.)kourstrike\.io$/.test(location.hostname || "")) return;
+  if (!/(^|\.)(kourstrike\.io|overtide\.io)$/.test(location.hostname || "")) return;
   if (window.__SAKURA_KOUR__) return;
   window.__SAKURA_KOUR__ = true;
 

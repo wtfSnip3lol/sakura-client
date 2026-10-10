@@ -2,8 +2,8 @@
  *
  * Runs at document-start and splits by site:
  *
- *   kourstrike.io
- *     UWMK + the KourStrike payload are inlined into THIS file above it, and
+ *   kourstrike.io / overtide.io  (same game build, identical Assembly-CSharp)
+ *     UWMK + the Overtide payload are inlined into THIS file above it, and
  *     guarded to that hostname. They have to be inlined: UWMK patches fetch /
  *     WebAssembly.instantiate and must do it before Unity's boot scripts run,
  *     and a network fetch at document-start always loses that race.
@@ -25,7 +25,7 @@
   "use strict";
 
   var HOST = location.hostname || "";
-  if (/(^|\.)kourstrike\.io$/.test(HOST)) return; // handled by the inlined block above
+  if (/(^|\.)(kourstrike\.io|overtide\.io)$/.test(HOST)) return; // handled by the inlined block above
 
   var IS_CLUTCHER = /(^|\.)clutcher\.io$/.test(HOST);
   var IS_ASTRA = /(^|\.)astrastrike\.fun$/.test(HOST);

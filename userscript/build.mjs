@@ -41,6 +41,8 @@ const HEADER = `// ==UserScript==
 // @match        https://*.astrastrike.fun/*
 // @match        https://kourstrike.io/*
 // @match        https://www.kourstrike.io/*
+// @match        https://overtide.io/*
+// @match        https://www.overtide.io/*
 // @run-at       document-start
 // @grant        none
 // @noframes
@@ -95,7 +97,7 @@ const KOUR_BLOCK = `
 // Must execute at document-start, before Unity's boot scripts compile the
 // WASM. UWMK is left un-obfuscated (third-party webpack bundle — obfuscating
 // it is slow and risks breaking it); our payload is obfuscated above.
-if (/(^|\\.)kourstrike\\.io$/.test(location.hostname || "")) {
+if (/(^|\\.)(kourstrike\\.io|overtide\\.io)$/.test(location.hostname || "")) {
 ${vendor}
 ;
 ${kourCode}
@@ -116,12 +118,14 @@ for (const [src, rel] of [["src/clutcher.js", "dist/sakura.clutcher.js"], ["src/
 // 4. KourStrike standalone userscript — same payload, for people who only play
 // kourstrike.io and don't want the full loader installed.
 const HEADER_KOUR = `// ==UserScript==
-// @name         Sakura Kour (kourstrike.io)
+// @name         Sakura Overtide (overtide.io / kourstrike.io)
 // @namespace    local.sakura.kour
 // @version      ${pkg.version}
 // @description  Sakura menu for KourStrike.io — combat/movement/visuals over UWMK hooks + overlay
 // @match        https://kourstrike.io/*
 // @match        https://www.kourstrike.io/*
+// @match        https://overtide.io/*
+// @match        https://www.overtide.io/*
 // @run-at       document-start
 // @grant        none
 // @noframes

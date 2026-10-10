@@ -4,9 +4,9 @@ One installable userscript that detects the site and runs the matching payload:
 
 - **clutcher.io** → `sakura.clutcher.js` (keystrokes + ambience / world FX + Lunar menu with HUD, World and Beta tabs — zero dev features; Beta is always on, Lunar is the default look)
 - **astrastrike.fun** → `sakura.astra.js` (clean mode: keyboard-only QWER/ASDFC overlay + same minimal menu, HUD tab only, game untouched)
-- **kourstrike.io** → inlined into the loader (UWMK v1.1.0 + obfuscated payload — full Combat/Movement/Visual/Misc/Safety menu over IL2CPP hooks + overlay)
+- **overtide.io** / **kourstrike.io** → inlined into the loader (UWMK v1.1.0 + obfuscated payload — full Combat/Movement/Visual/Misc/Safety menu over IL2CPP hooks + overlay). These two domains ship the **identical** `Assembly-CSharp` build (verified: `global-metadata.dat` differs only in branding strings, and both produce a byte-identical `dump.cs`), so one payload covers both.
 
-The first two are fetched from GitHub at DOM-ready. KourStrike is **inlined**, because UWMK has to
+The first two are fetched from GitHub at DOM-ready. Overtide/KourStrike is **inlined**, because UWMK has to
 patch `fetch` / `WebAssembly.instantiate` before Unity's boot scripts compile the WASM — a network
 fetch at document-start always loses that race.
 
@@ -16,7 +16,7 @@ fetch at document-start always loses that race.
 2. Open `dist/sakura.loader.user.js` (raw on GitHub) → Tampermonkey prompts to install.
 3. Press **Insert** or click the ❀ button for the menu.
 
-KourStrike-only players can install `dist/sakura.kour.user.js` instead — same payload, without the
+KourStrike/overtide-only players can install `dist/sakura.kour.user.js` instead — same payload, without the
 other two sites. Installing both is safe; the payload self-guards against running twice.
 
 ## Setup (you — one time)
@@ -61,8 +61,9 @@ npm run dev     # plain payloads -> dist/ (debugging)
 
 ## KourStrike internals
 
-Class names and field offsets come from an `Il2CppDumper` dump of the current
-build (`global-metadata.dat`, 2026-10-10). The game `O`-prefixes its components
+Class names and field offsets come from an `Il2CppDumper` dump of the
+current build (pulled straight from the live `global-metadata.dat` inside the
+game's `.data` archive, 2026-10-10). The game `O`-prefixes its components
 and keeps the character/weapon layer in `LegionPlatforms.Overtide` — so there is
 no `PlayerController`, `Shooter`, `Health`, `Weapon` or `Recoil` class, and any
 hook written against those names is silently skipped by UWMK with
