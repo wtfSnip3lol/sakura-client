@@ -102,12 +102,19 @@ function makeEl() {
 /* ------------------------------------------------------------------ *
  * Harness
  * ------------------------------------------------------------------ */
-function runFrame({ hostname, hooksApply = true, fireUpdate = true, exposeHeap = true }) {
+function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'resolveGame' }) {
   const posted = [], pluginCalls = [], hookCalls = [], pending = [], listeners = {};
   const fireTypes = fireUpdate ? ['FPScontroller', 'HealthScript', 'WeaponManager', 'GG_GameManager'] : [];
 
+  // The real game object. Only UWMK holds a reference to it - which is the
+  // whole point of heapVia='resolveGame'.
+  const gameObj = { Module: { HEAPU8: U8 } };
+
   const Runtime = {
     plugins: [], startedInitializing: false, internalWasmTypes: [], il2CppContext: undefined,
+    _game: null,
+    // Mirrors UWMK: memoised on first success, and only hook() populates it.
+    resolveGame() { return this._game; },
     createPlugin(opts) {
       pluginCalls.push(opts);
       this.startedInitializing = true;
@@ -117,6 +124,10 @@ function runFrame({ hostname, hooksApply = true, fireUpdate = true, exposeHeap =
           const h = { ...target, callback: cb, applied: hooksApply, enabled: true };
           this.hooks.push(h);
           hookCalls.push(target);
+          // A real hook cannot be applied without the game: it needs the
+          // function table from game.Module.asm. Populate the RUNTIME's cache,
+          // not the plugin's - `this` here is the plugin object.
+          if (hooksApply && heapVia !== 'none') Runtime._game = gameObj;
           return h;
         }
       });
@@ -142,8 +153,12 @@ function runFrame({ hostname, hooksApply = true, fireUpdate = true, exposeHeap =
     parent: { postMessage(m) { posted.push(m); } },
     top: { postMessage(m) { posted.push(m); } }
   };
-  // The heap is what Unity exposes once the WASM module is up.
-  if (exposeHeap) win.unityInstance = { Module: { HEAPU8: U8 } };
+  // heapVia models where the game object is reachable:
+  //   'resolveGame' - ONLY via Runtime._game (what the field report showed:
+  //                   every window global "undefined" while hooks applied)
+  //   'window'      - exposed as window.unityInstance (the conventional case)
+  //   'none'        - genuinely unreachable
+  if (heapVia === 'window') win.unityInstance = gameObj;
 
   const body = src.replace(/^\(function\s*\(\)\s*\{/, '(function(){').replace(/\}\)\(\);\s*$/, '})();');
   const fn = new Function('window', 'document', 'location', 'console', 'navigator',
@@ -201,9 +216,14 @@ function check(name, cond, detail) {
     !!(r.report && r.report.instances.FPScontroller === '0x' + OBJ.FPScontroller.toString(16)),
     JSON.stringify(r.report && r.report.instances));
 
-  check('heap is detected as reachable',
-    !!(r.report && r.report.globals && r.report.globals.heapU8 === true),
+  check('heap is detected as reachable', !!(r.report && r.report.globals && r.report.globals.heapU8 === true),
     JSON.stringify(r.report && r.report.globals));
+  check('game object found via Runtime.resolveGame() with NO window global',
+    !!(r.report && r.report.globals.gameSource === 'Runtime.resolveGame()'),
+    JSON.stringify(r.report && r.report.globals));
+  check('every window global really is undefined in this scenario',
+    ['unityInstance', 'unityGame', 'game'].every(k => r.report.globals[k] === 'undefined'),
+    JSON.stringify(r.report.globals));
   check('report names the resolved class of each object',
     !!(r.report && r.report.classNames && r.report.classNames.FPScontroller),
     JSON.stringify(r.report && r.report.classNames));
@@ -244,12 +264,24 @@ function check(name, cond, detail) {
 }
 
 /* ================================================================== *
- * 2. THE v2.0.0 BUG. Capture succeeded but every field read failed, and a
- * blanket catch turned that into an empty {} that read like "no fields".
- * It must now name the blocker instead.
+ * 2. THE v2.0.1 BUG. The field report showed unityInstance / unityGame /
+ * game ALL "undefined" while 4/4 hooks applied. Reading the heap only via
+ * those window names therefore decoded nothing. This scenario is now the
+ * default in every case above, so a regression to window-only probing fails
+ * the whole suite rather than one assertion.
  * ================================================================== */
 {
-  const r = runFrame({ exposeHeap: false });
+  const w = runFrame({ heapVia: 'window' });
+  check('conventional window.unityInstance still works (fallback intact)',
+    w.report.surveyRows > 0 && w.report.globals.heapU8 === true,
+    JSON.stringify(w.report.globals));
+}
+
+/* ================================================================== *
+ * 3. Genuinely unreachable heap must be reported, never swallowed.
+ * ================================================================== */
+{
+  const r = runFrame({ heapVia: 'none' });
   check('blocked heap: still captures objects', Object.keys(r.report.instances || {}).length === 4,
     JSON.stringify(r.report.instances));
   check('blocked heap: survey is honestly empty',

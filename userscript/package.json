@@ -1,6 +1,6 @@
 {
   "name": "sakura-client-userscript",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "private": true,
   "description": "Sakura Client - universal loader userscript + 3 site payloads (Clutcher.io full, AstraStrike clean, KourStrike UWMK menu). All payloads built with javascript-obfuscator.",
   "type": "module",

@@ -350,7 +350,7 @@
       var RT = window.UnityWebModkit && window.UnityWebModkit.Runtime;
       if (!RT || typeof RT.createPlugin !== "function") { ARM.error = "Runtime.createPlugin unavailable"; return; }
       ARM.attempted = true;
-      RT.createPlugin({ name: "sakura-skillwarz", version: "2.0.1", referencedAssemblies: ASSEMBLIES.slice() });
+      RT.createPlugin({ name: "sakura-skillwarz", version: "2.0.2", referencedAssemblies: ASSEMBLIES.slice() });
       ARM.ok = true;
     } catch (err) { ARM.error = String((err && err.message) || err); }
   })();
@@ -369,22 +369,50 @@
    * v2.0.0 used ValueWrapper.readField and got an EMPTY survey against a live
    * game: capture worked (4/4 hooks, real pointers) but every field read came
    * back unusable, and the blanket catch(_){} made that indistinguishable from
-   * "this class has no readable fields". readField returns undefined whenever
-   * UWMK cannot resolve window.unityInstance / unityGame / game, and the
-   * payload then threw on .val() of undefined and swallowed it.
+   * "this class has no readable fields".
    *
-   * The heap is reached directly here, which is the one dependency-free path,
-   * and every read reports a reason on failure instead of disappearing.
+   * v2.0.1 read the heap directly but probed only window.unityInstance /
+   * unityGame / game. The field report came back with all four of those
+   * "undefined" while 4/4 hooks applied - proof the game object is reachable
+   * but NOT under any of those names. UWMK's own requireGame() reads those same
+   * window names and yet succeeds, because Runtime.resolveGame() MEMOISES the
+   * game in this._game on first success, and hook registration is what
+   * populates that cache. So ask UWMK for the reference it already holds
+   * instead of guessing names a third time.
+   *
+   * Every read reports a reason on failure instead of disappearing, and
    * HEAPU8 is re-resolved each call: Emscripten replaces it when the WASM
-   * memory grows, so caching the reference goes stale mid-match.
+   * memory grows, so a cached reference goes stale mid-match.
    */
-  var READS = { ok: 0, failed: 0, lastError: null };
+  var READS = { ok: 0, failed: 0, lastError: null, source: null };
+
+  function unityGame() {
+    // 1. UWMK's memoised reference - proven to work, it is what hook() used.
+    try {
+      var RT = window.UnityWebModkit && window.UnityWebModkit.Runtime;
+      if (RT && typeof RT.resolveGame === "function") {
+        var g = RT.resolveGame();
+        if (g) { READS.source = "Runtime.resolveGame()"; return g; }
+      }
+    } catch (_) {}
+    // 2. The conventional globals.
+    try {
+      var g2 = window.unityInstance || window.unityGame || window.game;
+      if (g2) { READS.source = "window global"; return g2; }
+    } catch (_) {}
+    // 3. A bare `game` reference. A top-level let/const is a global LEXICAL
+    //    binding: invisible as window.game, but still resolvable from other
+    //    classic scripts, so a loader may well declare it that way.
+    try {
+      if (typeof game !== "undefined" && game) { READS.source = "bare game binding"; return game; }
+    } catch (_) {}
+    READS.source = null;
+    return null;
+  }
 
   function heapBytes() {
     try {
-      var g = (typeof window !== "undefined")
-        ? (window.unityInstance || window.unityGame || window.game)
-        : null;
+      var g = unityGame();
       if (g && g.Module && g.Module.HEAPU8 && g.Module.HEAPU8.buffer) return g.Module.HEAPU8;
     } catch (_) {}
     return null;
@@ -401,7 +429,8 @@
     var v = heapView();
     if (!v) {
       READS.failed++;
-      READS.lastError = READS.lastError || "no HEAPU8 (Unity instance not exposed as window.unityInstance/unityGame/game)";
+      READS.lastError = READS.lastError ||
+        "no HEAPU8 - Unity instance not reachable via Runtime.resolveGame() or any window global";
       return undefined;
     }
     if (addr < 0 || addr + 4 > v.byteLength) {
@@ -629,12 +658,13 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       var t = typeof window[k];
       o[k] = t === "undefined" ? "undefined" : t;
     }
+    var g = unityGame();
+    o.gameSource = READS.source;
     try {
-      var g = window.unityInstance || window.unityGame || window.game;
       o.hasModule = !!(g && g.Module);
       o.heapU8 = !!(g && g.Module && g.Module.HEAPU8);
       o.heapBytes = o.heapU8 ? g.Module.HEAPU8.length : 0;
-    } catch (_) { o.hasModule = false; o.heapU8 = false; }
+    } catch (_) { o.hasModule = false; o.heapU8 = false; o.heapBytes = 0; }
     o.valueWrapper = typeof VW;
     return o;
   }
@@ -696,7 +726,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     try { sv = survey(); } catch (e) { surveyError = String((e && e.message) || e); }
 
     var report = {
-      version: "2.0.1",
+      version: "2.0.2",
       when: new Date().toISOString(),
       elapsedMs: Date.now() - T0,
       frame: location.href.slice(0, 120),
@@ -715,7 +745,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       instancesReplaced: replaced,
       survey: sv,
       surveyRows: Object.keys(sv).reduce(function (n, k) { return n + sv[k].length; }, 0),
-      reads: { ok: READS.ok, failed: READS.failed, lastError: READS.lastError },
+      reads: { ok: READS.ok, failed: READS.failed, lastError: READS.lastError, source: READS.source },
       globals: globals(),
       diff: DIFF.slice(0, 40),
       uwmkLog: UWMK_LOG.slice(0, 20),
@@ -771,7 +801,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     try { return collect(); }
     catch (err) {
       return {
-        version: "2.0.1", when: new Date().toISOString(), elapsedMs: Date.now() - T0,
+        version: "2.0.2", when: new Date().toISOString(), elapsedMs: Date.now() - T0,
         host: HOST, uwmk: !!(window.UnityWebModkit && window.UnityWebModkit.Runtime),
         il2CppContext: false, arm: ARM, hooksTotal: HOOKS.length, hooksApplied: 0,
         instances: {}, survey: {}, collectError: String((err && err.message) || err)
