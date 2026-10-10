@@ -134,4 +134,16 @@ const HEADER_KOUR = `// ==UserScript==
 `;
 write("dist/sakura.kour.user.js", HEADER_KOUR + "\n" + vendor + "\n;\n" + kourCode);
 
+// 5. Mirror the Cookie Clicker payload into the launcher's resources/ folder so
+// `npm run build` here keeps the Electron app in sync. The launcher resolves
+// it as resources/sakura-cookieclicker.js (see src/main.js GAMES.cookieclicker).
+try {
+  const launcherRes = path.join(here, "..", "resources");
+  fs.mkdirSync(launcherRes, { recursive: true });
+  fs.writeFileSync(path.join(launcherRes, "sakura-cookieclicker.js"), await obfuscate(fs.readFileSync(path.join(here, "src", "cookie.js"), "utf8")) + "\n");
+  console.log(`mirrored sakura-cookieclicker.js -> ${launcherRes}`);
+} catch (e) {
+  console.warn("warning: could not mirror cookie clicker payload into launcher resources:", e.message);
+}
+
 console.log(`done. rawBase=${BASE} obfuscated=${!noObfuscate}`);

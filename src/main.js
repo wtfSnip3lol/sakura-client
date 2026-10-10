@@ -17,6 +17,7 @@ const GAMES = {
     navOk: /^https:\/\/(www\.)?clutcher\.io\//,
     partition: "persist:clutcher",
     injectClient: true, // existing Sakura Client bundle (gloww-client.user.js)
+    payload: "gloww-client.user.js",
     overlay: false      // the injected client draws its own keystrokes
   },
   astrastrike: {
@@ -26,6 +27,19 @@ const GAMES = {
     partition: "persist:astrastrike",
     injectClient: false, // never inject anything into this game
     overlay: true        // external, zero-injection keystrokes overlay
+  },
+  cookieclicker: {
+    label: "Cookie Clicker",
+    url: "https://orteil.dashnet.org/cookieclicker/",
+    // The game lives under a path prefix and pulls assets from the same
+    // origin, so match the whole origin and let the payload's own path guard
+    // decide whether to apply the theme.
+    navOk: /^https:\/\/orteil\.dashnet\.org\//,
+    partition: "persist:cookieclicker",
+    injectClient: true,  // injects the Sakura visual recode only
+    payload: "sakura-cookieclicker.js",
+    overlay: false,
+    cosmetic: true       // no gameplay changes, nothing about the save is touched
   }
 };
 
@@ -87,19 +101,21 @@ sw("ignore-gpu-blocklist");
 sw("disable-features", "CalculateNativeWinOcclusion");
 sw("autoplay-policy", "no-user-gesture-required");
 
-/* ---------- Sakura Client bundle (Clutcher.io only) ---------- */
-function glowwPath() {
+/* ---------- Sakura payload bundles (per game) ----------
+ * Each game names the file it injects from resources/. Clutcher injects the
+ * full Sakura Client; Cookie Clicker injects the visual-recode theme. */
+function payloadPath(file) {
   const candidates = [
-    path.join(process.resourcesPath || "", "app", "resources", "gloww-client.user.js"),
-    path.join(process.resourcesPath || "", "app.asar", "resources", "gloww-client.user.js"),
-    path.join(__dirname, "..", "resources", "gloww-client.user.js"),
-    path.join(app.getAppPath(), "resources", "gloww-client.user.js")
+    path.join(process.resourcesPath || "", "app", "resources", file),
+    path.join(process.resourcesPath || "", "app.asar", "resources", file),
+    path.join(__dirname, "..", "resources", file),
+    path.join(app.getAppPath(), "resources", file)
   ];
   return candidates.find(p => { try { return fs.statSync(p).isFile(); } catch (_) { return false; } });
 }
 
-function glowwSource() {
-  const p = glowwPath();
+function payloadSource(file) {
+  const p = payloadPath(file);
   if (!p) return null;
   const flags = `window.__sakuraFlags=${JSON.stringify({ dev: !!settings.dev, beta: !!settings.beta })};`;
   return flags + fs.readFileSync(p, "utf8").replace(/^\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==\s*/, "");
@@ -279,6 +295,7 @@ function pickerHTML() {
     <div class="cards">
       ${card("clutcher", "Clutcher.io", "Full Sakura Client injected into the page.", ["Keystrokes + CPS overlay", "Ambience visual presets", "DEV-unlocked toolbox"], "PLAY")}
       ${card("astrastrike", "AstraStrike", "Clean mode — nothing touches the page.", ["External keystrokes overlay", "Zero page injection", "F8 to arrange the overlay"], "PLAY")}
+      ${card("cookieclicker", "Cookie Clicker", "Sakura visual recode — cosmetic only.", ["Sakura night theme + glass store", "Zen Maru Gothic / Outfit type", "Falling petal canvas, no gameplay edits"], "PLAY")}
     </div>
     <div class="foot"><input type="checkbox" id="skip"><label for="skip">Skip this screen next time (Alt menu can bring it back)</label></div>
     <button class="quit" id="quit">Quit launcher</button>
@@ -457,13 +474,14 @@ function createWindow() {
     }
   });
 
-  // Inject Sakura Client once the page has loaded (Clutcher.io profile only)
+  // Inject the game's Sakura payload once the page has loaded (Clutcher.io and
+  // Cookie Clicker profiles only; AstraStrike never gets anything injected).
   if (game.injectClient) {
     win.webContents.on("did-finish-load", () => {
       const url = win.webContents.getURL();
       if (!game.navOk.test(url)) return;
-      const src = glowwSource();
-      if (!src) return console.warn("Sakura bundle not found.");
+      const src = payloadSource(game.payload || "gloww-client.user.js");
+      if (!src) return console.warn(`Sakura payload not found: ${game.payload}`);
       win.webContents.executeJavaScript(src, true).catch(err => console.warn("Sakura injection failed:", err));
     });
   }

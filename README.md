@@ -1,9 +1,10 @@
 # Sakura Launcher
 
-A sakura-themed desktop launcher for [Clutcher.io](https://www.clutcher.io/) and [AstraStrike](https://astrastrike.fun/).
+A sakura-themed desktop launcher for [Clutcher.io](https://www.clutcher.io/), [AstraStrike](https://astrastrike.fun/) and [Cookie Clicker](https://orteil.dashnet.org/cookieclicker/).
 
 - **Clutcher.io** — opens the game in its own Chromium window with the Sakura Client injected — keystrokes display and ambience visual presets.
 - **AstraStrike** — clean mode: **nothing is injected into the page**. It opens the game in a Chromium window with launcher-level performance flags and a separate keystrokes overlay layer.
+- **Cookie Clicker** — injects the Sakura visual recode (`resources/sakura-cookieclicker.js`). Cosmetic only: one `<style>` block, one `pointer-events:none` petal canvas, and a floating toggle. No cheats, no save edits, no game globals touched.
 
 ## Features
 
@@ -19,6 +20,24 @@ A sakura-themed desktop launcher for [Clutcher.io](https://www.clutcher.io/) and
 - **Keystrokes overlay** — QWER / ASDFC / Shift·Space·Ctrl, sakura themed, drag-free (corner-selectable), scalable and fadeable
 - Runs in its own `WebContentsView` fed by main-process key events — it cannot read or modify the game
 - No JavaScript, CSS or preload is injected into the game page; the game runs exactly as it would in a normal browser
+
+**Cookie Clicker (visual recode)**
+
+- **Sakura night theme** — plum backdrop with pink/violet washes, glass store cards, glowing cookie counter
+- **Typography** — Zen Maru Gothic headings, Outfit UI, tabular numerals
+- **Wide layout** — store becomes a 2-column grid at ≥1180px, 3-column at ≥1560px
+- **Falling sakura petals** — teardrops and blossoms, density slider
+- Toggle panel: master switch plus layout, glass, fonts, glow, geometry and petals; persists to `localStorage`
+- The bakery and the building rows are `<canvas>`, so they are dimmed with `filter` rather than `opacity` — the game runs a 1s transition on those opacities, and a running transition outranks inline styles
+
+## Payload files
+
+| Game | File injected | Source |
+| --- | --- | --- |
+| Clutcher.io | `resources/gloww-client.user.js` | standalone bundle |
+| Cookie Clicker | `resources/sakura-cookieclicker.js` | `userscript/src/cookie.js`, mirrored by `npm run build` in `userscript/` |
+
+`src/main.js` resolves each game under `GAMES`, where every entry names its own `payload`. Run `npm run build` inside `userscript/` after editing `src/cookie.js` to refresh the launcher's copy.
 
 ## Run
 
