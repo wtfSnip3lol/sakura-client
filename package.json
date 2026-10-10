@@ -1,9 +1,9 @@
 {
   "name": "sakura-launcher",
   "productName": "Sakura Launcher",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
-  "description": "Sakura-themed desktop launcher for Clutcher.io and AstraStrike (keystrokes and ambience; clean zero-injection mode for AstraStrike)",
+  "description": "Sakura-themed desktop launcher for Clutcher.io, AstraStrike and Cookie Clicker (keystrokes and ambience; clean zero-injection mode for AstraStrike; visual recode for Cookie Clicker)",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
