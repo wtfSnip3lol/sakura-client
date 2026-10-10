@@ -293,6 +293,23 @@
    * ---------------------------------------------------------------- */
   var ARM = { attempted: false, ok: false, error: null };
   var T0 = (window.__SAKURA_SW__ && window.__SAKURA_SW__.at) || Date.now();
+
+  // UWMK filters imageDefs to this exact list, by exact imageName match, then
+  // BAILS OUT ENTIRELY if the result is empty:
+  //     if (globalMetadata?.imageDefs.length === 0)
+  //         return this.instantiateStreaming(source, importObject);
+  // An empty array is NOT "everything" - it is a silent no-op. These are the
+  // non-System/Unity/Photon images from dump.cs for build 125, where the game
+  // types we care about (FPScontroller, HealthScript, EnemyBot, ...) live.
+  var ASSEMBLIES = [
+    "Assembly-CSharp.dll",
+    "Assembly-CSharp-firstpass.dll",
+    "ch.sycoforge.Decal.dll",
+    "cInput.dll",
+    "ScivoloCharacterController.dll",
+    "__Generated"
+  ];
+
   (function armUwmk() {
     try {
       var RT = window.UnityWebModkit && window.UnityWebModkit.Runtime;
@@ -301,9 +318,9 @@
         return;
       }
       ARM.attempted = true;
-      // referencedAssemblies stays empty: we are introspecting (reading type and
-      // method names out of scriptData), not resolving calls into game assemblies.
-      RT.createPlugin({ name: "sakura-skillwarz-diag", version: "1.9.3", referencedAssemblies: [] });
+      // referencedAssemblies is NOT optional: UWMK filters imageDefs by these
+      // exact strings and skips hooking entirely when none match.
+      RT.createPlugin({ name: "sakura-skillwarz-diag", version: "1.9.8", referencedAssemblies: ASSEMBLIES.slice() });
       ARM.ok = true;
     } catch (err) {
       ARM.error = String((err && err.message) || err);
@@ -462,6 +479,8 @@
       workers: WORKERS.slice(0, 12),
       rejections: REJECTIONS.slice(0, 12),
       metadataImageDefs: (RT && RT.globalMetadata && RT.globalMetadata.imageDefs) ? RT.globalMetadata.imageDefs.length : null,
+      originalImageDefCount: (RT && RT.globalMetadata) ? (RT.globalMetadata.originalImageDefCount || 0) : null,
+      assemblies: ASSEMBLIES,
       wasmPatch: {
         instantiateTapped: !!(typeof WebAssembly !== "undefined" && WebAssembly.instantiate && WebAssembly.instantiate.__sakuraTapped),
         streamingTapped: !!(typeof WebAssembly !== "undefined" && WebAssembly.instantiateStreaming && WebAssembly.instantiateStreaming.__sakuraTapped),
@@ -489,6 +508,13 @@
     if (ARM.error) report.warnings.push("UWMK arming failed: " + ARM.error);
     if (report.uwmk && !report.uwmkStarted) {
       report.warnings.push("Runtime present but initialize() never ran - createPlugin was not effective.");
+    }
+    if (report.metadataReady && report.metadataImageDefs === 0 && report.originalImageDefCount > 0) {
+      report.warnings.push(
+        "referencedAssemblies matched 0 of " + report.originalImageDefCount + " images. " +
+        "UWMK skips hooking entirely when imageDefs is empty, so this is a silent no-op. " +
+        "The names in `assemblies` do not match this build."
+      );
     }
 
     if (!sd) {

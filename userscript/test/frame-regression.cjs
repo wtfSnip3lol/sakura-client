@@ -22,7 +22,7 @@ function makeEl() {
   };
 }
 
-function runFrame({ readyWithScriptData, hostname }) {
+function runFrame({ readyWithScriptData, hostname, overlayPresent }) {
   const posted = [];
   const pluginCalls = [];
   const listeners = [];
@@ -32,7 +32,17 @@ function runFrame({ readyWithScriptData, hostname }) {
     documentElement: makeEl(),
     head: makeEl(),
     createElement: makeEl,
-    getElementById: () => null,          // no div#sakura-sw -> no conflict
+    getElementById: (id) => {
+      // The old v1.9.1 probe creates div#sakura-sw. Model it so the conflict
+      // warning is verified by BEHAVIOUR, not by grepping source text - the
+      // base64 string array hides literals in the obfuscated build.
+      if (overlayPresent && id === 'sakura-sw') {
+        const el = makeEl();
+        el.id = 'sakura-sw';
+        return el;
+      }
+      return null;
+    },
     addEventListener() {}
   };
 
@@ -149,11 +159,19 @@ check('every report carries boundary-tracing fields',
   'a report was missing wasmCalls/rtCalls/workers/wasmPatch');
 
 // --- Case 3: conflict detection --------------------------------------
+// Verified behaviourally so it survives base64 string-array encoding.
 {
-  const orig = src;
-  // sanity: the conflict warning path exists in the source
-  check('conflict warning for the old probe is implemented',
-    /CONFLICT/.test(orig), 'no CONFLICT warning in source');
+  const withOld = runFrame({ readyWithScriptData: true, overlayPresent: true });
+  check('warns when the old v1.9.1 probe is still present',
+    !!(withOld.report && withOld.report.warnings
+      && withOld.report.warnings.some(w => /CONFLICT/.test(w))),
+    JSON.stringify(withOld.report && withOld.report.warnings));
+
+  const without = runFrame({ readyWithScriptData: true });
+  check('no conflict warning when only this script runs',
+    !!(without.report && Array.isArray(without.report.warnings)
+      && !without.report.warnings.some(w => /CONFLICT/.test(w))),
+    JSON.stringify(without.report && without.report.warnings));
 }
 
 // --- Case 4: the wrapper must NOT arm --------------------------------
