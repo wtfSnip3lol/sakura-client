@@ -1,0 +1,31 @@
+{
+  "name": "sakura-launcher",
+  "productName": "Sakura Launcher",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sakura-themed desktop launcher for Clutcher.io and AstraStrike (keystrokes and ambience; clean zero-injection mode for AstraStrike)",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win portable"
+  },
+  "build": {
+    "appId": "local.sakura.launcher",
+    "productName": "Sakura Launcher",
+    "artifactName": "Sakura-Launcher-${version}.exe",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "src/**",
+      "resources/**"
+    ],
+    "win": {
+      "target": "portable"
+    }
+  },
+  "devDependencies": {
+    "electron": "^44.6.0",
+    "electron-builder": "^26.15.3"
+  }
+}

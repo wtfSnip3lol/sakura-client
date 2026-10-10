@@ -1,0 +1,17 @@
+{
+  "name": "sakura-client-userscript",
+  "version": "1.3.1",
+  "private": true,
+  "description": "Sakura Client — loader userscript + 3 site payloads (Clutcher.io full, AstraStrike clean, KourStrike UWMK menu). Payloads built with javascript-obfuscator (kour ships plain).",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs --no-obfuscate"
+  },
+  "sakura": {
+    "rawBase": "https://raw.githubusercontent.com/wtfSnip3lol/sakura-client/main/userscript/dist/"
+  },
+  "dependencies": {
+    "javascript-obfuscator": "^4.1.1"
+  }
+}

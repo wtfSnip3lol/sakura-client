@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Sakura keystrokes overlay</title>
+<style>
+  :root {
+    --s: 1;
+    --op: 1;
+    --accent: #ff6b9d;
+    --accent-hi: #ffb3c6;
+    --accent-lo: #d44a7a;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%;
+    background: transparent;
+    overflow: hidden;
+    font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+    user-select: none;
+  }
+  #root {
+    width: 360px; height: 176px;
+    transform: scale(var(--s));
+    opacity: var(--op);
+    transition: opacity 120ms ease;
+    display: flex; flex-direction: column;
+  }
+  #root.editing { height: 380px; }
+
+  /* transform-origin follows the corner so the view scales in place */
+  #root.bl { transform-origin: bottom left; }
+  #root.br { transform-origin: bottom right; }
+  #root.tl { transform-origin: top left; }
+  #root.tr { transform-origin: top right; }
+
+  .brand {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 8px 2px;
+    color: var(--accent-hi);
+    font-size: 10px; font-weight: 700; letter-spacing: .22em;
+    text-transform: uppercase;
+    opacity: .85;
+  }
+  .brand i { font-style: normal; font-size: 12px; }
+
+  .rows { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 6px; padding: 0 8px; }
+  .row { display: flex; gap: 6px; justify-content: center; }
+
+  .cap {
+    width: 46px; height: 46px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 9px;
+    background: rgba(14, 18, 27, .72);
+    border: 1px solid rgba(255, 107, 157, .28);
+    box-shadow: 0 2px 8px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.06);
+    color: #e6ebf3;
+    font-size: 13px; font-weight: 700;
+    transition: transform 60ms ease, background 60ms ease, border-color 60ms ease, box-shadow 60ms ease;
+  }
+  .cap.wide { width: 88px; font-size: 11px; letter-spacing: .08em; }
+  .cap.space { width: 148px; font-size: 10px; letter-spacing: .18em; }
+  .cap.down {
+    background: rgba(255, 107, 157, .34);
+    border-color: var(--accent-hi);
+    color: #fff;
+    transform: translateY(2px);
+    box-shadow: 0 0 14px rgba(255, 107, 157, .55), 0 1px 3px rgba(0,0,0,.4), inset 0 0 10px rgba(255, 179, 198, .35);
+  }
+
+  /* ── edit panel ── */
+  #panel { display: none; padding: 4px 14px 0; color: #e6ebf3; }
+  #root.editing #panel { display: block; }
+  #panel .ptitle { font-size: 11px; font-weight: 700; letter-spacing: .18em; text-transform: uppercase; color: var(--accent-hi); margin: 4px 0 8px; }
+  #panel label { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 11px; margin-bottom: 8px; color: #b9c5d7; }
+  #panel select, #panel input[type="range"] { accent-color: var(--accent); }
+  #panel select {
+    background: #0a0e15; color: #e6ebf3; border: 1px solid rgba(255,255,255,.16);
+    border-radius: 6px; padding: 3px 6px; font: 11px system-ui;
+  }
+  #panel .chk { justify-content: flex-start; }
+  #panel .hint { font-size: 10px; line-height: 1.5; color: #8793a6; margin-top: 6px; }
+</style>
+</head>
+<body>
+  <div id="root" class="bl">
+    <div class="brand"><i>❀</i><span>sakura · keystrokes</span></div>
+
+    <div class="rows">
+      <div class="row" data-row="0"></div>
+      <div class="row" data-row="1"></div>
+      <div class="row" data-row="2"></div>
+    </div>
+
+    <div id="panel">
+      <div class="ptitle">Overlay settings</div>
+      <label>Corner
+        <select id="corner">
+          <option value="bl">Bottom left</option>
+          <option value="br">Bottom right</option>
+          <option value="tl">Top left</option>
+          <option value="tr">Top right</option>
+        </select>
+      </label>
+      <label>Scale <input id="scale" type="range" min="0.6" max="1.8" step="0.05" /></label>
+      <label>Opacity <input id="op" type="range" min="0.3" max="1" step="0.05" /></label>
+      <label class="chk"><input id="en" type="checkbox" /> Enabled</label>
+      <p class="hint">F8 closes this panel. This layer is a separate view — nothing is injected into the game page and it cannot read game state.</p>
+    </div>
+  </div>
+
+<script>
+  (() => {
+    "use strict";
+    console.info("Sakura overlay layer loaded (separate window — no game access).");
+    const api = window.sakuraOverlay || null;
+    const root = document.getElementById("root");
+    const rows = [...document.querySelectorAll(".row")];
+    let editMode = false;
+
+    function applyClassName() {
+      root.className = (document.getElementById("corner").value || "bl") + (editMode ? " editing" : "");
+    }
+
+    // code → [row, label, extraClass]
+    const KEYS = {
+      KeyQ: [0, "Q"], KeyW: [0, "W"], KeyE: [0, "E"], KeyR: [0, "R"],
+      KeyA: [1, "A"], KeyS: [1, "S"], KeyD: [1, "D"], KeyF: [1, "F"], KeyC: [1, "C"],
+      ShiftLeft: [2, "SHIFT", "wide"], Space: [2, "SPACE", "space"], ControlLeft: [2, "CTRL", "wide"]
+    };
+    const ALIASES = { ShiftRight: "ShiftLeft", ControlRight: "ControlLeft" };
+
+    const caps = {};
+    for (const [code, [row, label, extra]] of Object.entries(KEYS)) {
+      const el = document.createElement("div");
+      el.className = "cap" + (extra ? " " + extra : "");
+      el.textContent = label;
+      rows[row].appendChild(el);
+      caps[code] = el;
+    }
+
+    function setKey(code, down) {
+      code = ALIASES[code] || code;
+      const el = caps[code];
+      if (el) el.classList.toggle("down", down);
+    }
+
+    function applySettings(o) {
+      if (!o) return;
+      root.style.setProperty("--s", Number(o.scale) || 1);
+      root.style.setProperty("--op", Number(o.opacity) ?? 1);
+      document.getElementById("corner").value = o.corner || "bl";
+      document.getElementById("scale").value = o.scale ?? 1;
+      document.getElementById("op").value = o.opacity ?? 1;
+      document.getElementById("en").checked = o.enabled !== false;
+      applyClassName();
+    }
+
+    function save(patch) {
+      if (!api) return;
+      const current = {
+        corner: document.getElementById("corner").value,
+        scale: parseFloat(document.getElementById("scale").value),
+        opacity: parseFloat(document.getElementById("op").value),
+        enabled: document.getElementById("en").checked
+      };
+      api.setOverlay({ ...current, ...patch });
+    }
+
+    for (const [id, key] of [["corner", "corner"], ["scale", "scale"], ["op", "opacity"]]) {
+      document.getElementById(id).addEventListener("input", () => save({ [key]: key === "corner"
+        ? document.getElementById(id).value
+        : parseFloat(document.getElementById(id).value) }));
+    }
+    document.getElementById("en").addEventListener("change", () => save({ enabled: document.getElementById("en").checked }));
+
+    if (api) {
+      api.onKey(d => setKey(d.code, d.down && !d.repeat));
+      api.onSettings(applySettings);
+      api.onEdit(on => {
+        editMode = on;
+        applyClassName();
+      });
+      api.get().then(res => applySettings(res?.settings?.overlay)).catch(() => {});
+    }
+  })();
+</script>
+</body>
+</html>
