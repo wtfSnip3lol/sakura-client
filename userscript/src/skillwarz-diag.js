@@ -199,6 +199,82 @@
   console.log("%c[sakura] SW-FRAME ACTIVE", "color:" + ACCENT + ";font-weight:700", { host: HOST, href: location.href });
   up("hello", { host: HOST });
 
+  /* ---------------------------------------------------------------- *
+   * Instrumentation. UWMK talks exclusively through the console
+   * ("[UnityWebModkit] ..."), and those lines ARE the diagnosis when the
+   * context fails to build. Tap them before anything else can run.
+   * Both taps are transparent pass-throughs.
+   * ---------------------------------------------------------------- */
+  var UWMK_LOG = [];
+  var NET_LOG = [];
+
+  (function tapConsole() {
+    var methods = ["log", "warn", "error", "info", "debug"];
+    for (var i = 0; i < methods.length; i++) {
+      (function (name) {
+        var orig = console[name];
+        if (typeof orig !== "function") return;
+        console[name] = function () {
+          try {
+            var flat = "";
+            for (var a = 0; a < arguments.length; a++) {
+              var v = arguments[a];
+              if (typeof v === "string") flat += v;
+              else if (v && v.message) flat += v.message;
+            }
+            if (flat.indexOf("UnityWebModkit") !== -1 && UWMK_LOG.length < 60) {
+              UWMK_LOG.push(flat.slice(0, 300));
+            }
+          } catch (_) {}
+          return orig.apply(console, arguments);
+        };
+      })(methods[i]);
+    }
+  })();
+
+  (function tapFetch() {
+    // performance.getEntriesByType("resource") is capped (~250 by default) and
+    // CrazyGames fires hundreds of ad/prebid requests, so the Unity assets get
+    // evicted. Watch the wire directly instead.
+    try {
+      var origFetch = window.fetch;
+      if (typeof origFetch !== "function") return;
+      window.fetch = function (input, init) {
+        try {
+          var u = typeof input === "string" ? input : (input && input.url) || "";
+          if (u && NET_LOG.length < 60 && /\.(wasm|data)(\.br)?(\?|$)|global-metadata/i.test(u)) {
+            NET_LOG.push(u.slice(0, 200));
+          }
+        } catch (_) {}
+        return origFetch.apply(window, arguments);
+      };
+    } catch (_) {}
+  })();
+
+  /* ---------------------------------------------------------------- *
+   * ARM UWMK. This is the step v1.9.3 previously missed entirely:
+   * createPlugin() -> initialize() -> hookWasmInstantiate(). Without it
+   * the game's WebAssembly.instantiate is never intercepted and
+   * il2CppContext can never be built.
+   * ---------------------------------------------------------------- */
+  var ARM = { attempted: false, ok: false, error: null };
+  (function armUwmk() {
+    try {
+      var RT = window.UnityWebModkit && window.UnityWebModkit.Runtime;
+      if (!RT || typeof RT.createPlugin !== "function") {
+        ARM.error = "Runtime.createPlugin unavailable";
+        return;
+      }
+      ARM.attempted = true;
+      // referencedAssemblies stays empty: we are introspecting (reading type and
+      // method names out of scriptData), not resolving calls into game assemblies.
+      RT.createPlugin({ name: "sakura-skillwarz-diag", version: "1.9.3", referencedAssemblies: [] });
+      ARM.ok = true;
+    } catch (err) {
+      ARM.error = String((err && err.message) || err);
+    }
+  })();
+
   var TARGETS = [
     "FPScontroller", "HealthScript", "WeaponManager", "WeaponNew", "WeaponController",
     "EnemyBot", "BotManager", "BotSpawner", "NPC_Cotroller", "GG_GameManager",
@@ -208,12 +284,21 @@
   ];
 
   function assets() {
+    var out = [];
+    var perfTotal = -1;
     try {
-      return performance.getEntriesByType("resource")
-        .map(function (e) { return e.name; })
-        .filter(function (n) { return /\.(wasm|data|br)(\?|$)/i.test(n); })
-        .slice(0, 20);
-    } catch (_) { return []; }
+      var all = performance.getEntriesByType("resource") || [];
+      perfTotal = all.length;
+      for (var i = 0; i < all.length; i++) {
+        var n = all[i].name;
+        if (/\.(wasm|data|br)(\?|$)/i.test(n) || /skillwarz/i.test(n)) out.push(n);
+      }
+    } catch (_) {}
+    // Merge in what we saw on the wire; the perf buffer may have evicted these.
+    for (var j = 0; j < NET_LOG.length; j++) {
+      if (out.indexOf(NET_LOG[j]) === -1) out.push(NET_LOG[j]);
+    }
+    return { perfTotal: perfTotal, urls: out.slice(0, 30) };
   }
 
   function globals() {
@@ -241,18 +326,44 @@
       il2CppContext: !!ctx,
       wasmTypes: RT && RT.internalWasmTypes ? RT.internalWasmTypes.length : 0,
       globals: globals(),
-      assets: assets()
+      assets: assets(),
+      arm: ARM,
+      uwmkStarted: !!(RT && RT.startedInitializing),
+      uwmkPlugins: RT && RT.plugins ? RT.plugins.map(function (p) { return p.name; }) : null,
+      metadataReady: !!(RT && RT.globalMetadata),
+      wasmInstantiateHooked: !!(RT && RT.instantiate),
+      uwmkLog: UWMK_LOG.slice(0, 40)
     };
 
     // Confirm at runtime that the served build matches the dump we analysed.
-    var a = report.assets.join(" ");
+    var a = report.assets.urls.join(" ");
     report.build = {
       is125: /skillwarz\/125\//.test(a),
       dataHash: (a.match(/skillwarz\/125\/Build\/([0-9a-f]{32})\.data/) || [])[1] || null,
       wasmHash: (a.match(/skillwarz\/125\/Build\/([0-9a-f]{32})\.wasm/) || [])[1] || null
     };
 
-    if (!sd) { report.scriptData = null; report.note = "scriptData not ready yet"; return report; }
+    report.warnings = [];
+    if (report.overlayEl) {
+      report.warnings.push(
+        "CONFLICT: div#sakura-sw exists -> the old sakura.skillwarz.user.js " +
+        "(v1.9.1 probe) is STILL installed and running a second copy of UWMK " +
+        "in this frame. Disable it in Tampermonkey, then reload. Two copies " +
+        "both patch WebAssembly.instantiate and both clear UnityCache."
+      );
+    }
+    if (ARM.error) report.warnings.push("UWMK arming failed: " + ARM.error);
+    if (report.uwmk && !report.uwmkStarted) {
+      report.warnings.push("Runtime present but initialize() never ran - createPlugin was not effective.");
+    }
+
+    if (!sd) {
+      report.scriptData = null;
+      report.note = UWMK_LOG.length
+        ? "no scriptData - see uwmkLog (UWMK printed diagnostics)"
+        : "no scriptData - UWMK was silent; see arm/uwmkStarted";
+      return report;
+    }
 
     var names = Object.keys(sd);
     report.scriptData = true;
@@ -299,6 +410,8 @@
             uwmk: !!RT,
             il2CppContext: !!(RT && RT.il2CppContext),
             scriptData: null,
+            arm: ARM,
+            uwmkLog: UWMK_LOG.slice(0, 40),
             collectError: String((err && err.message) || err)
           };
         }
