@@ -48,6 +48,13 @@
   var MARK0 = "===SAKURA-SKILLWARZ-BEGIN===";
   var MARK1 = "===SAKURA-SKILLWARZ-END===";
 
+  // Single source of truth, declared up here because the PORTAL branch renders
+  // the build badge and that branch returns long before the player code runs.
+  // It was hand-written in three places once and one drifted, so a field report
+  // claimed 2.0.2 while the plugin logged 2.0.3 - which sends everyone chasing
+  // a stale build.
+  var VERSION = "2.0.7";
+
   /* ================================================================== *
    * WRAPPER — relay only. Arming UWMK here achieves nothing: this frame
    * loads the player, it does not compile the WASM.
@@ -125,6 +132,10 @@
       root.innerHTML =
         '<div style="padding:9px 12px;border-bottom:1px solid rgba(255,143,177,.3);display:flex;gap:8px;align-items:center;flex:0 0 auto;">' +
         '<b style="color:' + ACCENT + '">sakura · skillwarz</b>' +
+        // The build number is on screen, not just in a report. Field reports
+        // arrived twice from a stale install, so the version has to be visible
+        // without opening the raw script in a new tab.
+        '<span id="sw2-build" style="color:#7a6586;font-size:11px;padding:1px 6px;border:1px solid rgba(255,143,177,.35);border-radius:999px;">v?</span>' +
         '<span id="sw2-status" style="color:#bda9c9">waiting for game frame…</span>' +
         '<button id="sw2-copy" style="display:none;margin-left:auto;background:' + ACCENT + ';border:0;color:#2a0f1b;border-radius:7px;padding:4px 10px;font-weight:700;cursor:pointer;">Copy JSON</button>' +
         '<button id="sw2-x" style="background:transparent;border:1px solid rgba(255,143,177,.4);color:#f7eef5;border-radius:7px;padding:4px 8px;cursor:pointer;">x</button>' +
@@ -137,6 +148,7 @@
         'max-height:62vh;">No report yet.\n\nThis panel updates itself when the game frame loads — no console needed.\n\nIf it stays empty, Tampermonkey is not injecting into the cross-origin game frame.</pre>';
 
       var statusEl = root.querySelector("#sw2-status");
+      var buildEl = root.querySelector("#sw2-build");
       var outEl = root.querySelector("#sw2-out");
       var copyBtn = root.querySelector("#sw2-copy");
       var closeBtn = root.querySelector("#sw2-x");
@@ -182,6 +194,15 @@
         set: function (rep) {
           payload = rep;
           if (copyBtn) copyBtn.style.display = "";
+          if (buildEl) {
+            buildEl.textContent = "v" + (rep.version || "?");
+            // Highlight a version that does not match this payload's build, so
+            // a stale install cannot masquerade as the current one.
+            var mine = VERSION;
+            var theirs = rep.version || "";
+            buildEl.style.color = theirs === mine ? ACCENT : "#ff6e74";
+            buildEl.style.borderColor = theirs === mine ? "rgba(255,143,177,.35)" : "#ff6e74";
+          }
           var live = rep.instances && rep.instances.FPScontroller;
           var secs = Math.round((rep.elapsedMs || 0) / 1000);
           if (statusEl) {
@@ -291,7 +312,8 @@
     try { if (window.top && window.top !== window) window.top.postMessage(msg, "*"); } catch (_) {}
   }
 
-  console.log("%c[sakura] SW-PLAYER ACTIVE", "color:" + ACCENT + ";font-weight:700", { host: HOST, href: location.href });
+  console.log("%c[sakura] SW-PLAYER ACTIVE v" + VERSION, "color:" + ACCENT + ";font-weight:700;font-size:14px",
+    { host: HOST, href: location.href, version: VERSION });
   up("hello", { host: HOST, role: ROLE });
 
   var T0 = (window.__SAKURA_SW__ && window.__SAKURA_SW__.at) || Date.now();
@@ -426,10 +448,7 @@
     } catch (_) {}
   }
 
-  // Single source of truth. A field report came back saying version 2.0.2 while
-  // the plugin logged 2.0.3, because the string was hand-written in three
-  // places and one of them was missed. Derived fields must not be retyped.
-  var VERSION = "2.0.6";
+  // VERSION is declared at the top of this IIFE, next to the channel constants.
 
   // Declared here, NOT beside their consumers further down. armUwmk() calls
   // registerHooks() in the same tick, and a `var x = []` further down the file

@@ -438,7 +438,7 @@ function check(name, cond, detail) {
 }
 
 /* ================================================================== *
- * 5. THE REAL GAME'S SHAPE.
+ * 4. THE REAL GAME'S SHAPE.
  *
  * Field reports show: one Runtime, stable tag, hooks applied and firing, yet
  * unityInstance / unityGame / game all "undefined" and _game null forever.
@@ -475,7 +475,7 @@ function check(name, cond, detail) {
 }
 
 /* ================================================================== *
- * 6. The log tap must not eat its own tail.
+ * 5. The log tap must not eat its own tail.
  *
  * The report embeds uwmkLog, whose entries contain the string
  * "UnityWebModkit", so a naive filter matched our OWN reports. They were then
@@ -530,7 +530,7 @@ function check(name, cond, detail) {
 }
 
 /* ================================================================== *
- * 3. Genuinely unreachable heap must be reported, never swallowed.
+ * 8. Genuinely unreachable heap must be reported, never swallowed.
  * ================================================================== */
 {
   const r = runFrame({ heapVia: 'none', noInstantiate: true });
@@ -550,7 +550,7 @@ function check(name, cond, detail) {
 }
 
 /* ================================================================== *
- * 3. Diagnostics when the pipeline is broken.
+ * 9. Diagnostics when the pipeline is broken.
  * ================================================================== */
 {
   const noHooks = runFrame({ resolveButNotApply: true });
@@ -576,7 +576,38 @@ function check(name, cond, detail) {
 }
 
 /* ================================================================== *
- * 4. Frame roles: the wrapper must stay inert.
+ * BUILD IDENTITY. VERSION was hand-written in three places and one drifted,
+ * and a stale install reached the field twice - once even after being told
+ * twice. So: one declaration, hoisted above the portal branch that renders
+ * the badge, and the badge path itself is exercised.
+ * ================================================================== */
+{
+  // These two assert on source structure, so they only apply to readable
+  // source. The obfuscated payload renames identifiers into the _0x hex form,
+  // which is exactly why this suite is behavioural everywhere else - and why
+  // grepping for `var VERSION =` here would fail on the artifact we actually
+  // ship. The behaviour those greps protect (one build id, reaching the
+  // portal) is covered by the report-version assertions in section 1.
+  const obfuscated = /\b_0x[0-9a-f]{4,}\b/.test(src);
+  if (obfuscated) {
+    check('source-structure checks skipped (target is obfuscated)', true, '');
+  } else {
+    const decls = (src.match(/^\s*var VERSION\s*=/gm) || []).length;
+    check('VERSION is declared exactly once (no second, later copy to drift)',
+      decls === 1, `${decls} declarations`);
+    const pos = src.indexOf('var VERSION =');
+    check('VERSION is declared before the portal branch returns',
+      pos > 0 && pos < src.indexOf('if (IS_PORTAL)'),
+      `declared at ${pos}, portal at ${src.indexOf('if (IS_PORTAL)')}`);
+  }
+
+  const portal = runFrame({ hostname: 'www.crazygames.com' });
+  check('portal runs without throwing', !portal.fatal, portal.fatal || '');
+  check('portal arms nothing', portal.pluginCalls.length === 0, `armed ${portal.pluginCalls.length}x`);
+}
+
+/* ================================================================== *
+ * FRAME ROLES: the wrapper must stay inert.
  * ================================================================== */
 {
   const w = runFrame({ hostname: 'games.crazygames.com' });
