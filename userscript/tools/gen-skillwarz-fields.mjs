@@ -6,13 +6,16 @@ import { readFileSync, writeFileSync } from 'fs';
 
 const dumpPath = process.argv[2] || 'C:/Users/wh1sp/AppData/Local/Temp/opencode/swdump/dump.cs';
 const outPath = process.argv[3] || 'src/skillwarz-fields.json';
-// NPC_Cotroller is the bot's body (world Vector3s, CapsuleCollider, its own
-// HealthScript) and is the only per-enemy type whose Update() is confirmed to
-// tick. TDM_GameManager is the manager for the mode actually in play;
-// GG_GameManager is its unused base. SectatorCamera carries a Quaternion and a
-// Vector3, which is the cheapest possible route to a camera orientation.
+// PhotonNetworkSync is THE per-player component: one instance per player, local
+// AND remote, ticking every frame, carrying a HealthScript at +0x20 and an
+// FPScontroller at +0x28 (remote players use the same controller class you do)
+// plus three inline world Vector3s. Bots are not networked and do not appear
+// here, so NPC_Cotroller is still needed for them. Transform and CapsuleCollider
+// expose no IL2CPP fields at all - properties only, backed by native - so the
+// inline Vector3s are the only position source that actually resolves.
 const wanted = (process.argv[4] ||
-  'FPScontroller,HealthScript,PlayerConfig,WeaponManager,GG_GameManager,TDM_GameManager,NPC_Cotroller,TargetHealth,SectatorCamera'
+  'FPScontroller,HealthScript,PlayerConfig,WeaponManager,GG_GameManager,TDM_GameManager,' +
+  'PhotonNetworkSync,NetworkPlayerAnimations,NPC_Cotroller,TargetHealth,SectatorCamera'
 ).split(',');
 
 // Read as latin1, NOT utf8. The obfuscated member names contain raw bytes that

@@ -63,7 +63,7 @@ function obfBool(base, real, key) {
   // look exactly like a compounding bug.
   const OBJ = {};
   let base = 0x20000;
-  for (const t of ['FPScontroller', 'HealthScript', 'WeaponManager', 'GG_GameManager', 'TDM_GameManager', 'NPC_Cotroller', 'EnemyBot']) {
+  for (const t of ['FPScontroller', 'HealthScript', 'WeaponManager', 'GG_GameManager', 'TDM_GameManager', 'PhotonNetworkSync', 'NetworkPlayerAnimations', 'NPC_Cotroller', 'EnemyBot']) {
     OBJ[t] = base;
     base += 0x1000;
   }
@@ -163,7 +163,7 @@ var BC_HUB = [];
 function sendToPlayer(msg) {
   for (const b of BC_HUB) if (typeof b.onmessage === 'function') b.onmessage({ data: msg });
 }
-function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'resolveGame', scriptDataLate = false, applyFirst = false, resolveButNotApply = false, noInstantiate = false, speed = null, thenOff = false, extraFrames = 0, fireEnemyTwice = null, setup = null, lobby = false, deliverVia = 'bc', preFire = null, ls = {} }) {
+function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'resolveGame', scriptDataLate = false, applyFirst = false, resolveButNotApply = false, noInstantiate = false, speed = null, thenOff = false, extraFrames = 0, fireEnemyTwice = null, setup = null, lobby = false, deliverVia = 'bc', preFire = null, ls = {}, fireMany = null }) {
   // Reset the channel hub: payload instances from earlier runs would keep
   // their own SPEED_STATE and keep writing to the same heap, which looks
   // exactly like a compounding bug in the payload.
@@ -179,7 +179,7 @@ function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'r
   // EnemyBot stays hooked as a fallback but is NOT simulated here: it is a
   // brain, its Update() never ticked in the field, and letting it fire would
   // double-count every enemy the NPC_Cotroller hook already captured.
-  const fireTypes = fireUpdate ? ['FPScontroller', 'HealthScript', 'WeaponManager', 'GG_GameManager', 'TDM_GameManager', 'NPC_Cotroller'] : [];
+  const fireTypes = fireUpdate ? ['FPScontroller', 'HealthScript', 'WeaponManager', 'GG_GameManager', 'TDM_GameManager', 'PhotonNetworkSync', 'NetworkPlayerAnimations', 'NPC_Cotroller'] : [];
 
   // The real game object. Only UWMK holds a reference to it - which is the
   // whole point of heapVia='resolveGame'.
@@ -383,7 +383,8 @@ class BC {
       // A lobby: nothing round-scoped ticks. Enemy bodies, the bot brains and
       // both game managers only exist once a round has actually loaded.
       if (lobby && (h.typeName === 'EnemyBot' || h.typeName === 'GG_GameManager'
-                   || h.typeName === 'TDM_GameManager' || h.typeName === 'NPC_Cotroller')) continue;
+                   || h.typeName === 'TDM_GameManager' || h.typeName === 'NPC_Cotroller'
+                   || h.typeName === 'PhotonNetworkSync' || h.typeName === 'NetworkPlayerAnimations')) continue;
       const rec = OBJ[h.typeName];
       if (rec === undefined) continue;
       const fire = (ptr) => {
@@ -394,6 +395,10 @@ class BC {
       // is the capture target, not the brain: EnemyBot's Update() never ticked
       // in the field while the signature was perfectly valid.
       if (fireEnemyTwice && h.typeName === 'NPC_Cotroller') { for (const ep of fireEnemyTwice) fire(ep); continue; }
+      // fireMany drives any many-type once per instance. PhotonNetworkSync has
+      // one instance per PLAYER, so "how many players are in this match" is a
+      // question only this can answer.
+      if (fireMany && fireMany[h.typeName]) { for (const fp of fireMany[h.typeName]) fire(fp); continue; }
       // Command must land BEFORE the frame it should affect, exactly as the
       // portal sends it while the game is already running.
       if (speed && h.typeName === 'FPScontroller') {
@@ -445,7 +450,7 @@ function check(name, cond, detail) {
     !!(r.pluginCalls[0].referencedAssemblies || []).includes('Assembly-CSharp.dll'), 'game types live here');
   check('a report is posted to the portal', !!r.report, 'no report');
 
-  check('Update() hooks are registered on the player types', r.hookCalls.length === 7, `hooks=${r.hookCalls.length}`);
+  check('Update() hooks are registered on the player types', r.hookCalls.length === 9, `hooks=${r.hookCalls.length}`);
   check('hooks use the IL2CPP (this, MethodInfo*) -> void signature',
     r.hookCalls.every(h => h.methodName === 'Update' && Array.isArray(h.params)
       && h.params.length === 2 && h.params[0] === 'i32' && h.returnType === undefined),
@@ -521,7 +526,7 @@ function check(name, cond, detail) {
 {
   const r = runFrame({ scriptDataLate: true });
   check('hooks register with NO scriptData available at all',
-    r.hookCalls.length === 7, `hooks=${r.hookCalls.length} (names alone must suffice)`);
+    r.hookCalls.length === 9, `hooks=${r.hookCalls.length} (names alone must suffice)`);
   const iHook = r.order.indexOf('hookPrefix:FPScontroller');
   const iData = r.order.indexOf('scriptData');
   check('hooks are registered BEFORE scriptData appears',
@@ -531,11 +536,11 @@ function check(name, cond, detail) {
     r.order[0] === 'createPlugin' && r.order[1] && r.order[1].startsWith('hookPrefix:'),
     `order=${r.order.slice(0, 3).join(' -> ')}`);
   check('reported hooksRegisteredAtArm matches what was registered',
-    r.report.hooksRegisteredAtArm === 7, String(r.report.hooksRegisteredAtArm));
+    r.report.hooksRegisteredAtArm === 9, String(r.report.hooksRegisteredAtArm));
 
   const dbl = runFrame({});
   check('registerHooks is idempotent (no duplicate hooks on retry)',
-    dbl.hookCalls.length === 7, `hooks=${dbl.hookCalls.length} - registered twice?`);
+    dbl.hookCalls.length === 9, `hooks=${dbl.hookCalls.length} - registered twice?`);
 }
 
 /* ================================================================== *
@@ -546,7 +551,7 @@ function check(name, cond, detail) {
   // UWMK's apply pass runs while plugin.hooks is still empty: too late.
   const late = runFrame({ applyFirst: true });
   check('registered-too-late is detected and named',
-    late.hookCalls.length === 7 && late.report.hooksApplied === 0,
+    late.hookCalls.length === 9 && late.report.hooksApplied === 0,
     `hooks=${late.hookCalls.length} applied=${late.report.hooksApplied}`);
   check('too-late: hooksResolved is 0 (UWMK never saw them)',
     late.report.hooksResolved === 0, `hooksResolved=${late.report.hooksResolved}`);
@@ -708,10 +713,10 @@ function check(name, cond, detail) {
     !noHooks.report.warnings.some(w => /were even SEEN/.test(w)),
     JSON.stringify(noHooks.report.warnings));
   check('reports hooksApplied=0 rather than claiming success',
-    noHooks.report.hooksApplied === 0 && noHooks.report.hooksTotal === 7,
+    noHooks.report.hooksApplied === 0 && noHooks.report.hooksTotal === 9,
     JSON.stringify([noHooks.report.hooksApplied, noHooks.report.hooksTotal]));
   check('signature-mismatch branch shows UWMK DID resolve the methods',
-    noHooks.report.hooksResolved === 7, `hooksResolved=${noHooks.report.hooksResolved}`);
+    noHooks.report.hooksResolved === 9, `hooksResolved=${noHooks.report.hooksResolved}`);
 }
 {
   const idle = runFrame({ fireUpdate: false });
@@ -720,6 +725,80 @@ function check(name, cond, detail) {
   check('still heartbeats with no instances', idle.reports.length > 3, `reports=${idle.reports.length}`);
   check('an empty survey with NO instances does not cry wolf',
     !idle.report.warnings.some(w => /read 0 fields/.test(w)), JSON.stringify(idle.report.warnings));
+}
+
+/* ================================================================== *
+ * REAL PLAYERS, NOT JUST BOTS.
+ *
+ * PhotonNetworkSync is one instance per player, local and remote, carrying an
+ * FPScontroller pointer at +0x28 and a HealthScript at +0x20. Hooking it as a
+ * list is the answer to "why not players": the bot hook alone finds bots and
+ * misses every human on the server.
+ *
+ * The second half is the reason SEEN exists. FPScontroller is on EVERY player,
+ * so the single capture slot flips between them as their Update() calls
+ * interleave. One slot cannot represent a match.
+ * ================================================================== */
+{
+  const s1 = OBJ.PhotonNetworkSync;                  // us
+  const s2 = OBJ.PhotonNetworkSync + 0x400;          // remote A
+  const s3 = OBJ.PhotonNetworkSync + 0x800;          // remote B
+  const cLocal = OBJ.FPScontroller;
+  const cA = 0x2a000, cB = 0x2b000;                  // the remotes' controllers
+  const r = runFrame({
+    fireMany: {
+      PhotonNetworkSync: [s1, s2, s3],
+      // Interleaved on purpose: the local controller fires first, then a
+      // remote's. A single capture slot ends up on the remote.
+      FPScontroller: [cLocal, cA, cB, cLocal]
+    },
+    setup() {
+      wI32(s1 + 0x28, cLocal); wI32(s1 + 0x20, OBJ.HealthScript);
+      wI32(s2 + 0x28, cA); wI32(s2 + 0x20, 0x28000);
+      wI32(s3 + 0x28, cB); wI32(s3 + 0x20, 0x29000);
+      obfInt(0x28000 + 0xc0, 85, 0x006c81c);
+      obfInt(0x29000 + 0xc0, 40, 0x006c81c);
+      wF32(cA + 0x2e4, 40.5); wF32(cA + 0x2e8, 1.5); wF32(cA + 0x2ec, -12.25);
+      wF32(cB + 0x2e4, -88.0); wF32(cB + 0x2e8, 0.5); wF32(cB + 0x2ec, 7.0);
+    }
+  });
+  const esp = r.report.esp || {};
+
+  check('every player is captured, not just the local one',
+    esp.playerCount === 3,
+    `playerCount=${esp.playerCount} controllers=${esp.controllerCount} ` +
+    `hookErrors=${JSON.stringify(r.report.hookErrors)} fatal=${r.fatal}`);
+  check('exactly one player is identified as local',
+    esp.players.filter(p => p.isLocal).length === 1,
+    JSON.stringify(esp.players.map(p => ({ ptr: p.ptr, local: p.isLocal, fps: p.refs.fps }))));
+  check('the local one is the one whose controller we captured',
+    esp.players.filter(p => p.isLocal)[0] &&
+      esp.players.filter(p => p.isLocal)[0].ptr === "0x" + s1.toString(16),
+    JSON.stringify(esp.players.map(p => p.ptr)));
+  check('the enemy list is both remotes and excludes us',
+    esp.players.filter(p => !p.isLocal).length === 2 &&
+      esp.enemies.every(x => !x.isLocal),
+    JSON.stringify(esp.enemies.map(x => ({ k: x.kind, l: x.isLocal }))));
+  check('a remote player position comes off the controller it points at',
+    esp.controllers.some(c => c.pos && Math.abs(c.pos[0] - 40.5) < 1e-3),
+    JSON.stringify(esp.controllers.map(c => c.pos)));
+  check('EVERY controller is enumerated - one slot cannot hold three players',
+    esp.controllerCount === 3, `controllerCount=${esp.controllerCount}`);
+  check('remote health decodes through their own HealthScript, same codec',
+    esp.players.some(p => p.health && Math.abs(p.health.v - 85) < 1e-6),
+    JSON.stringify(esp.players.map(p => p.health)));
+}
+
+/* The single capture slot genuinely flips between players. If it did NOT, the
+ * local-player identification above would be trivially true and the test would
+ * be worth nothing - so pin that it happens. */
+{
+  const a = OBJ.FPScontroller, b = 0x2a000;
+  const r = runFrame({ fireMany: { FPScontroller: [a, b] } });
+  check('the single FPScontroller slot really does end up on a remote player',
+    r.report.instances.FPScontroller &&
+      r.report.instances.FPScontroller.replace('0x', '') === b.toString(16),
+    `slot=0x${r.report.instances.FPScontroller} last-fired=0x${b.toString(16)}`);
 }
 
 /* ================================================================== *
@@ -749,8 +828,12 @@ function check(name, cond, detail) {
       wF32(e1 + 0x14, 10.5); wF32(e1 + 0x18, 1.25); wF32(e1 + 0x1c, -3.0);
       wF32(e1 + 0x5c, 99.0); wF32(e1 + 0x60, 0.0);  wF32(e1 + 0x64, 88.0); // a decoy vector
       wF32(e2 + 0x14, -4.5); wF32(e2 + 0x18, 0.5);  wF32(e2 + 0x1c, 7.75);
-      wI32(e1 + 0xd0, 0x555000);                        // bot HealthScript ref
-      wI32(e2 + 0xd0, 0x556000);
+      wI32(e1 + 0xd0, 0x28000);                        // bot HealthScript ref
+      wI32(e2 + 0xd0, 0x29000);
+      // A remote/bot HealthScript is just an ObscuredInt under the same codec
+      // as your own - seed one so the through-pointer read is real.
+      obfInt(0x28000 + 0xc0, 85, 0x006c81c);
+      obfInt(0x29000 + 0xc0, 40, 0x006c81c);
       wI32(OBJ.TDM_GameManager + 0x2c, 0x7000000);   // Camera
       wI32(OBJ.TDM_GameManager + 0x50, 0x300000);    // List<Player>
       wI32(0x300000 + 0x10, 0x301000);              // List._items
@@ -759,7 +842,7 @@ function check(name, cond, detail) {
   });
   const esp = r.report.esp || {};
   check('two enemy instances are tracked separately',
-    esp.enemyCount === 2, `enemyCount=${esp.enemyCount}`);
+    esp.botCount === 2, `botCount=${esp.botCount}`);
   check('enemy world position is read from the inline Vector3',
     esp.enemies.some(x => x.pos && Math.abs(x.pos[0] - 10.5) < 1e-4 && Math.abs(x.pos[2] + 3) < 1e-4),
     JSON.stringify(esp.enemies));
@@ -778,9 +861,12 @@ function check(name, cond, detail) {
     esp.enemies.some(x => x.allVecs && x.allVecs.length >= 2),
     JSON.stringify(esp.enemies.map(x => (x.allVecs || []).length)));
   check('a live body is identifiable by its HealthScript pointer',
-    esp.enemies.every(x => !!x.health), JSON.stringify(esp.enemies.map(x => x.health)));
+    esp.bots.every(x => !!x.refs.health), JSON.stringify(esp.bots.map(x => x.refs.health)));
+  check('and its health decodes through that pointer, same codec as your own',
+    esp.bots.some(x => x.health && Math.abs(x.health.v - 85) < 1e-6),
+    JSON.stringify(esp.bots.map(x => ({ refs: x.refs, health: x.health }))));
   check('enemies are tagged with the type that produced them',
-    esp.enemies.every(x => x.kind === 'NPC_Cotroller'), JSON.stringify(esp.enemies.map(x => x.kind)));
+    esp.bots.every(x => x.kind === 'NPC_Cotroller'), JSON.stringify(esp.bots.map(x => x.kind)));
 }
 
 /* The exact regression: EnemyBot+0x24 was the only vector read, so the first
@@ -799,9 +885,9 @@ function check(name, cond, detail) {
   });
   const esp = r.report.esp || {};
   check('a zeroed first vector does not hide the real position',
-    esp.enemies.length === 1 && esp.enemies[0].pos &&
-      Math.abs(esp.enemies[0].pos[0] - 10.5) < 1e-4,
-    JSON.stringify(esp.enemies[0]));
+    esp.bots.length === 1 && esp.bots[0].pos &&
+      Math.abs(esp.bots[0].pos[0] - 10.5) < 1e-4,
+    JSON.stringify(esp.bots[0]));
 }
 
 /* The recon must SAY why it is empty. An empty enemy list from a lobby is
