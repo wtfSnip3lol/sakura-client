@@ -2290,7 +2290,27 @@ class Runtime {
                             ++j;
                             continue;
                         }
-                        const injectName = useHook.typeName + "xx" + useHook.methodName + (0,_utils__WEBPACK_IMPORTED_MODULE_4__.makeId)(8);
+                        // SAKURA PATCH: the WASM writer emits import/export field names as raw
+                        // byte values, not UTF-8. Unity's own method names are ASCII
+                        // ("Update"), so this never showed - but an obfuscated IL2CPP
+                        // name is not: MouseLook's accessors are U+008B and friends,
+                        // and pasting one in produced
+                        //   CompileError: field name: no valid UTF-8 string @+20672
+                        // which killed instantiation outright. The game would not load.
+                        //
+                        // This name only has to be UNIQUE. It is the key used in
+                        // importObject.env[...] and written into the binary as that
+                        // same string on both sides; the IL2CPP method is resolved
+                        // separately, by the real methodName, against scriptData. So
+                        // it can safely be a hex encoding rather than the name itself.
+                        const __asciiName = (s) => {
+                            let out = "";
+                            for (let i = 0; i < s.length; i++) {
+                                out += s.charCodeAt(i).toString(16) + "_";
+                            }
+                            return out;
+                        };
+                        const injectName = useHook.typeName + "xx" + __asciiName(useHook.methodName) + (0,_utils__WEBPACK_IMPORTED_MODULE_4__.makeId)(8);
                         const lookupKey = useHook.params.join(",") + "|" + ((_b = useHook.returnType) !== null && _b !== void 0 ? _b : "");
                         const injectType = (_c = wasmTypeIndex.get(lookupKey)) !== null && _c !== void 0 ? _c : -1;
                         if (injectType === -1) {

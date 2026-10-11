@@ -85,7 +85,35 @@ function write(rel, content) {
   console.log(`wrote ${rel} (${fs.statSync(out).size} bytes)`);
 }
 
-const vendor = fs.readFileSync(path.join(here, "vendor", "uwmk.js"), "utf8");
+const vendorPath = path.join(here, "vendor", "uwmk.js");
+const vendor = fs.readFileSync(vendorPath, "utf8");
+
+// UWMK builds each hook's WASM import name from the IL2CPP method name, and the
+// binary writer emits field names as raw bytes rather than UTF-8. Unity's own
+// names are ASCII so this never showed; an obfuscated name is not, and hooking
+// one produced
+//   CompileError: field name: no valid UTF-8 string @+20672
+// which stops instantiation outright - the game does not load at all.
+//
+// The import name only has to be UNIQUE (it keys importObject.env and is
+// written into the binary on both sides), so uwmk.js hex-encodes it. Guard the
+// patch: a silently-reverted vendor file breaks the game in a way that reads
+// like a Unity fault rather than ours.
+if (!/const __asciiName =/.test(vendor)) {
+  throw new Error(
+    "build: vendor/uwmk.js is missing the ASCII import-name patch (__asciiName). " +
+    "Restoring the raw method name writes non-UTF-8 bytes into the WASM and the " +
+    "game fails to instantiate."
+  );
+}
+if (/const injectName = useHook\.typeName \+ "xx" \+ useHook\.methodName/.test(vendor)) {
+  throw new Error(
+    "build: vendor/uwmk.js builds injectName from the raw method name again. " +
+    "That writes non-UTF-8 bytes into the WASM import section."
+  );
+}
+const _importNameLine = vendor.match(/const injectName = [^\n]*/);
+console.log(`vendor patch present: ${_importNameLine ? "yes" : "NO"}`);
 
 const kourSrc = fs.readFileSync(path.join(here, "src", "kour.js"), "utf8");
 if (kourSrc.includes("__SAKURA_RAW_BASE__")) throw new Error("src/kour.js must not fetch anything — keep it self-contained");

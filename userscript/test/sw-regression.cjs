@@ -1430,6 +1430,61 @@ function check(name, cond, detail) {
     'registerViewHooks is not called alongside registerHooks in armUwmk');
 }
 
+/* ================================================================== *
+ * THIS PATCH IS LOAD-BEARING. DO NOT SIMPLIFY IT AWAY.
+ *
+ * v2.9.9 shipped the method map and the game stopped loading:
+ *
+ *   CompileError: field name: no valid UTF-8 string @+20672
+ *   wasmMemory.captured: false, hooksApplied: 0, nothing resolved
+ *
+ * UWMK builds each hook's WASM import name from the IL2CPP method name, and
+ * Wail writes field names with
+ *
+ *   const stringToByteArray = str.split("").map(c => c.charCodeAt(0))
+ *
+ * - raw charCodeAt, not UTF-8. Unity's own method names are ASCII so this never
+ * showed. An obfuscated IL2CPP name is not: MouseLook's accessors are U+008B
+ * and friends, and U+008B written as a single byte is not valid UTF-8.
+ *
+ * The import name only has to be UNIQUE - it keys importObject.env and is
+ * written into the binary on both sides - so it is hex-encoded instead.
+ *
+ * The assertions below are what stop this being tidied away, because the patch
+ * looks like noise on a line nobody reads.
+ */
+{
+  const vendorText = fs.readFileSync(path.join(__dirname, '..', 'vendor', 'uwmk.js'), 'utf8');
+  const buildText = fs.readFileSync(path.join(__dirname, '..', 'build.mjs'), 'utf8');
+  const srcText = fs.readFileSync(path.join(__dirname, '..', 'src', 'skillwarz.js'), 'utf8');
+
+  check('the WASM writer really does emit raw charCodeAt, not UTF-8',
+    /stringToByteArray = function \(str\)[\s\S]{0,200}charCodeAt\(0\)/.test(vendorText),
+    'stringToByteArray no longer looks like this - recheck the encoding');
+  check('the import name is hex-encoded, not the raw method name',
+    /const injectName = useHook\.typeName \+ "xx" \+ __asciiName\(useHook\.methodName\)/.test(vendorText),
+    'injectName uses the raw method name again');
+  check('and nothing writes the raw method name into the binary',
+    !/const injectName = useHook\.typeName \+ "xx" \+ useHook\.methodName/.test(vendorText),
+    'injectName regressed to the raw name');
+  check('the build refuses to ship without the patch',
+    /missing the ASCII import-name patch/.test(buildText),
+    'build.mjs has no vendor guard');
+  check('the build refuses to ship if the raw name comes back',
+    /builds injectName from the raw method name again/.test(buildText),
+    'build.mjs has no regression guard');
+
+  // The decisive one: prove the names are actually non-ASCII, so nobody can
+  // conclude the patch is unnecessary.
+  const raw = srcText.match(/var SK_METHODS = (\{"MouseLook":[\s\S]*?\});/);
+  check('the method map in the shipped source has non-ASCII names',
+    raw && /[-￿]/.test(raw[1]),
+    'method names are ASCII - if this ever passes, the patch is dead code');
+  check('and the export field names are ASCII, so they need no patch',
+    /resolvedIl2CppFunctions\["il2cpp_string_new"\]/.test(vendorText),
+    'export keys changed - recheck they are ASCII');
+}
+
 /* The menu opens bottom-right, which is where this game keeps the weapon and
  * ammo readout, so opening it hides the thing you opened it to change. It is
  * draggable, the position is remembered, and a menu dragged off the edge is
