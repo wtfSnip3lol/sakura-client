@@ -197,6 +197,34 @@ if (!swSrc.includes(`var VERSION = "${pkg.version}";`)) {
   throw new Error(`build: failed to stamp VERSION ${pkg.version} into the SkillWarz payload`);
 }
 console.log(`stamped payload VERSION ${pkg.version}`);
+
+// The method map must exist before armUwmk() runs, because registerViewHooks()
+// reads it during the same tick UWMK applies hooks. If the marker block is
+// missing or empty the view hooks silently register zero times and the angles
+// fall back to guessing with no visible symptom - which is the exact failure
+// this map exists to remove.
+const methodStart = swSrc.indexOf('/*__SKILLWARZ_METHODS_START__*/');
+const methodEnd = swSrc.indexOf('/*__SKILLWARZ_METHODS_END__*/');
+if (methodStart === -1 || methodEnd === -1 || methodEnd < methodStart) {
+  throw new Error("build: src/skillwarz.js is missing the SK_METHODS markers. "
+    + "Run: node tools/gen-skillwarz-methods.mjs <dump.cs> MouseLook,FPScontroller,TDM_GameManager src/skillwarz-methods.gen.js && "
+    + "node tools/inject-skillwarz-methods.mjs");
+}
+const methodBlock = swSrc.slice(methodStart, methodEnd);
+const methodCount = (methodBlock.match(/"wasmParams"/g) || []).length;
+if (methodCount === 0) {
+  throw new Error("build: the SK_METHODS block is empty. The view hooks would register "
+    + "zero times and the pitch/yaw read would silently fall back to a struct guess.");
+}
+if (methodBlock.indexOf('var SK_METHODS = ') === -1) {
+  throw new Error("build: the SK_METHODS block has no `var SK_METHODS =` assignment in it.");
+}
+if (methodStart > swSrc.indexOf('(function armUwmk()')) {
+  throw new Error("build: SK_METHODS is defined AFTER armUwmk(). It is read during "
+    + "arming, and a `var` assigned later is undefined at that moment - the view "
+    + "hooks would register zero times.");
+}
+console.log(`method map: ${methodCount} methods, defined before arming`);
 write("dist/sakura.skillwarz.user.js", HEADER_SW + SW_VENDOR_BLOCK + "\n" + await obfuscate(swSrc));
 
 // 6. Mirror the Cookie Clicker payload into the launcher's resources/ folder so

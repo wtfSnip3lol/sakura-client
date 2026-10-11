@@ -163,7 +163,7 @@ var BC_HUB = [];
 function sendToPlayer(msg) {
   for (const b of BC_HUB) if (typeof b.onmessage === 'function') b.onmessage({ data: msg });
 }
-function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'resolveGame', scriptDataLate = false, applyFirst = false, resolveButNotApply = false, noInstantiate = false, speed = null, thenOff = false, extraFrames = 0, fireEnemyTwice = null, setup = null, lobby = false, deliverVia = 'bc', preFire = null, ls = {}, fireMany = null, post = null }) {
+function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'resolveGame', scriptDataLate = false, applyFirst = false, resolveButNotApply = false, noInstantiate = false, speed = null, thenOff = false, extraFrames = 0, fireEnemyTwice = null, setup = null, lobby = false, deliverVia = 'bc', preFire = null, ls = {}, fireMany = null, post = null, mouseLook = null }) {
   // Reset the channel hub: payload instances from earlier runs would keep
   // their own SPEED_STATE and keep writing to the same heap, which looks
   // exactly like a compounding bug in the payload.
@@ -210,24 +210,30 @@ function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'r
         // ModkitPlugin stores the Runtime it was constructed with.
         _runtime: heapVia === 'pluginRuntime' ? pluginRuntime : (heapVia === 'takeover' ? orphanRuntime : Runtime),
         hookPrefix(target, cb) {
-          const h = { ...target, callback: cb, applied: false, enabled: true };
+          const h = { ...target, callback: cb, applied: false, enabled: true, kind: 0 };
           this.hooks.push(h);
           hookCalls.push(target);
           order.push('hookPrefix:' + target.typeName);
-          // A real hook cannot be applied without the game: it needs the
-          // function table from game.Module.asm. Populate the RUNTIME's cache,
-          // not the plugin's - `this` here is the plugin object.
           if (hooksApply && heapVia !== 'none') {
-            // 'pluginRuntime' models the field report: the EXPORTED Runtime's
-            // resolveGame() returns null while the plugin's own _runtime - a
-            // different object that still holds the game - can resolve it.
             if (heapVia === 'pluginRuntime') pluginRuntime._game = gameObj;
             else Runtime._game = gameObj;
           }
-          if (heapVia === 'takeover') {
-            // A second UWMK copy loaded and overwrote the global. Our tag is
-            // gone; the orphaned Runtime still holds the game.
-            orphanRuntime._game = gameObj;
+          if (heapVia === 'takeover') orphanRuntime._game = gameObj;
+          return h;
+        },
+        // UWMK's postfix hook passes the RETURN VALUE first:
+        //   let r = originalFunc(...args);
+        //   hook.callback(new ValueWrapper(r), ...wrappedArgs)
+        // That is how the SkillWarz payload reads MouseLook's real pitch and
+        // yaw, so the harness has to model it or the path is untestable.
+        hookPostfix(target, cb) {
+          const h = { ...target, callback: cb, applied: false, enabled: true, kind: 1 };
+          this.hooks.push(h);
+          hookCalls.push(target);
+          order.push('hookPostfix:' + target.typeName);
+          if (hooksApply && heapVia !== 'none') {
+            if (heapVia === 'pluginRuntime') pluginRuntime._game = gameObj;
+            else Runtime._game = gameObj;
           }
           return h;
         }
@@ -379,7 +385,40 @@ class BC {
     if (preFire) { try { preFire(ctx); } catch (e) { fatal = 'preFire threw: ' + e.message; } }
 
     if (plugin) for (const h of plugin.hooks) {
-      if (!h.applied || !fireTypes.includes(h.typeName)) continue;
+      if (!h.applied) continue;
+
+      // MouseLook has no instance in OBJ: the payload reaches it through
+      // PhotonNetworkSync+0x30, and these hooks fire because the GAME called
+      // them, not because the harness walked a list. `mouseLook.getters` gives
+      // one return value per registered getter, in registration order, which is
+      // how a real frame delivers them.
+      if (h.typeName === 'MouseLook') {
+        if (!mouseLook) continue;
+        try {
+          if (h.kind === 1) {
+            const vals = mouseLook.getters || [];
+            let n = 0;
+            for (const hh of plugin.hooks) if (hh.typeName === 'MouseLook' && hh.kind === 1) n++;
+            for (const hh of plugin.hooks) {
+              if (hh.typeName !== 'MouseLook') continue;
+              if (hh.kind === 1) {
+                const idx = plugin.hooks.filter(x => x.typeName === 'MouseLook' && x.kind === 1).indexOf(hh);
+                hh.callback(new FakeVW(vals[idx] === undefined ? 0 : vals[idx]),
+                            new FakeVW(mouseLook.self === undefined ? 0x2c000 : mouseLook.self));
+              } else if (hh.params && hh.params.length === 2) {
+                const sVals = mouseLook.sets || [];
+                const idx = plugin.hooks.filter(x => x.typeName === 'MouseLook' && x.kind === 0).indexOf(hh);
+                hh.callback(new FakeVW(mouseLook.self === undefined ? 0x2c000 : mouseLook.self),
+                            new FakeVW(sVals[idx] === undefined ? 0 : sVals[idx]));
+              }
+            }
+          }
+          if (h.callback) h.callback(new FakeVW(mouseLook.self === undefined ? 0x2c000 : mouseLook.self));
+        } catch (e) { fatal = 'mouseLook hook threw: ' + e.message; }
+        continue;
+      }
+
+      if (!fireTypes.includes(h.typeName)) continue;
       // A lobby: nothing round-scoped ticks. Enemy bodies, the bot brains and
       // both game managers only exist once a round has actually loaded.
       if (lobby && (h.typeName === 'EnemyBot' || h.typeName === 'GG_GameManager'
@@ -455,11 +494,39 @@ function check(name, cond, detail) {
     !!(r.pluginCalls[0].referencedAssemblies || []).includes('Assembly-CSharp.dll'), 'game types live here');
   check('a report is posted to the portal', !!r.report, 'no report');
 
-  check('Update() hooks are registered on the player types', r.hookCalls.length === 9, `hooks=${r.hookCalls.length}`);
+  // Two families of hooks now exist: the Update() capture hooks, one per player
+// type, and the MouseLook view hooks. Counting them together made every count
+// assertion ambiguous the moment a second family was added, which is how a
+// silently-empty hook family would have gone unnoticed.
+  const updateHooks = r.hookCalls.filter(h => h.methodName === 'Update');
+  const viewHooks = r.hookCalls.filter(h => h.typeName === 'MouseLook');
+  check('Update() hooks are registered on the player types', updateHooks.length === 9, `hooks=${updateHooks.length}`);
+  check('the view hooks are registered separately and are not Update() hooks',
+    viewHooks.length > 0 && viewHooks.every(h => h.typeName === 'MouseLook' && h.methodName !== 'Update'),
+    `viewHooks=${viewHooks.length}`);
   check('hooks use the IL2CPP (this, MethodInfo*) -> void signature',
-    r.hookCalls.every(h => h.methodName === 'Update' && Array.isArray(h.params)
+    updateHooks.every(h => Array.isArray(h.params)
       && h.params.length === 2 && h.params[0] === 'i32' && h.returnType === undefined),
-    JSON.stringify(r.hookCalls[0]));
+    JSON.stringify(updateHooks[0]));
+  // Not a count: the count of MouseLook's float getters is a property of the
+  // dump, and hardcoding it here just means the assertion fails the next time
+  // the generator picks up a build with a different number. Assert the shape
+  // instead - anything returning f32 is a getter taking (this), anything taking
+  // an f32 is a setter returning void, and neither may be confused for the
+  // other.
+  const mlGetters = viewHooks.filter(h => h.returnType === 'f32');
+  const mlSetters = viewHooks.filter(h => Array.isArray(h.params) && h.params.includes('f32'));
+  check('every float getter is hooked postfix as (this) -> f32, and there are some',
+    mlGetters.length > 0 && mlGetters.every(h => h.params.length === 1 && h.params[0] === 'i32')
+      && mlGetters.every(h => h.returnType === undefined || h.returnType === 'f32'),
+    `getters=${mlGetters.length}`);
+  check('every float setter is hooked prefix as (this, f32) -> void',
+    mlSetters.length > 0 && mlSetters.every(h => h.params.length === 2 && h.params[1] === 'f32'
+      && h.returnType === undefined),
+    `setters=${mlSetters.length}`);
+  check('and the two families do not overlap',
+    mlGetters.every(g => !mlSetters.includes(g)),
+    JSON.stringify(mlGetters.map(h => `${h.methodName}:${h.returnType}:${h.params.join(',')}`)));
 
   check('live FPScontroller instance is captured',
     !!(r.report && r.report.instances && r.report.instances.FPScontroller),
@@ -531,7 +598,7 @@ function check(name, cond, detail) {
 {
   const r = runFrame({ scriptDataLate: true });
   check('hooks register with NO scriptData available at all',
-    r.hookCalls.length === 9, `hooks=${r.hookCalls.length} (names alone must suffice)`);
+    r.hookCalls.filter(h => h.methodName === 'Update').length === 9, `hooks=${r.hookCalls.filter(h => h.methodName === 'Update').length} (names alone must suffice)`);
   const iHook = r.order.indexOf('hookPrefix:FPScontroller');
   const iData = r.order.indexOf('scriptData');
   check('hooks are registered BEFORE scriptData appears',
@@ -545,7 +612,7 @@ function check(name, cond, detail) {
 
   const dbl = runFrame({});
   check('registerHooks is idempotent (no duplicate hooks on retry)',
-    dbl.hookCalls.length === 9, `hooks=${dbl.hookCalls.length} - registered twice?`);
+    dbl.hookCalls.filter(h => h.methodName === 'Update').length === 9, `hooks=${dbl.hookCalls.filter(h => h.methodName === 'Update').length} - registered twice?`);
 }
 
 /* ================================================================== *
@@ -556,8 +623,8 @@ function check(name, cond, detail) {
   // UWMK's apply pass runs while plugin.hooks is still empty: too late.
   const late = runFrame({ applyFirst: true });
   check('registered-too-late is detected and named',
-    late.hookCalls.length === 9 && late.report.hooksApplied === 0,
-    `hooks=${late.hookCalls.length} applied=${late.report.hooksApplied}`);
+    late.hookCalls.filter(h => h.methodName === 'Update').length === 9 && late.report.hooksApplied === 0,
+    `hooks=${late.hookCalls.filter(h => h.methodName === 'Update').length} applied=${late.report.hooksApplied}`);
   check('too-late: hooksResolved is 0 (UWMK never saw them)',
     late.report.hooksResolved === 0, `hooksResolved=${late.report.hooksResolved}`);
   check('too-late: warning says the hooks were never SEEN, not that the signature was wrong',
@@ -1008,11 +1075,13 @@ function check(name, cond, detail) {
     }
   });
   const a = r.report.angles;
-  check('yaw comes from +0x28, the only float that moves',
-    a && a.yawAt === '0x28' && Math.abs(a.rawYaw - 45) < 1e-3,
+  // No getters fire in this fixture, so this case is about the struct path
+  // being honest about being a guess - and about +0x18 never being read.
+  check('with no getters firing the value is still read, and labelled a guess',
+    a && a.source === 'field 0x28 (guess)' && Math.abs(a.rawYaw - 45) < 1e-3,
     JSON.stringify(a));
   check('+0x18 is not read as pitch, so a static 360 cannot flatten the view',
-    a && a.pitchAt === '0x1c' && a.rawPitch === 0,
+    a && a.pitchAt.indexOf('0x1c') === 0 && a.rawPitch === 0,
     JSON.stringify(a));
   check('and the projection is usable', a && a.identified === true, JSON.stringify(a));
 }
@@ -1039,7 +1108,7 @@ function check(name, cond, detail) {
     a && a.identified === false,
     JSON.stringify(a));
   check('and the report names the read that failed',
-    a && /0x1C/.test(a.why || ''),
+    a && /pitch/i.test(a.why || ''),
     JSON.stringify(a));
   check('the yaw is still published, because it is a confirmed offset',
     a && Math.abs(a.rawYaw - 45) < 1e-3,
@@ -1252,6 +1321,113 @@ function check(name, cond, detail) {
   check('and it brings the projection back to centre, which is what a correction is for',
     corrected.report.angles && Math.abs(corrected.report.angles.centreX - 0.5) < 1e-3,
     `centreX=${corrected.report.angles && corrected.report.angles.centreX}`);
+}
+
+/* ================================================================== *
+ * THE VIEW IS READ, NOT GUESSED.
+ *
+ * Four releases of offsets guessed into a struct produced a yaw clamp read as
+ * a pitch. dump.cs ends that: MouseLook exposes public float getters, and
+ * UWMK's hookPostfix hands the return value to the callback
+ *
+ *     let r = originalFunc(...args);
+ *     hook.callback(new ValueWrapper(r), ...wrappedArgs)
+ *
+ * so the game's own pitch and yaw can be read directly.
+ *
+ * Which getter is which is then identified by MATCHING each returned value
+ * against the field offsets already being read - the getter returning whatever
+ * +0x28 holds is the yaw getter, by construction. That is the step a
+ * turn-and-diff was being asked to do by hand, three times over.
+ */
+{
+  const ml = 0x2c000;
+  const s1 = 0x40000;
+  // Getter order is registration order, which is dump order. Values are given
+  // positionally so the test does not have to name obfuscated identifiers.
+  const r = runFrame({
+    fireMany: { PhotonNetworkSync: [s1] },
+    mouseLook: { self: ml, getters: [999, 45, 12345, 0, 7, -3, 123456] },
+    setup() {
+      wI32(s1 + 0x30, ml);
+      wF32(ml + 0x14, -360); wF32(ml + 0x18, 360); wF32(ml + 0x1c, 0);
+      wF32(ml + 0x28, 45); wF32(ml + 0x30, 1.1382339000701904);
+      wF32(OBJ.FPScontroller + 0x2e4, -40); wF32(OBJ.FPScontroller + 0x2e8, 5); wF32(OBJ.FPScontroller + 0x2ec, 12);
+      wF32(s1 + 0x6c, -40); wF32(s1 + 0x70, 5.2); wF32(s1 + 0x74, 52);
+      wI32(s1 + 0x7c, 10);
+    }
+  });
+  const a = r.report.angles;
+  check('the getters fired and their return values are reported',
+    a && a.getters && a.getters.length > 0,
+    JSON.stringify(a && a.getters));
+  check('a getter returning the stored 0x28 is identified as the yaw getter',
+    a && a.yawAt && a.yawAt !== '0x28' && Math.abs(a.rawYaw - 45) < 1e-3,
+    `yawAt=${a && a.yawAt} rawYaw=${a && a.rawYaw}`);
+  check('the reading comes from the getter, not the struct fallback',
+    a && a.source === 'getter',
+    `source=${a && a.source}`);
+  check('each getter is reported against the offset it matches, or null',
+    a && a.getters.every(g => 'matches' in g),
+    JSON.stringify(a && a.getters));
+  check('the identification makes the projection usable',
+    a && a.identified === true,
+    JSON.stringify(a));
+}
+
+/* The fallback has to announce itself. A silent fallback is how +0x18 came to
+ * be read as a pitch for four releases - the code projected confidently with a
+ * constant and nothing said the constant was a guess. */
+{
+  const ml = 0x2c000;
+  const s1 = 0x40000;
+  const r = runFrame({
+    fireMany: { PhotonNetworkSync: [s1] },
+    setup() {
+      wI32(s1 + 0x30, ml);
+      wF32(ml + 0x14, -360); wF32(ml + 0x18, 360); wF32(ml + 0x1c, 0); wF32(ml + 0x28, 45);
+      wF32(OBJ.FPScontroller + 0x2e4, -40); wF32(OBJ.FPScontroller + 0x2e8, 5); wF32(OBJ.FPScontroller + 0x2ec, 12);
+      wF32(s1 + 0x6c, -40); wF32(s1 + 0x70, 5.2); wF32(s1 + 0x74, 52);
+      wI32(s1 + 0x7c, 10);
+    }
+  });
+  const a = r.report.angles;
+  check('with no getters firing the struct is used, and says it is a guess',
+    a && a.source === 'field 0x28 (guess)' && a.yawAt === '0x28 (guess)',
+    JSON.stringify(a));
+  check('and the getter list is empty rather than fabricated',
+    a && Array.isArray(a.getters) && a.getters.length === 0,
+    JSON.stringify(a && a.getters));
+}
+
+/* The build guards themselves. A guard nobody has watched fail is a guard
+ * nobody knows works, and each of these exists because the silent version of the
+ * same fault already cost a release. */
+{
+  const srcText = fs.readFileSync(path.join(__dirname, '..', 'src', 'skillwarz.js'), 'utf8');
+  const buildText = fs.readFileSync(path.join(__dirname, '..', 'build.mjs'), 'utf8');
+  const start = srcText.indexOf('/*__SKILLWARZ_METHODS_START__*/');
+  const arm = srcText.indexOf('(function armUwmk()');
+  check('the method map is defined before the code that reads it during arming',
+    start !== -1 && arm !== -1 && start < arm,
+    `methods at ${start}, armUwmk at ${arm}`);
+  check('the map is non-empty in the source that ships',
+    /var SK_METHODS = \{"MouseLook":\[\{"name":"/.test(srcText),
+    'SK_METHODS is empty or malformed');
+  check('the build throws rather than shipping an empty method map',
+    /SK_METHODS block is empty/.test(buildText),
+    'build.mjs has no empty-block guard');
+  check('the build throws rather than shipping a map defined too late',
+    /AFTER armUwmk/.test(buildText),
+    'build.mjs has no ordering guard');
+  check('and the generator that produces it is committed alongside',
+    fs.existsSync(path.join(__dirname, '..', 'tools', 'gen-skillwarz-methods.mjs')),
+    'tools/gen-skillwarz-methods.mjs missing');
+  // A hook family that registers zero times is the failure being guarded, so
+  // assert the payload actually registers them rather than merely that it tries.
+  check('the payload calls registerViewHooks during arming, not after',
+    /registerHooks\(\);\s*\n\s*registerViewHooks\(\);/.test(srcText),
+    'registerViewHooks is not called alongside registerHooks in armUwmk');
 }
 
 /* The menu opens bottom-right, which is where this game keeps the weapon and

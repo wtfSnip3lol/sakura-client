@@ -594,8 +594,40 @@
   // mystery again.
   var VW = null, plugin = null;
   var INSTANCES = {};   // typeName -> { ptr, firstSeen, hits }
+  /* ---------------------------------------------------------------- *
+   * The METHOD map, for the same reason as the field map: these identifiers
+   * are obfuscated binary names and must be extracted from dump.cs, never
+   * transcribed. See tools/gen-skillwarz-methods.mjs.
+   *
+   * It lives HERE, above armUwmk(), not beside the field map further down.
+   * registerViewHooks() reads it during the same tick UWMK applies hooks, and a
+   * ar assigned textually later is undefined at that moment - the hooks
+   * would register zero times and every angle would silently fall back to a
+   * struct guess. build.mjs asserts this ordering.
+   *
+   * MouseLook exposes public float getters and float setters. UWMK hands the
+   * return value to a postfix callback and the argument to a prefix one, so the
+   * pitch and yaw can be READ instead of inferred - and written, which is the
+   * aimbot path.
+   * ---------------------------------------------------------------- */
+  /*__SKILLWARZ_METHODS_START__*/
+var SK_METHODS = {"MouseLook":[{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":["float"],"wasmParams":["i32","f32"]},{"name":"","ret":"void","params":["float"],"wasmParams":["i32","f32"]},{"name":"","ret":"void","params":["float"],"wasmParams":["i32","f32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"LateUpdate","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"float","params":[],"wasmParams":["i32"],"wasmRet":"f32"},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":["float"],"wasmParams":["i32","f32"]},{"name":"","ret":"float","params":[],"wasmParams":["i32"],"wasmRet":"f32"},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":["float","float"],"wasmParams":["i32","f32","f32"]},{"name":"","ret":"float","params":[],"wasmParams":["i32"],"wasmRet":"f32"},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":".ctor","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":["float"],"wasmParams":["i32","f32"]},{"name":"","ret":"float","params":[],"wasmParams":["i32"],"wasmRet":"f32"},{"name":"","ret":"void","params":["float","float"],"wasmParams":["i32","f32","f32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":["float"],"wasmParams":["i32","f32"]},{"name":"","ret":"float","params":[],"wasmParams":["i32"],"wasmRet":"f32"},{"name":"","ret":"float","params":[],"wasmParams":["i32"],"wasmRet":"f32"},{"name":"","ret":"void","params":["float"],"wasmParams":["i32","f32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":["float"],"wasmParams":["i32","f32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":["float"],"wasmParams":["i32","f32"]}],"FPScontroller":[{"name":"","ret":"float","params":[],"wasmParams":["i32"],"wasmRet":"f32"},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"bool","params":[],"wasmParams":["i32"],"wasmRet":"i32"},{"name":"","ret":"void","params":["bool"],"wasmParams":["i32","i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"bool","params":[],"wasmParams":["i32"],"wasmRet":"i32"},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"bool","params":[],"wasmParams":["i32"],"wasmRet":"i32"},{"name":"","ret":"bool","params":[],"wasmParams":["i32"],"wasmRet":"i32"},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"bool","params":["bool","bool"],"wasmParams":["i32","i32","i32"],"wasmRet":"i32"},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"bool","params":[],"wasmParams":["i32"],"wasmRet":"i32"},{"name":"","ret":"void","params":["bool"],"wasmParams":["i32","i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"bool","params":[],"wasmParams":["i32"],"wasmRet":"i32"},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":["bool"],"wasmParams":["i32","i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":["bool"],"wasmParams":["i32","i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":["bool"],"wasmParams":["i32","i32"]},{"name":"","ret":"bool","params":[],"wasmParams":["i32"],"wasmRet":"i32"},{"name":"","ret":"bool","params":[],"wasmParams":["i32"],"wasmRet":"i32"},{"name":"","ret":"bool","params":[],"wasmParams":["i32"],"wasmRet":"i32"},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":".ctor","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":["float"],"wasmParams":["i32","f32"]},{"name":"","ret":"bool","params":[],"wasmParams":["i32"],"wasmRet":"i32"},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"bool","params":[],"wasmParams":["i32"],"wasmRet":"i32"},{"name":"","ret":"bool","params":["bool","bool"],"wasmParams":["i32","i32","i32"],"wasmRet":"i32"},{"name":"Update","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":["float"],"wasmParams":["i32","f32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"bool","params":["bool","bool"],"wasmParams":["i32","i32","i32"],"wasmRet":"i32"},{"name":"","ret":"void","params":["float","bool"],"wasmParams":["i32","f32","i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]}],"TDM_GameManager":[{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"bool","params":["int"],"wasmParams":["i32","i32"],"wasmRet":"i32"},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":["bool"],"wasmParams":["i32","i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":".ctor","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"OnDestroy","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"commercialBreakComplete","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":["bool"],"wasmParams":["i32","i32"]},{"name":"","ret":"void","params":["int","int","int"],"wasmParams":["i32","i32","i32","i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":["int","int","int"],"wasmParams":["i32","i32","i32","i32"]},{"name":"","ret":"bool","params":[],"wasmParams":["i32"],"wasmRet":"i32"},{"name":"Update","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":["bool"],"wasmParams":["i32","i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"OnApplicationFocus","ret":"void","params":["bool"],"wasmParams":["i32","i32"]},{"name":"","ret":"bool","params":[],"wasmParams":["i32"],"wasmRet":"i32"},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"bool","params":["int"],"wasmParams":["i32","i32"],"wasmRet":"i32"},{"name":"","ret":"void","params":["bool"],"wasmParams":["i32","i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":["int","int","int"],"wasmParams":["i32","i32","i32","i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"Awake","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":["bool"],"wasmParams":["i32","i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":["int","int"],"wasmParams":["i32","i32","i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":["bool"],"wasmParams":["i32","i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]},{"name":"","ret":"void","params":[],"wasmParams":["i32"]}]};
+  /*__SKILLWARZ_METHODS_END__*/
+
   var HOOKS = [];       // { type, hook, keep }
   var HOOK_ERRORS = [];
+
+  // View-hook state, declared here for the same reason HOOKS and CAPTURE are:
+  // armUwmk() runs as an IIFE above the rest of this file and calls
+  // registerViewHooks() in that first pass. A `var` declared further down is
+  // hoisted but still undefined at that moment, so a push into
+  // VIEW_HOOK_ERRORS would throw on the first hook that failed to register - and
+  // the throw would land in armUwmk()'s own catch and surface as one opaque
+  // ARM.error with the real fault invisible.
+  var VIEW_HOOKS = {};
+  var ML_INSTANCE = 0;
+  var VIEW_HOOKS_REGISTERED = false;
+  var VIEW_HOOK_ERRORS = [];
 
   // Types to capture, and whether the hook stays on once it has fired. The
   // local player object is rebuilt on respawn, so those hooks stay armed and
@@ -681,6 +713,7 @@
       // code, coin flip. Registering names needs no metadata: hook() only
       // records them, and the method table is resolved during the apply pass.
       registerHooks();
+      registerViewHooks();
       ARM.hooksRegistered = HOOKS.length;
       // Must come AFTER createPlugin: hookWasmInstantiate() has already replaced
       // WebAssembly.instantiate with UWMK's handler by this point, so this tap
@@ -1238,6 +1271,81 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       }
     }
     return HOOKS.length > 0;
+  }
+
+  /* ---------------------------------------------------------------- *
+   * THE VIEW, READ FROM THE GAME INSTEAD OF GUESSED FROM THE STRUCT.
+   *
+   * Every previous attempt at pitch and yaw went through struct offsets, and
+   * every one of them was wrong: +0x18 is a yaw clamp, +0x28 a heading, and
+   * pitch is not in the struct at all - Unity keeps it on the camera Transform,
+   * which exposes no IL2CPP fields. Four releases of confident, wrong angles.
+   *
+   * dump.cs names the way out. MouseLook exposes public float getters and
+   * public float setters, and UWMK hands both ends to a hook callback:
+   *
+   *   POSTFIX  let r = originalFunc(...args);
+   *            hook.callback(new ValueWrapper(r), ...wrappedArgs)
+   *   PREFIX   const wrapped = args.map(a => new ValueWrapper(a));
+   *            hook.callback(...wrapped)
+   *
+   * So a getter hook yields the game's OWN pitch and yaw, computed by the same
+   * code that drives the camera, and a setter hook yields - and can rewrite -
+   * the value being written. That is both the fix for the boxes and the write
+   * path an aimbot needs.
+   *
+   * Which getter is the pitch and which is the yaw is worked out here, by
+   * MATCHING each returned value against the field offsets already being read:
+   * the getter returning whatever +0x28 holds is the yaw getter, by
+   * construction. That is the identification a turn-and-diff was asked to do by
+   * hand, three separate times.
+   * ---------------------------------------------------------------- */
+
+  function viewHookCallback(kind, methodName) {
+    return function () {
+      try {
+        var rec = VIEW_HOOKS[methodName] ||
+          (VIEW_HOOKS[methodName] = { last: null, hits: 0, setLast: null, setHits: 0 });
+        var a = arguments;
+        if (kind === "get") {
+          var r = a[0];
+          if (r && typeof r.val === "function") {
+            rec.last = r.val();
+            rec.hits++;
+            if (a[1] && typeof a[1].val === "function") { var t = a[1].val(); if (t) ML_INSTANCE = t; }
+          }
+        } else {
+          if (a[1] && typeof a[1].val === "function") { rec.setLast = a[1].val(); rec.setHits++; }
+          if (a[0] && typeof a[0].val === "function") { var t2 = a[0].val(); if (t2) ML_INSTANCE = t2; }
+        }
+      } catch (_) {}
+    };
+  }
+
+  function registerViewHooks() {
+    if (VIEW_HOOKS_REGISTERED) return true;
+    if (!plugin || typeof plugin.hookPostfix !== "function") return false;
+    var ml = SK_METHODS.MouseLook || [];
+    for (var i = 0; i < ml.length; i++) {
+      var m = ml[i];
+      try {
+        if (m.ret === "float") {
+          plugin.hookPostfix(
+            { typeName: "MouseLook", methodName: m.name, params: m.wasmParams, returnType: m.wasmRet },
+            viewHookCallback("get", m.name)
+          );
+        } else if (m.ret === "void" && m.params.length === 1 && m.params[0] === "float") {
+          plugin.hookPrefix(
+            { typeName: "MouseLook", methodName: m.name, params: m.wasmParams, returnType: undefined },
+            viewHookCallback("set", m.name)
+          );
+        }
+      } catch (e) {
+        VIEW_HOOK_ERRORS.push(String((e && e.message) || e).slice(0, 120));
+      }
+    }
+    VIEW_HOOKS_REGISTERED = true;
+    return true;
   }
 
   // UWMK assigns tableIndex during its one-shot apply pass. Hooks that never
@@ -2108,32 +2216,100 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
   var YAW_OFF = 0x28;
   var PITCH_OFF = 0x1c;
 
-  var ANGLE = { pitch: null, yaw: null, identified: false, why: "no MouseLook yet" };
+  /* Read the view.
+   *
+   * The hooked getters are the source. Which getter is the pitch and which is
+   * the yaw is worked out by MATCHING each returned value against the struct
+   * offsets already being read: the getter returning whatever +0x28 holds is the
+   * yaw getter, by construction. That is the identification a turn-and-diff was
+   * being asked to do by hand, done here from data already in hand.
+   *
+   * The struct read is the fallback and it says so. A fallback that does not
+   * announce itself is exactly how +0x18 came to be read as a pitch for four
+   * releases - the code projected confidently with a constant and nothing
+   * indicated the constant was a guess. */
+  var YAW_OFF = 0x28;
+  var PITCH_OFF = 0x1c;
+
+  var ANGLE = { pitch: null, yaw: null, identified: false, why: "no MouseLook yet",
+                source: null, yawGetter: null, pitchGetter: null, getters: [] };
+
+  // Which hooked getter returns the value stored at `off`?
+  function getterFor(off) {
+    var best = null, bestHits = 0;
+    for (var k in VIEW_HOOKS) {
+      var rec = VIEW_HOOKS[k];
+      if (!rec.hits || rec.last === null) continue;
+      var stored = rd(ML_INSTANCE + off, "f32");
+      if (typeof stored !== "number") continue;
+      if (Math.abs(rec.last - stored) < 1e-3 && rec.hits > bestHits) { best = k; bestHits = rec.hits; }
+    }
+    return best;
+  }
+
+  // Every getter with its live value and the offset it matches. Published
+  // whether or not the pairing below succeeds: if it fails, this is the list
+  // that says why, rather than a "no MouseLook" with nothing behind it.
+  function getterRows(ml) {
+    var rows = [], f = SK_FIELDS.MouseLook || [];
+    for (var k in VIEW_HOOKS) {
+      var rec = VIEW_HOOKS[k];
+      if (!rec.hits) continue;
+      var matches = null;
+      for (var q = 0; q < f.length; q++) {
+        if (f[q][1] !== "f32") continue;
+        var st = rd(ml + f[q][0], "f32");
+        if (typeof st === "number" && Math.abs(st - rec.last) < 1e-3) {
+          matches = "0x" + f[q][0].toString(16); break;
+        }
+      }
+      rows.push({ name: k, value: rec.last, matches: matches, hits: rec.hits,
+                  set: rec.setHits ? rec.setLast : null });
+    }
+    return rows;
+  }
 
   function viewAngles() {
     var v = viewState();
     if (!v || !v.mouseLook) { ANGLE.identified = false; ANGLE.why = "no MouseLook yet"; return null; }
     var ml = parseInt(v.mouseLook, 16);
-    var y = rd(ml + YAW_OFF, "f32");
-    var p = rd(ml + PITCH_OFF, "f32");
-    ANGLE.rawYaw = y; ANGLE.rawPitch = p;
-    if (typeof y !== "number" || !isFinite(y) || typeof p !== "number" || !isFinite(p)) {
-      ANGLE.identified = false; ANGLE.why = "MouseLook floats unreadable";
+    if (ML_INSTANCE !== ml) ML_INSTANCE = ml;
+
+    ANGLE.getters = getterRows(ml);
+    var yawG = getterFor(YAW_OFF);
+    var pitchG = null;
+    for (var g in VIEW_HOOKS) {
+      if (g === yawG) continue;
+      var rc = VIEW_HOOKS[g];
+      if (!rc.hits || rc.last === null) continue;
+      // A pitch is bounded and a heading is not. Among the getters that are not
+      // the yaw, the bounded one is the pitch.
+      if (rc.last >= -90 && rc.last <= 90) { pitchG = g; break; }
+    }
+    ANGLE.yawGetter = yawG; ANGLE.pitchGetter = pitchG;
+
+    var yaw, pitch;
+    if (yawG) { yaw = VIEW_HOOKS[yawG].last; ANGLE.source = "getter"; }
+    else { yaw = rd(ml + YAW_OFF, "f32"); ANGLE.source = "field 0x28 (guess)"; }
+    if (pitchG) pitch = VIEW_HOOKS[pitchG].last;
+    else pitch = rd(ml + PITCH_OFF, "f32");
+
+    ANGLE.rawYaw = yaw; ANGLE.rawPitch = pitch;
+    if (typeof yaw !== "number" || !isFinite(yaw) || typeof pitch !== "number" || !isFinite(pitch)) {
+      ANGLE.identified = false; ANGLE.why = "view floats unreadable";
       return null;
     }
-    // Yaw is a heading: any finite value is one after normalising. Only the
-    // pitch range is a real constraint, and it is checked so that a future build
-    // where +0x1C stops being pitch withholds the boxes instead of projecting
-    // with them.
-    if (p < -90 || p > 90) {
+    // Only the pitch range is a real constraint. If +0x1C stops being a pitch in
+    // a future build, the boxes are withheld rather than projected with nonsense.
+    if (pitch < -90 || pitch > 90) {
       ANGLE.identified = false;
-      ANGLE.why = "0x1C=" + Math.round(p) + " is not a pitch";
+      ANGLE.why = "pitch " + Math.round(pitch) + " out of range";
       return null;
     }
     ANGLE.why = "";
     ANGLE.identified = true;
-    ANGLE.pitch = p + VIEW.pitchOff;
-    ANGLE.yaw = y + VIEW.yawOff;
+    ANGLE.pitch = pitch + VIEW.pitchOff;
+    ANGLE.yaw = yaw + VIEW.yawOff;
     return ANGLE;
   }
 
@@ -2442,12 +2618,12 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       v2.body.appendChild(rr4);
       v2.body.appendChild(rr5);
 
-      // Yaw comes from MouseLook+0x28, which the diff pinned. Pitch does not
-      // come from this struct at all - nothing on MouseLook moves when you look
-      // up or down, because Unity keeps pitch on the camera Transform, and a
-      // Transform exposes no IL2CPP fields. So vertical look is not tracked and
-      // these two sliders are how a constant error gets dialled out without
-      // waiting on another report.
+      // Yaw and pitch are read from hooked MouseLook getters - dump.cs shows the
+      // getters, and UWMK hands a postfix hook the return value. Which getter is
+      // which is worked out by matching each returned value against the struct
+      // offsets already being read, so it needs no calibration from the player.
+      // These two sliders only exist for a constant error left after that, and
+      // the card above states plainly when the reading is a struct guess.
       var yo = mkRange(-180, 180, 1, function () { return VIEW.yawOff; },
         function (v) { VIEW.yawOff = v; saveOff(); paintEspBtn(); });
       yo.input.dataset.unit = "°";
@@ -2464,11 +2640,11 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       v2.body.appendChild(el("div", "sk-note",
         "view: " + (n ? (n.mouseLook ? "MouseLook " + n.mouseLook + (n.camera ? "  camera " + n.camera : "") : "no MouseLook yet")
                       : "no MouseLook yet") +
-        (ang ? "\nreading " + (ang.yawAt || "0x28") + "=" + (ang.rawYaw === null || ang.rawYaw === undefined ? "-" : Math.round(ang.rawYaw)) +
-               (ang.yawOff ? " " + (ang.yawOff > 0 ? "+" : "") + Math.round(ang.yawOff) : "") +
-               "  (yaw, confirmed)\n" + (ang.pitchAt || "0x1c") + "=" + (ang.rawPitch === null || ang.rawPitch === undefined ? "-" : Math.round(ang.rawPitch)) +
-               (ang.pitchOff ? " " + (ang.pitchOff > 0 ? "+" : "") + Math.round(ang.pitchOff) : "") +
-               "  (pitch, unverified)" : "") +
+        (ang ? "\n" + (ang.source === "getter"
+                 ? "read from MouseLook getters - yaw " + ang.yawAt + "=" + Math.round(ang.rawYaw) +
+                   (ang.yawOff ? " " + (ang.yawOff > 0 ? "+" : "") + Math.round(ang.yawOff) : "") +
+                   "\npitch " + ang.pitchAt + "=" + Math.round(ang.rawPitch)
+                 : "GUESSING from struct offsets: +0x28 and +0x1C.\nThe angle getters are hooked but have not fired.") : "") +
         (VIEW.pitchOff || VIEW.yawOff ? "\npitch " + Math.round(VIEW.pitchOff) + "  yaw " + Math.round(VIEW.yawOff) : "")));
       out.push(v2);
     }
@@ -3298,11 +3474,15 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
             if (pr) { cx = pr.x / 1000; cy = pr.y / 1000; }
           }
           return { identified: ANGLE.identified, why: ANGLE.why,
-                   // Which offsets the reading came from, raw and applied. A
-                   // projection that is wrong by a constant rotation is one
-                   // slider away from right, and only if the offset that is
-                   // wrong is a number in the report.
-                   yawAt: "0x" + YAW_OFF.toString(16), pitchAt: "0x" + PITCH_OFF.toString(16),
+                   // Which source produced the reading - a hooked getter, or a
+                   // struct offset that is only a guess - plus every getter with
+                   // the offset it matches. A projection wrong by a constant
+                   // rotation is one slider from right, and only if the wrong
+                   // thing is a number in the report.
+                   source: ANGLE.source,
+                   yawAt: ANGLE.yawGetter || "0x28 (guess)",
+                   pitchAt: ANGLE.pitchGetter || "0x1c (guess)",
+                   getters: ANGLE.getters,
                    rawPitch: ANGLE.rawPitch, rawYaw: ANGLE.rawYaw,
                    pitch: ANGLE.pitch, yaw: ANGLE.yaw,
                    pitchOff: VIEW.pitchOff, yawOff: VIEW.yawOff,
