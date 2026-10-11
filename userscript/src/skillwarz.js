@@ -349,10 +349,87 @@
   var ARM = { attempted: false, ok: false, error: null, hooksRegistered: 0 };
   var ARM_TAG = null;
 
+  /* ---------------------------------------------------------------- *
+   * The heap, captured at instantiate time.
+   *
+   * This is the actual answer to "why do the hooks work but the game object
+   * does not exist". UWMK does not wait for Unity to expose itself. In
+   * handleBuffer it compiles its own patched WASM and calls
+   *     this.instantiate(wasmOutput, importObject).then((instantiatedSource) => ...)
+   * then applies hooks by swapping entries in the INSTANCE's own function
+   * table:
+   *     const table = exports[tableName];
+   *     const originalFunc = table.get(hook.tableIndex);
+   *     hook.originalFunc = originalFunc;
+   *     table.set(hook.tableIndex, makeWasmFunc(...));
+   *     hook.applied = true;
+   *
+   * `instantiatedSource` is a local. Nothing is stored on the Runtime, and
+   * nothing is assigned to window.unityInstance / unityGame / game - this
+   * loader never creates any of them, which is why resolveGame() is null while
+   * hooks apply and fire normally. Every UWMK API that reads memory
+   * (memory(), readField(), createObject(), malloc) goes through resolveGame()
+   * first, so all of them are dead ends here.
+   *
+   * The WebAssembly.Memory is nevertheless reachable: hookWasmInstantiate()
+   * runs synchronously inside createPlugin(), replacing WebAssembly.instantiate
+   * with UWMK's handler. Wrapping that handler afterwards - the payload does,
+   * in the same tick it registers hooks - lets us observe the instance it
+   * returns and keep its exported memory. Re-reading .buffer per call is
+   * correct: Emscripten detaches and replaces the buffer when memory grows,
+   * but the WebAssembly.Memory object itself stays valid.
+   * ---------------------------------------------------------------- */
+  var WASM_MEMORY = null;
+  var WASM_MEMORY_AT = -1;
+  var WASM_EXPORT_KEYS = null;
+
+  function captureWasmResult(res) {
+    try {
+      if (!res) return;
+      var ex = res.instance ? res.instance.exports : (res.exports || null);
+      if (!ex) return;
+      if (!WASM_EXPORT_KEYS) {
+        try { WASM_EXPORT_KEYS = Object.keys(ex).slice(0, 24); } catch (_) {}
+      }
+      var mem = ex.memory;
+      if (mem && mem.buffer && mem.buffer.byteLength > 0) {
+        WASM_MEMORY = mem;
+        WASM_MEMORY_AT = Date.now() - T0;
+      }
+    } catch (_) {}
+  }
+
+  function tapWasmMemory() {
+    try {
+      if (typeof WebAssembly === "undefined") return;
+      var names = ["instantiate", "instantiateStreaming"];
+      for (var i = 0; i < names.length; i++) {
+        (function (name) {
+          var cur = WebAssembly[name];
+          if (typeof cur !== "function" || cur.__sakuraMemoryTap) return;
+          var wrapped = function () {
+            var p = cur.apply(this, arguments);
+            try {
+              if (p && typeof p.then === "function") p.then(captureWasmResult, function () {});
+              else captureWasmResult(p);
+            } catch (_) {}
+            // Pass the ORIGINAL promise back untouched. Wrapping this is what
+            // UWMK itself does; anything that changes the contract here can
+            // stop the game booting.
+            return p;
+          };
+          wrapped.__sakuraMemoryTap = true;
+          try { Object.defineProperty(wrapped, "name", { value: cur.name, configurable: true }); } catch (_) {}
+          WebAssembly[name] = wrapped;
+        })(names[i]);
+      }
+    } catch (_) {}
+  }
+
   // Single source of truth. A field report came back saying version 2.0.2 while
   // the plugin logged 2.0.3, because the string was hand-written in three
   // places and one of them was missed. Derived fields must not be retyped.
-  var VERSION = "2.0.5";
+  var VERSION = "2.0.6";
 
   // Declared here, NOT beside their consumers further down. armUwmk() calls
   // registerHooks() in the same tick, and a `var x = []` further down the file
@@ -422,6 +499,11 @@
       // records them, and the method table is resolved during the apply pass.
       registerHooks();
       ARM.hooksRegistered = HOOKS.length;
+      // Must come AFTER createPlugin: hookWasmInstantiate() has already replaced
+      // WebAssembly.instantiate with UWMK's handler by this point, so this tap
+      // observes the final instantiated instance rather than the raw bytes.
+      tapWasmMemory();
+      ARM.memoryTap = true;
     } catch (err) { ARM.error = String((err && err.message) || err); }
   })();
 
@@ -511,6 +593,14 @@
   }
 
   function heapBytes() {
+    // Captured WebAssembly.Memory first - it is the only source that works when
+    // the loader never exposes a game object, which is the case here.
+    try {
+      if (WASM_MEMORY && WASM_MEMORY.buffer && WASM_MEMORY.buffer.byteLength) {
+        READS.source = READS.source || "instantiate().exports.memory";
+        return new Uint8Array(WASM_MEMORY.buffer);
+      }
+    } catch (_) {}
     try {
       var g = unityGame();
       if (g && g.Module && g.Module.HEAPU8 && g.Module.HEAPU8.buffer) return g.Module.HEAPU8;
@@ -891,6 +981,15 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       reads: { ok: READS.ok, failed: READS.failed, lastError: READS.lastError, source: READS.source },
       identity: identity(),
       globals: globals(),
+      wasmMemory: {
+        captured: !!WASM_MEMORY,
+        atMs: WASM_MEMORY_AT,
+        bytes: (function () {
+          try { return WASM_MEMORY && WASM_MEMORY.buffer ? WASM_MEMORY.buffer.byteLength : 0; }
+          catch (_) { return 0; }
+        })(),
+        exportKeys: WASM_EXPORT_KEYS
+      },
       diff: DIFF.slice(0, 40),
       uwmkLog: UWMK_LOG.slice(0, 20),
       warnings: []

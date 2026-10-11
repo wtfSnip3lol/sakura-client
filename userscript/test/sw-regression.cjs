@@ -102,7 +102,7 @@ function makeEl() {
 /* ------------------------------------------------------------------ *
  * Harness
  * ------------------------------------------------------------------ */
-function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'resolveGame', scriptDataLate = false, applyFirst = false, resolveButNotApply = false }) {
+function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'resolveGame', scriptDataLate = false, applyFirst = false, resolveButNotApply = false, noInstantiate = false }) {
   const posted = [], pluginCalls = [], hookCalls = [], pending = [], listeners = [], order = [];
   const fireTypes = fireUpdate ? ['FPScontroller', 'HealthScript', 'WeaponManager', 'GG_GameManager'] : [];
 
@@ -179,6 +179,23 @@ function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'r
   };
   class BC { constructor() {} postMessage() {} close() {} }
 
+  // Models UWMK's instantiate flow: it hands back an instance whose exports
+  // carry the memory, and never assigns window.unityInstance / unityGame /
+  // game. Synchronous thenable so the capture runs before the next drain.
+  const fakeMemory = { buffer: U8.buffer };
+  const instResult = { instance: { exports: { memory: fakeMemory, asm: {} } } };
+  const syncThenable = () => ({
+    then(ok) { ok(instResult); return this; },
+    catch() { return this; }
+  });
+  const FakeWasm = {
+    instantiate: syncThenable,
+    instantiateStreaming: syncThenable,
+    Module: function () {},
+    Instance: function () {},
+    Memory: function () {}
+  };
+
   const win = {
     document: doc,
     location: { hostname: hostname || 'skillwarz.game-files.crazygames.com', href: 'https://x/' },
@@ -225,12 +242,21 @@ function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'r
     }
     if (applyFirst) applyPass();     // UWMK got there before we registered
 
-    fn(win, doc, win.location, win.console, win.navigator, win.setTimeout, WebAssembly, BC);
+    fn(win, doc, win.location, win.console, win.navigator, win.setTimeout, FakeWasm, BC);
     // A second UWMK copy loads and replaces the global AFTER we armed ours.
     if (heapVia === 'takeover') {
       win.UnityWebModkit.Runtime = { plugins: [], resolveGame() { return null; } };
     }
     let guard = 0;
+    while (pending.length && guard++ < 200) pending.shift()();
+    // The game instantiates its WASM. UWMK returns an instance; the payload's
+    // tap is watching for exactly this. noInstantiate closes that route too,
+    // which is the only way to model a genuinely unreachable heap now that the
+    // instantiate path exists.
+    if (!noInstantiate) {
+      try { FakeWasm.instantiate(new Uint8Array([0, 97, 115, 109])); } catch (_) {}
+    }
+    guard = 0;
     while (pending.length && guard++ < 200) pending.shift()();
     if (scriptDataLate) Runtime.revealScriptData();
     if (!applyFirst) applyPass();
@@ -412,7 +438,44 @@ function check(name, cond, detail) {
 }
 
 /* ================================================================== *
- * 5. The log tap must not eat its own tail.
+ * 5. THE REAL GAME'S SHAPE.
+ *
+ * Field reports show: one Runtime, stable tag, hooks applied and firing, yet
+ * unityInstance / unityGame / game all "undefined" and _game null forever.
+ * UWMK compiles its own patched WASM and applies hooks by swapping entries in
+ * the INSTANCE's function table - `instantiatedSource` is a local, nothing is
+ * written to any global. So resolveGame() can never succeed on this loader,
+ * and every UWMK API that touches memory is a dead end.
+ *
+ * The memory is still reachable: wrap WebAssembly.instantiate after
+ * createPlugin (which has already installed UWMK's handler) and keep the
+ * exported WebAssembly.Memory.
+ * ================================================================== */
+{
+  const r = runFrame({ heapVia: 'none' });
+  check('instantiate: memory captured from the returned instance',
+    r.report.wasmMemory && r.report.wasmMemory.captured === true, JSON.stringify(r.report.wasmMemory));
+  check('instantiate: capture timestamped',
+    r.report.wasmMemory && typeof r.report.wasmMemory.atMs === 'number' && r.report.wasmMemory.atMs >= 0,
+    JSON.stringify(r.report.wasmMemory));
+  check('instantiate: reports the real heap size',
+    r.report.wasmMemory && r.report.wasmMemory.bytes === U8.byteLength,
+    `bytes=${r.report.wasmMemory && r.report.wasmMemory.bytes}`);
+  check('reads come from the instantiated memory, not a game object',
+    r.report.reads.source === 'instantiate().exports.memory', `source=${r.report.reads.source}`);
+  check('survey DECODES with no game object anywhere',
+    r.report.surveyRows > 0, `rows=${r.report.surveyRows}`);
+  check('ObscuredFloat still decrypts from that memory',
+    Math.abs(r.report.survey.FPScontroller.find(x => x.o === 0x10).v - 4.25) < 1e-4,
+    `got ${r.report.survey.FPScontroller.find(x => x.o === 0x10).v}`);
+  check('no heap warning when the instantiate path succeeded',
+    !r.report.warnings.some(w => /HEAPU8 not reachable/.test(w)), JSON.stringify(r.report.warnings));
+  check('the instantiate tap does not break the contract',
+    r.report.arm.memoryTap === true, String(r.report.arm.memoryTap));
+}
+
+/* ================================================================== *
+ * 6. The log tap must not eat its own tail.
  *
  * The report embeds uwmkLog, whose entries contain the string
  * "UnityWebModkit", so a naive filter matched our OWN reports. They were then
@@ -470,7 +533,7 @@ function check(name, cond, detail) {
  * 3. Genuinely unreachable heap must be reported, never swallowed.
  * ================================================================== */
 {
-  const r = runFrame({ heapVia: 'none' });
+  const r = runFrame({ heapVia: 'none', noInstantiate: true });
   check('blocked heap: still captures objects', Object.keys(r.report.instances || {}).length === 4,
     JSON.stringify(r.report.instances));
   check('blocked heap: survey is honestly empty',
