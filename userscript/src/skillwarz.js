@@ -53,7 +53,7 @@
   // It was hand-written in three places once and one drifted, so a field report
   // claimed 2.0.2 while the plugin logged 2.0.3 - which sends everyone chasing
   // a stale build.
-  var VERSION = "2.7.0";
+  var VERSION = "2.8.0";
 
   /* ================================================================== *
    * WRAPPER — relay only. Arming UWMK here achieves nothing: this frame
@@ -1121,7 +1121,7 @@
    * offset is the only stable identity worth reporting.
    * ---------------------------------------------------------------- */
   /*__SKILLWARZ_FIELDS_START__*/
-var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"],[112,"obfF"],[136,"obfF"],[160,"obfF"],[184,"obfB"],[196,"obfF"],[220,"i32"],[224,"v3"],[236,"u8"],[240,"obfF"],[264,"i32"],[268,"u8"],[272,"i32"],[276,"u8"],[277,"u8"],[284,"obfF"],[308,"obfF"],[332,"f32"],[336,"f32"],[340,"v3"],[352,"v3"],[364,"f32"],[368,"f32"],[392,"u8"],[396,"f32"],[408,"v3"],[420,"u8"],[436,"f32"],[440,"f32"],[444,"u8"],[445,"u8"],[448,"obfF"],[472,"f32"],[476,"u8"],[480,"obfF"],[504,"v3"],[520,"obfB"],[536,"f32"],[540,"f32"],[588,"f32"],[592,"f32"],[596,"f32"],[600,"f32"],[604,"u8"],[605,"u8"],[606,"u8"],[608,"f32"],[612,"u8"],[613,"u8"],[616,"f32"],[620,"f32"],[624,"f32"],[628,"f32"],[632,"f32"],[636,"f32"],[640,"f32"],[644,"v3"],[660,"u8"],[664,"v3"],[676,"f32"],[684,"v3"],[696,"f32"],[700,"f32"],[704,"f32"],[708,"u8"],[709,"u8"],[712,"f32"],[732,"f32"],[740,"v3"],[752,"v3"],[764,"f32"],[768,"f32"],[772,"f32"],[776,"f32"],[780,"v3"],[792,"u8"],[796,"v3"],[808,"i32"],[812,"f32"],[816,"f32"],[820,"f32"],[828,"f32"],[832,"u8"],[833,"u8"],[844,"u8"],[845,"u8"],[846,"u8"],[848,"f32"],[852,"f32"],[856,"f32"],[860,"f32"],[864,"f32"],[868,"u8"],[872,"f32"],[876,"f32"],[880,"u8"],[888,"v3"],[900,"v3"],[912,"v3"],[924,"f32"],[928,"f32"],[932,"f32"],[936,"v3"],[948,"i32"],[952,"u8"],[956,"i32"],[960,"f32"],[964,"f32"],[968,"f32"],[972,"f32"],[976,"v3"],[988,"i32"],[992,"u8"],[993,"u8"],[994,"u8"],[996,"f32"],[1000,"i32"]],"HealthScript":[[88,"u8"],[92,"i32"],[128,"f32"],[132,"f32"],[136,"f32"],[140,"f32"],[144,"f32"],[148,"f32"],[160,"i32"],[164,"i32"],[168,"u8"],[169,"u8"],[170,"u8"],[171,"u8"],[192,"obfI"],[212,"obfI"],[232,"obfI"],[252,"obfI"],[272,"obfI"],[292,"obfB"],[304,"obfF"],[328,"f32"],[332,"f32"],[336,"f32"],[340,"f32"],[348,"f32"],[352,"v3"],[368,"f32"],[376,"f32"],[384,"u8"],[396,"u8"],[400,"i32"]],"PlayerConfig":[],"WeaponManager":[[24,"i32"],[28,"i32"],[32,"u8"],[36,"i32"],[100,"obfF"],[124,"f32"],[132,"i32"],[136,"u8"],[137,"u8"],[140,"i32"],[144,"f32"],[152,"f32"],[172,"i32"],[188,"u8"],[220,"obfI"],[240,"obfI"],[260,"f32"],[264,"f32"],[268,"f32"],[280,"f32"],[288,"f32"],[296,"u8"],[300,"obfI"],[320,"obfI"],[340,"obfI"],[360,"obfB"],[372,"obfB"],[384,"obfB"],[396,"obfB"],[420,"obfB"],[432,"obfI"],[460,"i32"],[464,"u8"],[468,"i32"],[472,"i32"],[512,"i32"],[532,"u8"],[540,"u8"],[541,"u8"],[542,"u8"],[543,"u8"],[592,"i32"],[600,"u8"]],"GG_GameManager":[[36,"u8"],[44,"f32"],[68,"u8"],[69,"u8"],[72,"f32"],[76,"f32"],[80,"i32"],[84,"i32"],[88,"u8"],[116,"u8"],[120,"f32"],[124,"f32"],[144,"i32"],[148,"u8"],[180,"i32"],[188,"i32"],[192,"i32"],[232,"obfI"],[252,"obfI"],[272,"obfI"],[300,"u8"],[304,"i32"],[356,"u8"],[368,"f32"],[384,"u8"],[392,"u8"],[420,"u8"],[424,"i32"],[428,"f32"],[432,"u8"],[433,"u8"],[440,"i32"],[444,"i32"],[448,"f32"],[452,"i32"],[456,"f32"],[460,"i32"],[464,"i32"]],"TDM_GameManager":[[24,"u8"],[32,"u8"],[33,"u8"],[36,"f32"],[88,"u8"],[92,"f32"],[96,"f32"],[100,"i32"],[104,"i32"],[108,"u8"],[109,"u8"],[112,"f32"],[116,"f32"],[120,"i32"],[140,"u8"],[144,"obfI"],[216,"obfI"],[236,"obfI"],[256,"obfI"],[276,"u8"],[348,"u8"],[352,"i32"],[364,"u8"],[388,"u8"],[392,"f32"],[396,"i32"],[400,"i32"],[404,"f32"],[408,"i32"],[412,"i32"],[416,"f32"],[420,"f32"],[424,"i32"],[432,"u8"],[433,"u8"],[440,"f32"]],"PhotonNetworkSync":[[52,"v3"],[64,"i32"],[68,"u8"],[69,"u8"],[72,"v3"],[84,"u8"],[88,"i32"],[92,"i32"],[96,"f32"],[100,"f32"],[104,"f32"],[108,"v3"],[120,"f32"],[124,"f32"],[128,"i32"],[136,"f32"]],"NetworkPlayerAnimations":[[168,"v3"],[180,"v3"],[192,"u8"],[196,"i32"],[200,"i32"],[204,"f32"],[208,"f32"],[220,"f32"],[224,"f32"],[232,"f32"],[236,"f32"],[240,"f32"],[244,"f32"],[248,"f32"],[252,"f32"],[256,"f32"],[260,"f32"],[264,"i32"],[268,"u8"],[272,"i32"],[276,"i32"],[280,"u8"],[284,"f32"],[288,"f32"],[292,"f32"],[296,"f32"],[300,"u8"],[312,"u8"],[316,"v3"],[328,"v3"],[404,"u8"]],"NPC_Cotroller":[[20,"v3"],[32,"f32"],[36,"f32"],[86,"u8"],[87,"u8"],[92,"v3"],[156,"u8"],[160,"f32"],[164,"f32"],[184,"f32"],[188,"f32"],[200,"u8"],[204,"f32"],[216,"f32"],[220,"f32"],[224,"f32"],[228,"u8"],[236,"f32"],[240,"v3"],[252,"f32"],[256,"i32"],[260,"f32"],[264,"f32"],[268,"f32"],[276,"v3"],[288,"f32"],[292,"f32"],[308,"v3"],[324,"u8"],[328,"f32"],[336,"v3"],[352,"i32"],[364,"i32"],[368,"f32"],[372,"u8"],[376,"v4"],[392,"f32"],[396,"f32"],[400,"f32"],[408,"u8"],[416,"i32"]],"TargetHealth":[[16,"i32"],[20,"i32"],[52,"u8"],[68,"i32"],[72,"i32"],[76,"i32"],[80,"i32"],[132,"f32"],[140,"f32"],[144,"u8"],[148,"f32"],[164,"u8"],[168,"i32"],[172,"i32"],[192,"f32"],[204,"u8"]],"SectatorCamera":[[20,"f32"],[24,"f32"],[28,"f32"],[32,"v3"],[44,"v3"],[72,"i32"],[76,"i32"],[80,"f32"],[84,"i32"],[88,"f32"],[92,"u8"],[96,"v3"],[108,"v4"],[124,"u8"],[128,"i32"]]};
+var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"],[112,"obfF"],[136,"obfF"],[160,"obfF"],[184,"obfB"],[196,"obfF"],[220,"i32"],[224,"v3"],[236,"u8"],[240,"obfF"],[264,"i32"],[268,"u8"],[272,"i32"],[276,"u8"],[277,"u8"],[284,"obfF"],[308,"obfF"],[332,"f32"],[336,"f32"],[340,"v3"],[352,"v3"],[364,"f32"],[368,"f32"],[392,"u8"],[396,"f32"],[408,"v3"],[420,"u8"],[436,"f32"],[440,"f32"],[444,"u8"],[445,"u8"],[448,"obfF"],[472,"f32"],[476,"u8"],[480,"obfF"],[504,"v3"],[520,"obfB"],[536,"f32"],[540,"f32"],[588,"f32"],[592,"f32"],[596,"f32"],[600,"f32"],[604,"u8"],[605,"u8"],[606,"u8"],[608,"f32"],[612,"u8"],[613,"u8"],[616,"f32"],[620,"f32"],[624,"f32"],[628,"f32"],[632,"f32"],[636,"f32"],[640,"f32"],[644,"v3"],[660,"u8"],[664,"v3"],[676,"f32"],[684,"v3"],[696,"f32"],[700,"f32"],[704,"f32"],[708,"u8"],[709,"u8"],[712,"f32"],[732,"f32"],[740,"v3"],[752,"v3"],[764,"f32"],[768,"f32"],[772,"f32"],[776,"f32"],[780,"v3"],[792,"u8"],[796,"v3"],[808,"i32"],[812,"f32"],[816,"f32"],[820,"f32"],[828,"f32"],[832,"u8"],[833,"u8"],[844,"u8"],[845,"u8"],[846,"u8"],[848,"f32"],[852,"f32"],[856,"f32"],[860,"f32"],[864,"f32"],[868,"u8"],[872,"f32"],[876,"f32"],[880,"u8"],[888,"v3"],[900,"v3"],[912,"v3"],[924,"f32"],[928,"f32"],[932,"f32"],[936,"v3"],[948,"i32"],[952,"u8"],[956,"i32"],[960,"f32"],[964,"f32"],[968,"f32"],[972,"f32"],[976,"v3"],[988,"i32"],[992,"u8"],[993,"u8"],[994,"u8"],[996,"f32"],[1000,"i32"]],"HealthScript":[[88,"u8"],[92,"i32"],[128,"f32"],[132,"f32"],[136,"f32"],[140,"f32"],[144,"f32"],[148,"f32"],[160,"i32"],[164,"i32"],[168,"u8"],[169,"u8"],[170,"u8"],[171,"u8"],[192,"obfI"],[212,"obfI"],[232,"obfI"],[252,"obfI"],[272,"obfI"],[292,"obfB"],[304,"obfF"],[328,"f32"],[332,"f32"],[336,"f32"],[340,"f32"],[348,"f32"],[352,"v3"],[368,"f32"],[376,"f32"],[384,"u8"],[396,"u8"],[400,"i32"]],"PlayerConfig":[],"WeaponManager":[[24,"i32"],[28,"i32"],[32,"u8"],[36,"i32"],[100,"obfF"],[124,"f32"],[132,"i32"],[136,"u8"],[137,"u8"],[140,"i32"],[144,"f32"],[152,"f32"],[172,"i32"],[188,"u8"],[220,"obfI"],[240,"obfI"],[260,"f32"],[264,"f32"],[268,"f32"],[280,"f32"],[288,"f32"],[296,"u8"],[300,"obfI"],[320,"obfI"],[340,"obfI"],[360,"obfB"],[372,"obfB"],[384,"obfB"],[396,"obfB"],[420,"obfB"],[432,"obfI"],[460,"i32"],[464,"u8"],[468,"i32"],[472,"i32"],[512,"i32"],[532,"u8"],[540,"u8"],[541,"u8"],[542,"u8"],[543,"u8"],[592,"i32"],[600,"u8"]],"GG_GameManager":[[36,"u8"],[44,"f32"],[68,"u8"],[69,"u8"],[72,"f32"],[76,"f32"],[80,"i32"],[84,"i32"],[88,"u8"],[116,"u8"],[120,"f32"],[124,"f32"],[144,"i32"],[148,"u8"],[180,"i32"],[188,"i32"],[192,"i32"],[232,"obfI"],[252,"obfI"],[272,"obfI"],[300,"u8"],[304,"i32"],[356,"u8"],[368,"f32"],[384,"u8"],[392,"u8"],[420,"u8"],[424,"i32"],[428,"f32"],[432,"u8"],[433,"u8"],[440,"i32"],[444,"i32"],[448,"f32"],[452,"i32"],[456,"f32"],[460,"i32"],[464,"i32"]],"TDM_GameManager":[[24,"u8"],[32,"u8"],[33,"u8"],[36,"f32"],[88,"u8"],[92,"f32"],[96,"f32"],[100,"i32"],[104,"i32"],[108,"u8"],[109,"u8"],[112,"f32"],[116,"f32"],[120,"i32"],[140,"u8"],[144,"obfI"],[216,"obfI"],[236,"obfI"],[256,"obfI"],[276,"u8"],[348,"u8"],[352,"i32"],[364,"u8"],[388,"u8"],[392,"f32"],[396,"i32"],[400,"i32"],[404,"f32"],[408,"i32"],[412,"i32"],[416,"f32"],[420,"f32"],[424,"i32"],[432,"u8"],[433,"u8"],[440,"f32"]],"PhotonNetworkSync":[[52,"v3"],[64,"i32"],[68,"u8"],[69,"u8"],[72,"v3"],[84,"u8"],[88,"i32"],[92,"i32"],[96,"f32"],[100,"f32"],[104,"f32"],[108,"v3"],[120,"f32"],[124,"f32"],[128,"i32"],[136,"f32"]],"MouseLook":[[20,"f32"],[24,"f32"],[28,"f32"],[32,"f32"],[36,"f32"],[40,"f32"],[48,"f32"],[52,"u8"],[56,"f32"],[60,"f32"],[64,"i32"],[68,"u8"],[72,"v2"]],"NetworkPlayerAnimations":[[168,"v3"],[180,"v3"],[192,"u8"],[196,"i32"],[200,"i32"],[204,"f32"],[208,"f32"],[220,"f32"],[224,"f32"],[232,"f32"],[236,"f32"],[240,"f32"],[244,"f32"],[248,"f32"],[252,"f32"],[256,"f32"],[260,"f32"],[264,"i32"],[268,"u8"],[272,"i32"],[276,"i32"],[280,"u8"],[284,"f32"],[288,"f32"],[292,"f32"],[296,"f32"],[300,"u8"],[312,"u8"],[316,"v3"],[328,"v3"],[404,"u8"]],"NPC_Cotroller":[[20,"v3"],[32,"f32"],[36,"f32"],[86,"u8"],[87,"u8"],[92,"v3"],[156,"u8"],[160,"f32"],[164,"f32"],[184,"f32"],[188,"f32"],[200,"u8"],[204,"f32"],[216,"f32"],[220,"f32"],[224,"f32"],[228,"u8"],[236,"f32"],[240,"v3"],[252,"f32"],[256,"i32"],[260,"f32"],[264,"f32"],[268,"f32"],[276,"v3"],[288,"f32"],[292,"f32"],[308,"v3"],[324,"u8"],[328,"f32"],[336,"v3"],[352,"i32"],[364,"i32"],[368,"f32"],[372,"u8"],[376,"v4"],[392,"f32"],[396,"f32"],[400,"f32"],[408,"u8"],[416,"i32"]],"TargetHealth":[[16,"i32"],[20,"i32"],[52,"u8"],[68,"i32"],[72,"i32"],[76,"i32"],[80,"i32"],[132,"f32"],[140,"f32"],[144,"u8"],[148,"f32"],[164,"u8"],[168,"i32"],[172,"i32"],[192,"f32"],[204,"u8"]],"SectatorCamera":[[20,"f32"],[24,"f32"],[28,"f32"],[32,"v3"],[44,"v3"],[72,"i32"],[76,"i32"],[80,"f32"],[84,"i32"],[88,"f32"],[92,"u8"],[96,"v3"],[108,"v4"],[124,"u8"],[128,"i32"]],"UISettings":[[32,"i32"],[40,"f32"],[324,"u8"],[328,"i32"],[340,"i32"],[344,"i32"],[348,"u8"],[349,"u8"],[350,"u8"],[351,"u8"],[352,"u8"],[353,"u8"],[354,"u8"],[444,"f32"],[452,"f32"],[536,"u8"],[640,"f32"],[672,"i32"],[760,"u8"],[924,"u8"],[928,"v2"],[936,"v2"],[944,"u8"],[952,"u8"],[972,"f32"],[976,"v3"],[992,"f32"],[996,"f32"],[1000,"f32"],[1008,"u8"],[1009,"u8"],[1012,"i32"],[1024,"i32"],[1028,"i32"],[1032,"i32"],[1036,"i32"],[1040,"i32"],[1044,"i32"],[1048,"i32"],[1052,"i32"],[1056,"i32"],[1108,"u8"],[1109,"u8"],[1110,"u8"],[1111,"u8"],[1164,"f32"]]};
 /*__SKILLWARZ_FIELDS_END__*/
 
   /* ---------------------------------------------------------------- *
@@ -1321,7 +1321,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
   IL2CPP fields, so the pointer identifies the object but reveals nothing
   inside it. */
   var REFS = {
-    PhotonNetworkSync:    [["0x10", "photonView"], ["0x20", "health"], ["0x24", "transform"], ["0x28", "fps"]],
+    PhotonNetworkSync:    [["0x10", "photonView"], ["0x20", "health"], ["0x24", "transform"], ["0x28", "fps"], ["0x30", "mouseLook"]],
     NetworkPlayerAnimations: [["0x10", "capsule"], ["0x18", "sync"]],
     NPC_Cotroller:        [["0x98", "capsule"], ["0xb4", "targetHealth"], ["0xd0", "health"], ["0xd4", "targetHealth2"], ["0xe8", "transform"]],
     EnemyBot:             [["0x14", "transform"]]
@@ -1777,13 +1777,18 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       if (q("snap")) q("snap").onclick = function () { onCommand("snapshot"); };
       var espBtn = q("esp");
       if (espBtn) espBtn.onclick = function () {
-        ESP.on = !ESP.on;
-        espBtn.textContent = ESP.on ? "ESP on" : "ESP off";
+        // radar -> radar+boxes -> off
+        if (!ESP.on) { ESP.on = true; ESP.boxes = false; }
+        else if (!ESP.boxes) { ESP.boxes = true; }
+        else { ESP.on = false; }
+        espBtn.textContent = !ESP.on ? "ESP off" : (ESP.boxes ? "ESP both" : "ESP map");
         espBtn.style.background = ESP.on ? ACCENT : "transparent";
         espBtn.style.color = ESP.on ? "#2a0f1b" : "#f7eef5";
         try {
           var rr = radar();
           if (rr && rr.el) rr.el.style.display = ESP.on ? "" : "none";
+          var bb = BOXES;
+          if (bb && bb.cv) bb.cv.style.display = (ESP.on && ESP.boxes) ? "" : "none";
         } catch (_) {}
       };
       if (q("fold")) q("fold").onclick = function () {
@@ -1869,6 +1874,9 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       if (e.code === "F7") { e.preventDefault(); setSpeed(!SPEED.on, SPEED.factor); return; }
       if (e.code === "F8") { e.preventDefault(); setSpeed(SPEED.on, SPEED.factor + 0.5); return; }
       if (e.code === "F6") { e.preventDefault(); setSpeed(SPEED.on, SPEED.factor - 0.5); return; }
+      // Field of view, because it cannot be read and must be fitted by eye.
+      if (e.code === "BracketRight") { e.preventDefault(); VIEW.fov = Math.min(140, VIEW.fov + 2); saveFov(); return; }
+      if (e.code === "BracketLeft") { e.preventDefault(); VIEW.fov = Math.max(30, VIEW.fov - 2); saveFov(); return; }
     } catch (_) {}
   }, true);
 
@@ -1893,12 +1901,103 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
  * so when it is right, it is right for a reason. Boxes follow once the angles
  * are pinned down by a deliberate turn-and-diff, which is one keypress away.
  * ---------------------------------------------------------------- */
-  var ESP = { on: true, span: 80 };   // span = world units across the radar
+  var ESP = { on: true, span: 80, boxes: false };   // span = world units across the radar
 
   // The local player has no network position of its own: PhotonNetworkSync+0x34
   // reads zero for the local instance in a live report while every remote has a
   // real one, because local position is authoritative here and never comes back
   // over the wire. So "where am I" comes from FPScontroller instead.
+  /* The view. Reached WITHOUT a new hook: PhotonNetworkSync+0x30 is the
+   * player's MouseLook, and MouseLook owns the Camera at +0x2C plus six floats
+   * at +0x14..+0x28 that are the pitch/yaw family.
+   *
+   * These are NOT FPScontroller+0x16C/+0x170. A field report asked for exactly
+   * this and answered it by omission: a deliberate turn left 0x16C and 0x170
+   * bit-for-bit unchanged while six other floats moved. Guessing had put them
+   * in the report as "the camera angles", and the diff disproved it. So every
+   * float MouseLook exposes is reported by offset, none of them named, and the
+   * next deliberate turn diff names them.
+   */
+  function viewState() {
+    var sync = SEEN.PhotonNetworkSync || {};
+    var keys = Object.keys(sync);
+    for (var i = 0; i < keys.length; i++) {
+      var ptr = sync[keys[i]].ptr;
+      var ml = rd(ptr + 0x30, "u32");
+      if (!ml) continue;
+      var f = SK_FIELDS.MouseLook || [];
+      var out = { mouseLook: "0x" + (ml >>> 0).toString(16), floats: {}, camera: null, vec2: null };
+      for (var j = 0; j < f.length; j++) {
+        if (f[j][1] !== "f32") continue;
+        out.floats["0x" + f[j][0].toString(16)] = rd(ml + f[j][0], "f32");
+      }
+      var cam = rd(ml + 0x2c, "u32");
+      if (cam) out.camera = "0x" + (cam >>> 0).toString(16);
+      var v2 = readVec(ml, 0x48, 2);
+      if (v2) out.vec2 = v2;
+      return out;
+    }
+    return null;
+  }
+
+  /* World -> screen.
+   *
+   * Unity is left-handed, Y up, camera looks down its own +Z. With yaw and
+   * pitch in degrees:
+   *   forward = ( sin(yaw)cos(pitch), -sin(pitch), cos(yaw)cos(pitch) )
+   * then project the enemy offset onto (right, up, forward).
+   *
+   * fov is NOT known and is not guessed. UnityEngine.Camera exposes no IL2CPP
+   * fields, UnityEngine.CoreModule is not in referencedAssemblies so
+   * WorldToScreenPoint cannot be hooked, and UISettings stores its FOV behind a
+   * Slider whose name is obfuscated - picking "the FOV slider" would be a guess
+   * about which of twenty-odd sliders it is. So fov is a calibrated constant:
+   * [ and ] step it, it persists, and the HUD shows it. One-time, by eye, which
+   * is the only honest way to fit a number nobody can read.
+   */
+  var FOV_KEY = "sakura-sw-fov";
+  var VIEW = { pitch: null, yaw: null, pitchOff: 0, yawOff: 0, fov: 90, known: false };
+
+  try { var _f = localStorage.getItem(FOV_KEY); if (_f) VIEW.fov = Math.min(140, Math.max(30, parseFloat(_f) || 90)); } catch (_) {}
+
+  function saveFov() { try { localStorage.setItem(FOV_KEY, String(VIEW.fov)); } catch (_) {} }
+
+  // Which two of MouseLook's floats are pitch and yaw is still an open question
+  // - see viewState(). Until a deliberate turn names them, this reads the pair
+  // that behaves like a look angle: bounded, and the only two that sit in the
+  // same place in the struct as the Camera pointer they drive.
+  function viewAngles() {
+    var v = viewState();
+    if (!v || !v.mouseLook) return null;
+    var ml = parseInt(v.mouseLook, 16);
+    var pitch = rd(ml + 0x18, "f32");
+    var yaw = rd(ml + 0x1c, "f32");
+    if (typeof pitch !== "number" || typeof yaw !== "number") return null;
+    return { pitch: pitch + VIEW.pitchOff, yaw: yaw + VIEW.yawOff };
+  }
+
+  function project(from, to, w, h) {
+    var a = viewAngles();
+    if (!a) return null;
+    var pr = a.pitch * Math.PI / 180, yr = a.yaw * Math.PI / 180;
+    var cp = Math.cos(pr);
+    var fx = Math.sin(yr) * cp, fy = -Math.sin(pr), fz = Math.cos(yr) * cp;
+    // right = up x forward, with up = (0,1,0)
+    var rx = fz, ry = 0, rz = -fx;
+    var dx = to[0] - from[0], dy = to[1] - from[1], dz = to[2] - from[2];
+    var z = dx * fx + dy * fy + dz * fz;
+    if (z <= 0.05) return null;                    // behind the camera
+    var x = dx * rx + dy * ry + dz * rz;
+    var y = dx * (ry * fz - rz * fy) + dy * (rz * fx - rx * fz) + dz * (rx * fy - ry * fx);
+    var aspect = w / h;
+    var vf = VIEW.fov * Math.PI / 180;
+    var t = Math.tan(vf / 2);
+    var ndcX = (x / z) / (t * aspect);
+    var ndcY = (y / z) / t;
+    if (ndcX < -1.6 || ndcX > 1.6 || ndcY < -1.6 || ndcY > 1.6) return null;
+    return { x: (ndcX * 0.5 + 0.5) * w, y: (0.5 - ndcY * 0.5) * h, z: z };
+  }
+
   function localSpot() {
     var c = INSTANCES.FPScontroller;
     if (!c || !c.ptr) return null;
@@ -1966,6 +2065,72 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     } catch (_) { return null; }
   }
 
+  var BOXES = null;
+  function boxCanvas() {
+    if (BOXES) return BOXES;
+    try {
+      if (!document.body || !document.body.appendChild) return null;
+      var c = document.createElement("canvas");
+      c.id = "sakura-boxes";
+      // pointer-events:none is the whole reason this can exist: the Unity canvas
+      // underneath keeps every click, every look and every shot.
+      c.style.cssText = "position:fixed;left:0;top:0;z-index:2147483645;pointer-events:none;";
+      document.body.appendChild(c);
+      BOXES = { cv: c };
+      return BOXES;
+    } catch (_) { return null; }
+  }
+
+  function sizeCanvas(o) {
+    try {
+      var w = Math.max(1, window.innerWidth || document.documentElement.clientWidth || 0);
+      var h = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 0);
+      if (o.cv.width !== w || o.cv.height !== h) { o.cv.width = w; o.cv.height = h; }
+      return { w: w, h: h };
+    } catch (_) { return { w: 0, h: 0 }; }
+  }
+
+  function drawBoxes(live) {
+    var b = BOXES;
+    if (!b) return;
+    var ctx2 = b.cv.getContext && b.cv.getContext("2d");
+    if (!ctx2) return;
+    var dim = sizeCanvas(b);
+    ctx2.clearRect(0, 0, dim.w, dim.h);
+    if (!ESP.boxes || !live || !live.me) return;
+    var me = live.me;
+    var myTeam = null;
+    var sync = SEEN.PhotonNetworkSync || {};
+    var sk = Object.keys(sync);
+    for (var s = 0; s < sk.length; s++) {
+      var p2 = readVec(sync[sk[s]].ptr, 0x34, 3);
+      if (p2 && p2[0] === 0 && p2[1] === 0 && p2[2] === 0) { myTeam = rd(sync[sk[s]].ptr + 0x58, "i32"); break; }
+    }
+    for (var i = 0; i < live.list.length; i++) {
+      var e = live.list[i];
+      var mate = (myTeam !== null && e.team === myTeam);
+      // Feet and head. 1.8 units is the human height this game uses; if it is
+      // wrong the box is the wrong height, not the wrong place.
+      var feet = project(me.eye, [e.x, e.y - 1.0, e.z], dim.w, dim.h);
+      var head = project(me.eye, [e.x, e.y + 0.8, e.z], dim.w, dim.h);
+      if (!feet || !head) continue;
+      var x0 = Math.min(feet.x, head.x), x1 = Math.max(feet.x, head.x);
+      var y0 = Math.min(feet.y, head.y), y1 = Math.max(feet.y, head.y);
+      // Scale with distance so a far box is a dot, not a billboard.
+      var bw = Math.max(3, Math.min(60, (x1 - x0)));
+      var bh = Math.max(6, Math.min(140, (y1 - y0)));
+      var cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+      ctx2.strokeStyle = mate ? "rgba(79,143,106,.9)" : "rgba(255,110,116,.95)";
+      ctx2.lineWidth = mate ? 1 : 2;
+      ctx2.strokeRect(cx - bw / 2, cy - bh / 2, bw, bh);
+      if (!mate) {
+        ctx2.fillStyle = "rgba(255,110,116,.95)";
+        ctx2.font = "10px ui-monospace,Consolas,monospace";
+        ctx2.fillText(Math.round(e.d || 0) + "m", cx - bw / 2, cy - bh / 2 - 3);
+      }
+    }
+  }
+
   function drawEsp() {
     var r = radar();
     if (!r || !r.cv) return;
@@ -2022,6 +2187,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       ctx2.beginPath(); ctx2.arc(C, C, 3, 0, Math.PI * 2); ctx2.fill();
       if (r.lg) {
         r.lg.textContent = "esp " + shown + " · " + Math.round(ESP.span) + "m" +
+          (ESP.boxes ? " · fov " + Math.round(VIEW.fov) + "°" : "") +
           (myTeam !== null ? " · team" + myTeam : "");
       }
     } catch (_) {}
@@ -2029,7 +2195,13 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
 
   function espLoop() {
     if (!ESP.on) { setTimeout(espLoop, 500); return; }
-    drawEsp();
+    // The radar needs one canvas; the boxes need a full-screen one.
+    radar();
+    if (ESP.boxes) boxCanvas();
+    var live = null;
+    try { live = liveEnemies(); } catch (_) {}
+    try { drawEsp(); } catch (_) {}
+    try { drawBoxes(live); } catch (_) {}
     // ~20fps. Every frame is wasteful for a radar and costs heap reads.
     setTimeout(espLoop, 50);
   }
@@ -2107,6 +2279,12 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
         // The local player has NO network position - PhotonNetworkSync+0x34 reads
         // zero for the local instance - so where we are comes from FPScontroller.
         // +0x2E4 is the body position, +0x298 the same point raised by eye height.
+        view: viewState(),
+        fov: VIEW.fov,
+        // ESP state is reported, not just drawn. A toggle whose result cannot be
+        // observed from outside cannot be tested, which is how a dead control
+        // survives a green suite.
+        espView: { on: ESP.on, boxes: ESP.boxes, span: ESP.span },
         local: (function () {
           var m = localSpot();
           if (!m) return null;

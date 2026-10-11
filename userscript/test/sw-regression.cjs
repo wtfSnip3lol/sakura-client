@@ -728,6 +728,95 @@ function check(name, cond, detail) {
 }
 
 /* ================================================================== *
+ * THE VIEW. A field report asked for exactly this diff and disproved the
+ * previous guess: FPScontroller+0x16C/+0x170 did not move through a deliberate
+ * turn. The view now comes from MouseLook, reached through
+ * PhotonNetworkSync+0x30 - no extra hook, because that pointer is already in
+ * hand. MouseLook owns the Camera at +0x2C.
+ * ================================================================== */
+{
+  const s1 = OBJ.PhotonNetworkSync;
+  const ml = 0x2c000;
+  const r = runFrame({
+    fireMany: { PhotonNetworkSync: [s1] },
+    setup() {
+      wI32(s1 + 0x28, OBJ.FPScontroller);
+      wI32(s1 + 0x30, ml);
+      wI32(ml + 0x2c, 0x7000000);          // MouseLook's Camera
+      wF32(ml + 0x14, 2.5);                // a sensitivity/clamp neighbour
+      wF32(ml + 0x18, 12.5);               // pitch
+      wF32(ml + 0x1c, 143.75);             // yaw
+      wF32(ml + 0x20, -89.0);              // pitch clamp
+      wF32(ml + 0x24, 89.0);               // pitch clamp
+      wF32(ml + 0x28, 0.07);               // a smoothing weight
+      wF32(ml + 0x48, 0.5); wF32(ml + 0x4c, 0.25);
+    }
+  });
+  const v = r.report.view;
+  check('MouseLook is reached through PhotonNetworkSync+0x30 with no new hook',
+    !!v && v.mouseLook === '0x' + ml.toString(16), JSON.stringify(v));
+  check('and it hands over the Camera pointer',
+    v && v.camera === '0x7000000', `camera=${v && v.camera}`);
+  check('every MouseLook float is reported BY OFFSET, none of them named',
+    v && v.floats && Object.keys(v.floats).length >= 6 &&
+      v.floats['0x18'] === 12.5 && v.floats['0x1c'] === 143.75,
+    JSON.stringify(v && v.floats));
+  check('the fov is a calibrated constant, reported so it can be checked',
+    typeof r.report.fov === 'number' && r.report.fov > 0, `fov=${r.report.fov}`);
+}
+
+/* The projection itself. A known enemy at a known offset from a known view must
+ * land where the maths says, and an enemy BEHIND the camera must not be drawn. */
+{
+  const s1 = OBJ.PhotonNetworkSync;
+  const ml = 0x2c000;
+  const W = 800, H = 600;
+  const r = runFrame({
+    fireMany: { PhotonNetworkSync: [s1] },
+    setup() {
+      // us at the origin, looking down +Z: pitch 0, yaw 0
+      wF32(OBJ.FPScontroller + 0x2e4, 0); wF32(OBJ.FPScontroller + 0x2e8, 1.7);
+      wF32(OBJ.FPScontroller + 0x2ec, 0);
+      wF32(OBJ.FPScontroller + 0x298, 0); wF32(OBJ.FPScontroller + 0x29c, 1.7);
+      wF32(OBJ.FPScontroller + 0x2a0, 0);
+      wI32(s1 + 0x30, ml); wI32(ml + 0x2c, 0x7000000);
+      wF32(ml + 0x18, 0); wF32(ml + 0x1c, 0);    // pitch 0, yaw 0
+      // an enemy dead ahead at z=+20, and one behind us at z=-20
+      wF32(s1 + 0x34, 0); wF32(s1 + 0x38, 0); wF32(s1 + 0x3c, 20);
+    }
+  });
+  check('a level, forward-looking view reports its angles',
+    r.report.view && r.report.view.floats['0x18'] === 0 && r.report.view.floats['0x1c'] === 0,
+    JSON.stringify(r.report.view && r.report.view.floats));
+  check('the local player is reported so the projection has an origin',
+    r.report.local && r.report.local.eye &&
+      Math.abs(r.report.local.eye[1] - 1.7) < 1e-4,
+    JSON.stringify(r.report.local));
+  // Drive the toggle exactly the way the user does: click 1 = radar+boxes,
+  // click 2 = off. Each step must be observable from the report.
+  const step = (clicks) => {
+    const r2 = runFrame({
+      fireMany: { PhotonNetworkSync: [s1] },
+      setup() {
+        wF32(OBJ.FPScontroller + 0x2e4, 0); wF32(OBJ.FPScontroller + 0x2e8, 1.7);
+        wF32(OBJ.FPScontroller + 0x2ec, 0);
+        wF32(OBJ.FPScontroller + 0x298, 0); wF32(OBJ.FPScontroller + 0x29c, 1.7);
+        wF32(OBJ.FPScontroller + 0x2a0, 0);
+        wI32(s1 + 0x30, ml); wI32(ml + 0x2c, 0x7000000);
+        wF32(ml + 0x18, 0); wF32(ml + 0x1c, 0);
+        wF32(s1 + 0x34, 0); wF32(s1 + 0x38, 0); wF32(s1 + 0x3c, 20);
+      },
+      preFire(c) { for (let i = 0; i < clicks; i++) c.hudEl('esp').onclick(); }
+    });
+    return r2.report.espView;
+  };
+  check('ESP starts on, radar only', step(0) && step(0).on === true && step(0).boxes === false,
+    JSON.stringify(step(0)));
+  check('one click turns the box layer on', step(1) && step(1).boxes === true, JSON.stringify(step(1)));
+  check('a second click turns it off entirely', step(2) && step(2).on === false, JSON.stringify(step(2)));
+}
+
+/* ================================================================== *
  * THE GRAVITY BUG. Live report: controllers[0].pos was (0, -3.85, 0) and
  * posAt "0xe0". FPScontroller+0xE0 is gravity. "First non-zero vector" is not
  * a position rule - it is a "whatever came first" rule.

@@ -13,9 +13,14 @@ const outPath = process.argv[3] || 'src/skillwarz-fields.json';
 // here, so NPC_Cotroller is still needed for them. Transform and CapsuleCollider
 // expose no IL2CPP fields at all - properties only, backed by native - so the
 // inline Vector3s are the only position source that actually resolves.
+//
+// MouseLook is reached through PhotonNetworkSync+0x30, so it needs no extra
+// hook. It holds the Camera at +0x2C and six floats at +0x14..+0x28 which are
+// the pitch/yaw family. A field report PROVED FPScontroller+0x16C/+0x170 are
+// NOT the view angles: a deliberate turn left both of them untouched.
 const wanted = (process.argv[4] ||
   'FPScontroller,HealthScript,PlayerConfig,WeaponManager,GG_GameManager,TDM_GameManager,' +
-  'PhotonNetworkSync,NetworkPlayerAnimations,NPC_Cotroller,TargetHealth,SectatorCamera'
+  'PhotonNetworkSync,MouseLook,NetworkPlayerAnimations,NPC_Cotroller,TargetHealth,SectatorCamera,UISettings'
 ).split(',');
 
 // Read as latin1, NOT utf8. The obfuscated member names contain raw bytes that
