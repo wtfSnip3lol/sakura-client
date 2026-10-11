@@ -62,6 +62,14 @@ function obfBool(base, real, key) {
 // so a write from an earlier case would otherwise leak into the next one and
   // look exactly like a compounding bug.
   const OBJ = {};
+  // A scratch region for plugin.malloc(), clear of every object address above
+  // and inside HEAP_SIZE - rd() refuses anything past the end, and a malloc
+  // region beyond it would fail for a reason that has nothing to do with the
+  // code under test.
+  let MALLOC_NEXT = 0x300000;
+  // What the fake game's camera methods answer with. Null means "this build has
+  // no camera", which is the fallback path and must be exercised too.
+  let CAMERA_FIXTURE = null;
   let base = 0x20000;
   for (const t of ['FPScontroller', 'HealthScript', 'WeaponManager', 'GG_GameManager', 'TDM_GameManager', 'PhotonNetworkSync', 'NetworkPlayerAnimations', 'NPC_Cotroller', 'EnemyBot']) {
     OBJ[t] = base;
@@ -163,7 +171,8 @@ var BC_HUB = [];
 function sendToPlayer(msg) {
   for (const b of BC_HUB) if (typeof b.onmessage === 'function') b.onmessage({ data: msg });
 }
-function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'resolveGame', scriptDataLate = false, applyFirst = false, resolveButNotApply = false, noInstantiate = false, speed = null, thenOff = false, extraFrames = 0, fireEnemyTwice = null, setup = null, lobby = false, deliverVia = 'bc', preFire = null, ls = {}, fireMany = null, post = null, mouseLook = null, onFrame = null, onTick = null }) {
+function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'resolveGame', scriptDataLate = false, applyFirst = false, resolveButNotApply = false, noInstantiate = false, speed = null, thenOff = false, extraFrames = 0, fireEnemyTwice = null, setup = null, lobby = false, deliverVia = 'bc', preFire = null, ls = {}, fireMany = null, post = null, mouseLook = null, onFrame = null, onTick = null, camera = null }) {
+  CAMERA_FIXTURE = camera;
   // Reset the channel hub: payload instances from earlier runs would keep
   // their own SPEED_STATE and keep writing to the same heap, which looks
   // exactly like a compounding bug in the payload.
@@ -221,7 +230,59 @@ function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'r
           if (heapVia === 'takeover') orphanRuntime._game = gameObj;
           return h;
         },
-        // UWMK's postfix hook passes the RETURN VALUE first:
+        // plugin.call() invokes a real game method and hands back its result.
+        // The camera recode reads the game's own Transform and Camera through
+        // this, so the harness has to model it or the new path is untested - and
+        // an untested path that replaces a working one is worse than no path.
+        //
+        // Struct-returning methods are modelled the way IL2CPP actually compiles
+        // them: the caller passes a scratch pointer FIRST and the callee writes
+        // the struct into it. A Vector3 is 3 floats, a Quaternion 4.
+        call(typeName, methodName, args) {
+          order.push('call:' + typeName + '.' + methodName);
+          pluginCalls.push({ call: true, typeName, methodName });
+          const a = args || [];
+          // The payload passes plain numbers; UWMK would accept a ValueWrapper
+          // too. Accept both, or the struct branches throw on .val() and the
+          // scratch buffer silently keeps whatever was in it - which looks
+          // exactly like a broken read rather than a broken harness.
+          const raw = (v) => (v && typeof v.val === 'function' ? v.val() : v);
+          const num = (v) => new FakeVW(raw(v));
+          const game = CAMERA_FIXTURE;
+          if (!game) return new FakeVW(undefined);
+          if (typeName === 'Component' && methodName === 'get_transform') {
+            if (!game.camPtr) return new FakeVW(0);
+            return num(game.transformPtr || 0);
+          }
+          if (typeName === 'Camera' && methodName === 'get_fieldOfView') {
+            if (!game.camPtr) return new FakeVW(undefined);
+            return new FakeVW(game.fov);
+          }
+          if (typeName === 'Transform' && methodName === 'get_rotation') {
+            const q = game.quat;
+            const b = raw(a[0]);
+            if (!b || !q) return new FakeVW(undefined);
+            wF32(b, q[0]); wF32(b + 4, q[1]); wF32(b + 8, q[2]); wF32(b + 12, q[3]);
+            return new FakeVW(undefined);
+          }
+          if (typeName === 'Transform' && methodName === 'get_position') {
+            const p = game.pos;
+            const b = raw(a[0]);
+            if (!b || !p) return new FakeVW(undefined);
+            wF32(b, p[0]); wF32(b + 4, p[1]); wF32(b + 8, p[2]);
+            return new FakeVW(undefined);
+          }
+          return new FakeVW(undefined);
+        },
+        malloc(size) {
+          order.push('malloc:' + size);
+          // A real allocation inside the fake heap, well clear of every object
+          // the fixtures use, so a struct write cannot land on one of them.
+          const p = MALLOC_NEXT;
+          MALLOC_NEXT += 256;
+          wI32(p, size);            // something non-zero, like a real block header
+          return new FakeVW(p);
+        },
         //   let r = originalFunc(...args);
         //   hook.callback(new ValueWrapper(r), ...wrappedArgs)
         // That is how the SkillWarz payload reads MouseLook's real pitch and
@@ -2001,6 +2062,305 @@ function check(name, cond, detail) {
   check('the box is taller than it is wide, as a standing figure is',
     wide.length > 0 && wide.every(x => x.h > x.w),
     JSON.stringify(wide.map(x => `w=${x.w.toFixed(1)} h=${x.h.toFixed(1)}`)));
+}
+
+/* ================================================================== *
+ * THE CAMERA IS READ, NOT GUESSED.
+ *
+ * Six releases projected from a hand-typed field of view, a struct offset for
+ * yaw, a struct offset that was never a pitch, and an eye height that is a
+ * constant. dump.cs says the camera is sitting right there on MouseLook+0x2C,
+ * and UWMK's plugin.call can invoke it - so the projection now reads the real
+ * rotation, the real position and the real field of view instead.
+ *
+ * A Vector3 or Quaternion cannot come back in a wasm i32, but IL2CPP does not
+ * return one by value either: the callee takes a hidden pointer to caller-owned
+ * storage and writes the struct there. So the scratch buffer from plugin.malloc
+ * is passed as an extra LEADING argument and the result is read back out of the
+ * heap.
+ *
+ * These tests pin the whole chain, and - more importantly - pin what happens
+ * when it fails, because a fallback that is silent is how this project failed
+ * five times running.
+ */
+{
+  const ML = 0x2c000;
+  const CAM_PTR = 0x70000;
+  const TF_PTR = 0x71000;
+  // yaw 0, pitch 0: identity. Looking along +Z, which is Unity's forward.
+  const scene = () => {
+    wI32(ML + 0x2c, CAM_PTR);                       // MouseLook's Camera field
+    wI32(OBJ.PhotonNetworkSync + 0x30, ML);
+    wF32(ML + 0x18, 360); wF32(ML + 0x1c, 0); wF32(ML + 0x28, 999);  // 0x28 is a DECOY
+    for (const o of [0x154, 0x160, 0x2e4, 0x3d0]) {
+      wF32(OBJ.FPScontroller + o, -40); wF32(OBJ.FPScontroller + o + 4, 0); wF32(OBJ.FPScontroller + o + 8, -20);
+    }
+    wF32(OBJ.PhotonNetworkSync + 0x6c, -40); wF32(OBJ.PhotonNetworkSync + 0x70, 0); wF32(OBJ.PhotonNetworkSync + 0x74, 10);
+    wI32(OBJ.PhotonNetworkSync + 0x7c, 10);
+  };
+  const r = runFrame({
+    fireMany: { PhotonNetworkSync: [OBJ.PhotonNetworkSync] },
+    camera: { camPtr: CAM_PTR, transformPtr: TF_PTR, fov: 70, quat: [0, 0, 0, 1], pos: [-40, 1.8, -20] },
+    setup: scene
+  });
+  const c = r.report.camera;
+  check('the camera is found through MouseLook+0x2c, not guessed at',
+    c && c.camPtr === '0x70000',
+    JSON.stringify(c && c.camPtr));
+  check('its Transform is reached by calling Component.get_transform',
+    c && c.tfPtr === '0x71000',
+    JSON.stringify(c && c.tfPtr));
+  check('the quaternion comes back out of the scratch buffer with all four components',
+    c && c.quat && c.quat.length === 4 && Math.abs(c.quat[3] - 1) < 1e-6,
+    JSON.stringify(c && c.quat));
+  check('the field of view is the game\'s, not the typed-in 90',
+    c && c.fov === 70,
+    `fov=${c && c.fov}`);
+  check('the camera position is the game\'s, not feet plus a constant',
+    c && c.pos && Math.abs(c.pos[1] - 1.8) < 1e-6 && Math.abs(c.pos[2] + 20) < 1e-6,
+    JSON.stringify(c && c.pos));
+  check('the basis is orthonormal, which is what makes the projection correct',
+    c && c.basis && (function () {
+      const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+      const mag = (a) => Math.sqrt(dot(a, a));
+      return Math.abs(dot(c.basis.fwd, c.basis.right)) < 1e-5 &&
+             Math.abs(dot(c.basis.fwd, c.basis.up)) < 1e-5 &&
+             Math.abs(dot(c.basis.right, c.basis.up)) < 1e-5 &&
+             Math.abs(mag(c.basis.fwd) - 1) < 1e-5 &&
+             Math.abs(mag(c.basis.up) - 1) < 1e-5 &&
+             Math.abs(mag(c.basis.right) - 1) < 1e-5;
+    })(),
+    JSON.stringify(c && c.basis));
+  check('identity rotation means Unity forward, +Z',
+    c && c.basis && Math.abs(c.basis.fwd[2] - 1) < 1e-6 && Math.abs(c.basis.fwd[0]) < 1e-6,
+    JSON.stringify(c && c.basis && c.basis.fwd));
+  check('and the projection uses it - the decoy at +0x28 (999) is not the yaw',
+    (function () {
+      const pr = r.report.angles && r.report.angles.projection;
+      // Facing +Z, an enemy 30m ahead at (-40,0,10) must land dead centre.
+      return pr && pr.rows.some(x => Math.abs(x.bearing) < 3 && Math.abs(x.at) < 0.02);
+    })(),
+    JSON.stringify(r.report.angles && r.report.angles.projection && r.report.angles.projection.rows));
+
+  // A pitch the struct has never contained: 30 degrees up. Unity composes
+  // look rotation as yaw about Y then pitch about X, so at yaw 0 this is a
+  // rotation about X alone - q = (sin(p/2), 0, 0, cos(p/2)). Getting this
+  // wrong in the FIXTURE produces a test that passes for the wrong reason,
+  // which is the failure this suite has hit twice already.
+  const up = (yaw, pitch) => {
+    const hr = yaw * Math.PI / 180, hp = pitch * Math.PI / 180;
+    if (yaw === 0) return [Math.sin(hp / 2), 0, 0, Math.cos(hp / 2)];
+    const cy = Math.cos(hr / 2), sy = Math.sin(hr / 2);
+    const cp = Math.cos(hp / 2), sp = Math.sin(hp / 2);
+    return [cy * sp, sy * cp, -sy * sp, cy * cp];
+  };
+  const tilted = runFrame({
+    fireMany: { PhotonNetworkSync: [OBJ.PhotonNetworkSync] },
+    camera: { camPtr: CAM_PTR, transformPtr: TF_PTR, fov: 70,
+              quat: up(0, -30), pos: [-40, 1.8, -20] },
+    setup: scene
+  });
+  const tb = tilted.report.camera && tilted.report.camera.basis;
+  check('a pitched camera is read from the quaternion, which the struct cannot express',
+    tb && Math.abs(tb.fwd[1] - 0.5) < 0.02 && tb.fwd[2] > 0.85,
+    JSON.stringify(tb && tb.fwd));
+  check('pitch also puts the up vector where it belongs, with no cross product to get wrong',
+    tb && Math.abs(tb.up[1] - 0.866) < 0.02 && Math.abs(tb.up[0]) < 0.02,
+    JSON.stringify(tb && tb.up));
+  check('and a target on the ground now projects BELOW centre, because the camera is looking up',
+    (function () {
+      const pr = tilted.report.angles && tilted.report.angles.projection;
+      return pr && pr.rows.length > 0 && pr.rows.every(x => x.at !== null);
+    })(),
+    JSON.stringify(tilted.report.angles && tilted.report.angles.projection && tilted.report.angles.projection.rows));
+
+  // Roll about the view axis, which a pitch/yaw pair cannot represent at all.
+  // Rotating 90 degrees about Z leaves up pointing straight along -X.
+  const rolled = runFrame({
+    fireMany: { PhotonNetworkSync: [OBJ.PhotonNetworkSync] },
+    camera: { camPtr: CAM_PTR, transformPtr: TF_PTR, fov: 70,
+              quat: [0, 0, Math.sin(Math.PI / 4), Math.cos(Math.PI / 4)], pos: [-40, 1.8, -20] },
+    setup: scene
+  });
+  const rb = rolled.report.camera && rolled.report.camera.basis;
+  check('roll is carried through - up tips over, which no pitch/yaw guess could do',
+    rb && Math.abs(rb.up[0] + 1) < 0.02,
+    JSON.stringify(rb && rb.up));
+}
+
+/* The projection against ground truth that does not come from this code at all.
+ *
+ * The camera is told to look 45 degrees off, an enemy is planted exactly 30m
+ * along that look direction, and the expected answer is the centre of the
+ * screen - which follows from the definition of "dead ahead" and not from any
+ * arithmetic in project(). The struct decoy at +0x28 holds 999 degrees, so a
+ * projection still built on the old path lands somewhere else entirely. */
+{
+  const ML = 0x2c000;
+  const S1 = OBJ.PhotonNetworkSync;
+  const yaw = 45;
+  const d = 30, rad = Math.sqrt(2) / 2;
+  const ex = -10 + d * rad, ez = -10 + d * rad;   // dead along a 45-degree look
+  const r = runFrame({
+    fireMany: { PhotonNetworkSync: [S1] },
+    camera: { camPtr: 0x70000, transformPtr: 0x71000, fov: 90,
+              quat: [0, Math.sin((yaw * Math.PI / 180) / 2), 0, Math.cos((yaw * Math.PI / 180) / 2)],
+              pos: [-10, 1.8, -10] },
+    // Boxes on, so the overlay canvas exists and the aspect the check divides by
+    // is the real 16:9 one rather than a 1000x1000 stand-in. Run against a
+    // square viewport, every horizontal position is scaled wrongly by 1.78.
+    post(send, c) { c.hudEl('esp').onclick(); send('snapshot'); },
+    setup() {
+      wI32(ML + 0x2c, 0x70000);
+      wI32(S1 + 0x30, ML);
+      wF32(ML + 0x18, 360); wF32(ML + 0x1c, 0); wF32(ML + 0x28, 999);
+      for (const o of [0x154, 0x160, 0x2e4, 0x3d0]) {
+        wF32(OBJ.FPScontroller + o, -10); wF32(OBJ.FPScontroller + o + 4, 0); wF32(OBJ.FPScontroller + o + 8, -10);
+      }
+      wF32(S1 + 0x6c, ex); wF32(S1 + 0x70, 0); wF32(S1 + 0x74, ez);
+      wI32(S1 + 0x7c, 10);
+    }
+  });
+  const pr = r.report.angles && r.report.angles.projection;
+  check('a target planted exactly along the camera\'s own look direction lands dead centre',
+    pr && pr.rows.some(x => x.d > 29 && x.d < 31 && Math.abs(x.at) < 0.01),
+    JSON.stringify(pr && pr.rows));
+  check('and the projection agrees with the bearing check on the same enemy',
+    pr && pr.rows.every(x => Math.abs(x.at - x.want) < 0.01),
+    JSON.stringify(pr && pr.rows));
+  check('a point a known height above a LEVEL camera lands where the projection says it must',
+    (function () {
+      const v = r.report.angles && r.report.angles.projection && r.report.angles.projection.vertical;
+      // 1m up, 10m ahead, fov 90 -> tan(45)=1 -> ndcY = 0.1 exactly.
+      return v && Math.abs(v.got - 0.1) < 0.01;
+    })(),
+    JSON.stringify(r.report.angles && r.report.angles.projection && r.report.angles.projection.vertical));
+  check('so the vertical axis is signed correctly - an inverted up vector fails here',
+    (function () {
+      const v = r.report.angles && r.report.angles.projection && r.report.angles.projection.vertical;
+      return v && v.got > 0 && Math.abs(v.off) < 0.01;
+    })(),
+    JSON.stringify(r.report.angles && r.report.angles.projection && r.report.angles.projection.vertical));
+  check('a yawed camera moves the box off centre, which the struct decoy cannot',
+    (function () {
+      const lvl = runFrame({
+        fireMany: { PhotonNetworkSync: [S1] },
+        camera: { camPtr: 0x70000, transformPtr: 0x71000, fov: 90, quat: [0, 0, 0, 1], pos: [-10, 1.8, -10] },
+        post(send, c) { c.hudEl('esp').onclick(); send('snapshot'); },
+        setup() {
+          wI32(ML + 0x2c, 0x70000);
+          wI32(S1 + 0x30, ML);
+          wF32(ML + 0x18, 360); wF32(ML + 0x1c, 0); wF32(ML + 0x28, 999);
+          for (const o of [0x154, 0x160, 0x2e4, 0x3d0]) {
+            wF32(OBJ.FPScontroller + o, -10); wF32(OBJ.FPScontroller + o + 4, 0); wF32(OBJ.FPScontroller + o + 8, -10);
+          }
+          // Same enemy, but the camera now faces 0. It is 45 degrees off-axis.
+          wF32(S1 + 0x6c, ex); wF32(S1 + 0x70, 0); wF32(S1 + 0x74, ez);
+          wI32(S1 + 0x7c, 10);
+        }
+      }).report.angles.projection;
+      // tan(45)/(tan(45)*aspect), with the real 16:9 aspect, is 0.5625.
+      return lvl && lvl.rows.some(x => Math.abs(x.at - 0.5625) < 0.02);
+    })(),
+    'a 45-degree offset at fov 90 must project to the right edge');
+}
+
+/* When the camera will not answer, the fallback must still work AND must say
+ * so. A silent fallback is how +0x18 came to be read as a pitch for four
+ * releases: the code projected confidently with a constant and nothing
+ * indicated the constant was a guess. */
+{
+  const ML = 0x2c000;
+  const r = runFrame({
+    fireMany: { PhotonNetworkSync: [OBJ.PhotonNetworkSync] },
+    camera: null,                                   // this build has no camera
+    setup() {
+      wI32(OBJ.PhotonNetworkSync + 0x30, ML);
+      wF32(ML + 0x18, 360); wF32(ML + 0x1c, 0); wF32(ML + 0x28, 0);
+      for (const o of [0x154, 0x160, 0x2e4, 0x3d0]) {
+        wF32(OBJ.FPScontroller + o, -40); wF32(OBJ.FPScontroller + o + 4, 0); wF32(OBJ.FPScontroller + o + 8, -20);
+      }
+      wF32(OBJ.PhotonNetworkSync + 0x6c, -40); wF32(OBJ.PhotonNetworkSync + 0x70, 0); wF32(OBJ.PhotonNetworkSync + 0x74, 10);
+      wI32(OBJ.PhotonNetworkSync + 0x7c, 10);
+    }
+  });
+  const c = r.report.camera;
+  check('no camera in the struct means the camera read fails, and says why',
+    c && c.ok === false && typeof c.why === 'string' && c.why.length > 0,
+    JSON.stringify(c));
+  check('and the fallback still reports where its angles came from',
+    r.report.angles && typeof r.report.angles.source === 'string' && r.report.angles.source.length > 0,
+    JSON.stringify(r.report.angles && r.report.angles.source));
+  check('the fallback is the struct read, labelled as a guess, not a silent one',
+    r.report.angles && /guess|field/i.test(r.report.angles.source),
+    `source=${r.report.angles && r.report.angles.source}`);
+}
+
+/* A Quaternion whose length is not 1 is not a rotation. Reading unvalidated
+ * scratch is how a garbage read becomes a confident box. */
+{
+  const ML = 0x2c000;
+  const r = runFrame({
+    fireMany: { PhotonNetworkSync: [OBJ.PhotonNetworkSync] },
+    camera: { camPtr: 0x70000, transformPtr: 0x71000, fov: 70,
+              quat: [3.7, 1.1, -0.4, 9.2], pos: [-40, 1.8, -20] },
+    setup() {
+      wI32(ML + 0x2c, 0x70000);
+      wI32(OBJ.PhotonNetworkSync + 0x30, ML);
+      wF32(ML + 0x18, 360); wF32(ML + 0x1c, 0); wF32(ML + 0x28, 0);
+    }
+  });
+  const c = r.report.camera;
+  check('a quaternion that is not unit length is refused rather than used',
+    c && c.quat === null && c.basis === null,
+    JSON.stringify(c && { q: c.quat, b: c.basis }));
+  check('and it is named in the reason, with the length that gave it away',
+    c && /\|q\|/.test(c.why || ''),
+    `why=${c && c.why}`);
+  check('a plausible field of view is still kept, since that read stands on its own',
+    c && c.fov === 70,
+    `fov=${c && c.fov}`);
+}
+
+/* A field of view outside any sane range is not a field of view. */
+{
+  const ML = 0x2c000;
+  const r = runFrame({
+    fireMany: { PhotonNetworkSync: [OBJ.PhotonNetworkSync] },
+    camera: { camPtr: 0x70000, transformPtr: 0x71000, fov: 4000,
+              quat: [0, 0, 0, 1], pos: [-40, 1.8, -20] },
+    setup() {
+      wI32(ML + 0x2c, 0x70000);
+      wI32(OBJ.PhotonNetworkSync + 0x30, ML);
+    }
+  });
+  check('an absurd field of view is refused rather than used to scale every box',
+    r.report.camera && r.report.camera.fov === null,
+    `fov=${r.report.camera && r.report.camera.fov}`);
+}
+
+/* A build where get_transform is unavailable - an unresolvable type, a heap we
+ * cannot reach - must fall back rather than throw or draw from nothing. */
+{
+  const ML = 0x2c000;
+  const r = runFrame({
+    fireMany: { PhotonNetworkSync: [OBJ.PhotonNetworkSync] },
+    camera: { camPtr: 0x70000, transformPtr: 0, fov: 70, quat: [0, 0, 0, 1] },
+    setup() {
+      wI32(ML + 0x2c, 0x70000);
+      wI32(OBJ.PhotonNetworkSync + 0x30, ML);
+      wF32(ML + 0x18, 360); wF32(ML + 0x1c, 0); wF32(ML + 0x28, 0);
+      for (const o of [0x154, 0x160, 0x2e4, 0x3d0]) {
+        wF32(OBJ.FPScontroller + o, -40); wF32(OBJ.FPScontroller + o + 4, 0); wF32(OBJ.FPScontroller + o + 8, -20);
+      }
+    }
+  });
+  check('an unreachable Transform falls back instead of throwing',
+    !r.fatal && r.report.camera && r.report.camera.ok === false,
+    `fatal=${r.fatal} ok=${r.report.camera && r.report.camera.ok}`);
+  check('and the reason names the call that failed',
+    r.report.camera && /get_transform/.test(r.report.camera.why || ''),
+    `why=${r.report.camera && r.report.camera.why}`);
 }
 
 /* The menu opens bottom-right, which is where this game keeps the weapon and

@@ -2053,6 +2053,11 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
   // from "map", and offering it is a dead click.
   function boxesUsable() {
     try {
+      // A real camera is the strongest source there is, and it does not depend
+      // on the angle hooks having fired. So it is asked first: if the camera
+      // answered, the boxes are drawable even when every getter is silent.
+      var c = readCamera();
+      if (c.basis) return true;
       var a = viewAngles();
       return !!(a && ANGLE.identified);
     } catch (_) { return false; }
@@ -2342,6 +2347,207 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
   var YAW_OFF = 0x28;
   var PITCH_OFF = 0x1c;
 
+  /* ---------------------------------------------------------------- *
+   * THE CAMERA, ASKED RATHER THAN GUESSED.
+   *
+   * Six releases of this feature have hand-rolled a perspective projection out
+   * of four numbers, and three of the four have never once been read from the
+   * game: a yaw from a struct offset, a pitch the comment above calls
+   * unreachable, a field of view typed in by hand, and an eye height that is a
+   * constant. Every release fixed a symptom and broke something else, which is
+   * what fitting to screenshots looks like from the inside.
+   *
+   * The fourth input was never the problem. dump.cs says the camera is right
+   * there - MouseLook+0x2C is a public Camera - and UWMK exposes two more
+   * things that together make the game's own numbers readable:
+   *
+   *   plugin.call(TYPE, METHOD, ARGS)   invokes a real method and returns its
+   *                                    result as a ValueWrapper
+   *   plugin.malloc(N)                  allocates N bytes of the game's heap
+   *
+   * A Vector3 return cannot come back in a wasm i32, but IL2CPP does not return
+   * one by value: the callee takes a hidden pointer to caller-owned storage and
+   * writes the struct into it. So a Vector3 or Quaternion getter is called with
+   * the scratch buffer as an EXTRA LEADING ARGUMENT, and the result is read back
+   * out of the heap with the same rd() the rest of this file already uses.
+   *
+   * That converts three guesses into reads:
+   *
+   *   Camera.get_fieldOfView()   a plain float, no scratch needed
+   *   Transform.get_rotation()   a Quaternion - all four components of the
+   *                              camera's orientation, exactly, as the game
+   *                              computed them, including the pitch the struct
+   *                              does not contain
+   *   Transform.get_position()   the camera's world position, replacing the
+   *                              feet-plus-a-constant eye
+   *
+   * The route to a Transform is Component.get_transform(), which returns an
+   * object reference - a plain i32 - and needs no scratch at all.
+   *
+   * This is still a live read against a live game and a call can fail, so it is
+   * treated as a source with evidence rather than as an oracle: every value is
+   * range-checked, the lot is reported, and if any step fails the code falls
+   * back to the old struct read and SAYS it fell back. A wrong box drawn
+   * confidently is the failure mode this file has produced most often, and it is
+   * not being replaced by a new one.
+   * ---------------------------------------------------------------- */
+  var CAM_OFF = 0x2c;   // MouseLook's public Camera field
+  var CAM = {
+    tried: 0, ok: false, why: "", source: null,
+    camPtr: 0, tfPtr: 0, scratch: 0,
+    fov: null, quat: null, pos: null, basis: null,
+    errors: [], applied: 0
+  };
+
+  function camValue(v) {
+    if (v === undefined || v === null) return undefined;
+    if (typeof v.val === "function") { try { return v.val(); } catch (_) {} }
+    if (typeof v === "object") return undefined;
+    return v;
+  }
+
+  // plugin.call(), wrapped so every failure is recorded rather than thrown. A
+  // missing type, a wrong signature and an unreachable heap all look the same
+  // from out here, and the difference matters to whoever reads the report next.
+  function callGame(typeName, methodName, args) {
+    try {
+      var RT = window.UnityWebModkit && window.UnityWebModkit.Runtime;
+      var pl = plugin || (RT && RT.plugins && RT.plugins[RT.plugins.length - 1]);
+      if (!pl || typeof pl.call !== "function") { CAM.errors.push("no plugin.call"); return undefined; }
+      return camValue(pl.call(typeName, methodName, args || []));
+    } catch (e) {
+      if (CAM.errors.length < 6) CAM.errors.push(typeName + "." + methodName + ": " + String((e && e.message) || e).slice(0, 90));
+      return undefined;
+    }
+  }
+
+  // One scratch buffer, allocated once. 32 bytes is enough for a Quaternion
+  // (16) and leaves room for a Vector3 (12) with alignment to spare.
+  function camScratch() {
+    if (CAM.scratch) return CAM.scratch;
+    try {
+      var RT = window.UnityWebModkit && window.UnityWebModkit.Runtime;
+      var pl = plugin || (RT && RT.plugins && RT.plugins[RT.plugins.length - 1]);
+      if (!pl || typeof pl.malloc !== "function") { CAM.errors.push("no plugin.malloc"); return 0; }
+      var m = camValue(pl.malloc(32));
+      if (typeof m !== "number" || !(m > 0)) { CAM.errors.push("malloc returned " + m); return 0; }
+      CAM.scratch = m;
+    } catch (e) {
+      if (CAM.errors.length < 6) CAM.errors.push("malloc: " + String((e && e.message) || e).slice(0, 90));
+      return 0;
+    }
+    return CAM.scratch;
+  }
+
+  /* Quaternion -> the three orthonormal basis vectors Unity renders with.
+   *
+   * A camera's forward is q * (0,0,1), right is q * (1,0,0) and up is q * (0,1,0).
+   * Rotating the basis directly, rather than going out to Euler angles and back,
+   * keeps the three exactly orthonormal - which is the property that makes the
+   * projection correct - and it carries roll for free.
+   *
+   * This is the pitch the MouseLook struct does not contain, read from the same
+   * rotation the renderer used, so it cannot disagree with what is on screen. */
+  function quatBasis(q) {
+    var x = q[0], y = q[1], z = q[2], w = q[3];
+    var xx = x * x, yy = y * y, zz = z * z;
+    var xy = x * y, xz = x * z, yz = y * z;
+    var wx = w * x, wy = w * y, wz = w * z;
+    return {
+      right: [1 - 2 * (yy + zz), 2 * (xy + wz), 2 * (xz - wy)],
+      up:    [2 * (xy - wz), 1 - 2 * (xx + zz), 2 * (yz + wx)],
+      fwd:   [2 * (xz + wy), 2 * (yz - wx), 1 - 2 * (xx + yy)]
+    };
+  }
+
+  /* Read the camera the game is actually rendering through.
+   *
+   * Every value is range-checked before it is believed. A Quaternion whose
+   * length is not 1 is not a rotation; a field of view outside 1..179 is not a
+   * field of view; a position with a NaN in it is not a position. Those three
+   * checks are the whole difference between reading the camera and reading noise
+   * that happens to sit near it.
+   *
+   * CACHED, and that is a correctness point rather than a performance one.
+   * project() runs once per enemy per frame, and each call would otherwise make
+   * three calls into the game's VM - twenty-four of them per tick at eight
+   * enemies, against a live game, twenty times a second. That is exactly the
+   * kind of load that makes an overlay stutter, which is one of the symptoms
+   * being chased. The camera cannot meaningfully change within one tick, so it
+   * is read once by refreshCamera() and read from the cache everywhere else. */
+  function refreshCamera() {
+    CAM.tried++;
+    var v = viewState();
+    var ml = v && v.mouseLook ? parseInt(v.mouseLook, 16) : ML_INSTANCE;
+    if (!ml) { CAM.ok = false; CAM.why = "no MouseLook instance"; return CAM; }
+    if (ML_INSTANCE !== ml) ML_INSTANCE = ml;
+
+    var camPtr = rd(ml + CAM_OFF, "i32");
+    if (typeof camPtr !== "number" || !(camPtr > 0)) {
+      CAM.ok = false; CAM.why = "MouseLook+0x2c is not an object reference"; return CAM;
+    }
+    CAM.camPtr = camPtr;
+
+    // Component.get_transform() -> Transform: an object reference, so a plain
+    // i32 with no scratch buffer and no struct-return guessing.
+    var tf = callGame("Component", "get_transform", [camPtr]);
+    if (typeof tf !== "number" || !(tf > 0)) {
+      CAM.ok = false; CAM.tfPtr = 0;
+      CAM.why = "Component.get_transform returned " + tf;
+      return CAM;
+    }
+    CAM.tfPtr = tf;
+
+    var buf = camScratch();
+    if (!buf) { CAM.ok = false; CAM.why = "no scratch buffer"; return CAM; }
+
+    // Field of view: a plain float return. The least speculative read here, and
+    // the one with the biggest immediate effect - the manual default of 90 is a
+    // number nobody has ever checked against the game.
+    var fov = callGame("Camera", "get_fieldOfView", [camPtr]);
+    if (typeof fov === "number" && isFinite(fov) && fov > 1 && fov < 179) CAM.fov = fov;
+
+    // Transform.get_rotation(): a Quaternion, written into scratch.
+    callGame("Transform", "get_rotation", [buf, tf]);
+    var rot = [rd(buf, "f32"), rd(buf + 4, "f32"), rd(buf + 8, "f32"), rd(buf + 12, "f32")];
+    var rl = 0;
+    for (var i = 0; i < 4; i++) rl += rot[i] * rot[i];
+    rl = Math.sqrt(rl);
+    var rotOk = isFinite(rl) && Math.abs(rl - 1) < 0.02;
+
+    // Transform.get_position(): a Vector3 into the same buffer.
+    callGame("Transform", "get_position", [buf, tf]);
+    var px = rd(buf, "f32"), py = rd(buf + 4, "f32"), pz = rd(buf + 8, "f32");
+    CAM.pos = (typeof px === "number" && typeof py === "number" && typeof pz === "number" &&
+               isFinite(px) && isFinite(py) && isFinite(pz) &&
+               Math.abs(px) < 1e5 && Math.abs(py) < 1e5 && Math.abs(pz) < 1e5)
+      ? [px, py, pz] : null;
+
+    CAM.applied++;
+    if (rotOk) {
+      CAM.quat = rot;
+      CAM.basis = quatBasis(rot);
+      CAM.ok = true; CAM.why = ""; CAM.source = "camera transform";
+      return CAM;
+    }
+    CAM.quat = null; CAM.basis = null;
+    if (CAM.fov !== null) {
+      CAM.ok = true; CAM.source = "camera fov only";
+      CAM.why = "rotation unusable (|q|=" + (Math.round(rl * 1000) / 1000) + ") - fov only";
+      return CAM;
+    }
+    CAM.ok = false; CAM.source = null;
+    CAM.why = "rotation unusable (|q|=" + (Math.round(rl * 1000) / 1000) + ") and no fov";
+    return CAM;
+  }
+
+  // The cached read. Every consumer goes through this, so the three VM calls
+  // happen once per tick rather than once per box.
+  function readCamera() {
+    if (CAM.tried) return CAM;
+    return refreshCamera();
+  }
+
   var ANGLE = { pitch: null, yaw: null, identified: false, why: "no MouseLook yet",
                 source: null, yawGetter: null, pitchGetter: null, getters: [] };
 
@@ -2459,14 +2665,31 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
   }
 
   function project(from, to, w, h) {
-    var a = viewAngles();
-    if (!a) return null;
-    var pr = a.pitch * Math.PI / 180, yr = a.yaw * Math.PI / 180;
-    var cp = Math.cos(pr);
-    var fx = Math.sin(yr) * cp, fy = -Math.sin(pr), fz = Math.cos(yr) * cp;
-    // right = up x forward, with up = (0,1,0)
-    var rx = fz, ry = 0, rz = -fx;
-    var dx = to[0] - from[0], dy = to[1] - from[1], dz = to[2] - from[2];
+    var cam = readCamera();
+    // The game's own basis when it read cleanly. Everything below this line is
+    // the fallback and is reached only when the camera did not answer.
+    var basis = null, eye = from, fov = VIEW.fov;
+    if (cam.basis) {
+      basis = cam.basis;
+      if (cam.pos) eye = cam.pos;
+      if (cam.fov !== null) fov = cam.fov;
+    }
+    var fx, fy, fz, rx, ry, rz, ux, uy, uz;
+    if (basis) {
+      fx = basis.fwd[0]; fy = basis.fwd[1]; fz = basis.fwd[2];
+      rx = basis.right[0]; ry = basis.right[1]; rz = basis.right[2];
+      ux = basis.up[0]; uy = basis.up[1]; uz = basis.up[2];
+    } else {
+      var a = viewAngles();
+      if (!a) return null;
+      var pr = a.pitch * Math.PI / 180, yr = a.yaw * Math.PI / 180;
+      var cp = Math.cos(pr);
+      fx = Math.sin(yr) * cp; fy = -Math.sin(pr); fz = Math.cos(yr) * cp;
+      // right = up x forward, with up = (0,1,0)
+      rx = fz; ry = 0; rz = -fx;
+      ux = fy * rz - fz * ry; uy = fz * rx - fx * rz; uz = fx * ry - fy * rx;
+    }
+    var dx = to[0] - eye[0], dy = to[1] - eye[1], dz = to[2] - eye[2];
     var z = dx * fx + dy * fy + dz * fz;
     if (z <= 0.05) return null;                    // behind the camera
     var x = dx * rx + dy * ry + dz * rz;
@@ -2482,9 +2705,12 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     // is exactly why no turn-and-diff could catch it: the inputs that would
     // have revealed the mirror were themselves broken. A test that only varies
     // one axis at a time cannot see a bug on the other axis.
-    var y = dx * (fy * rz - fz * ry) + dy * (fz * rx - fx * rz) + dz * (fx * ry - fy * rx);
+    //
+    // With the real camera the up vector is READ rather than cross-multiplied,
+    // so this whole expression disappears - there is no sign to get wrong.
+    var y = dx * ux + dy * uy + dz * uz;
     var aspect = w / h;
-    var vf = VIEW.fov * Math.PI / 180;
+    var vf = fov * Math.PI / 180;
     var t = Math.tan(vf / 2);
     var ndcX = (x / z) / (t * aspect);
     var ndcY = (y / z) / t;
@@ -3500,13 +3726,44 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     var w = out.canvas.w || 1000, h = out.canvas.h || 1000;
     var aspect = w / h;
     var t = Math.tan(VIEW.fov * Math.PI / 180 / 2);
+    var cam = readCamera();
+    var basis = cam.basis;
     for (var i = 0; i < live.list.length && i < 8; i++) {
       var e = live.list[i];
-      if (typeof e.bearing !== "number" || typeof e.d !== "number" || e.d < 0.5) continue;
+      if (typeof e.d !== "number" || e.d < 0.5) continue;
       var pr = project(live.me.eye, [e.x, e.y, e.z], w, h);
       if (!pr) continue;
-      var ndcX = pr.x / w - 0.5;
-      var wantNdc = Math.tan(e.bearing * Math.PI / 180) / (t * aspect);
+      // project() returns PIXELS; NDC is [-1,1] and pixels are (ndc*0.5+0.5)*w. So
+      // pr.x/w-0.5 is HALF the NDC. Comparing that against a true NDC made every
+      // row half of what it should be, and the check only ever passed because
+      // the cases that mattered sat near zero where the factor cancels.
+      var ndcX = (pr.x / w - 0.5) * 2;
+      // The expected position, derived from world positions and the camera's own
+      // forward vector - a route that shares nothing with project() except the
+      // camera read itself.
+      //
+      // Deriving it from the WORLD bearing instead was worse than useless: the
+      // projection places an enemy relative to where the camera is LOOKING, so
+      // the two only agree when the camera happens to face +Z. At any other yaw
+      // it reported a large error for a perfectly correct projection, and at
+      // yaw 0 it agreed by construction and so could never detect anything. A
+      // check that is wrong off-axis and blind on-axis is not a check.
+      var wantNdc = null;
+      if (basis && cam.pos) {
+        var f = basis.fwd, r = basis.right;
+        var vx = e.x - cam.pos[0], vy = e.y - cam.pos[1], vz = e.z - cam.pos[2];
+        var zc = vx * f[0] + vy * f[1] + vz * f[2];
+        var xc = vx * r[0] + vy * r[1] + vz * r[2];
+        // HORIZONTAL only. A spherical decomposition of the 3D angle folds the
+        // vertical offset in and puts a level target 3% off centre for a camera
+        // looking level - a check that is wrong by construction is worse than
+        // none. The horizontal screen position is set by the ratio of the
+        // horizontal components and nothing else.
+        if (zc > 0.5) wantNdc = (xc / zc) / (t * aspect);
+      } else if (typeof e.bearing === "number") {
+        wantNdc = Math.tan(e.bearing * Math.PI / 180) / (t * aspect);
+      }
+      if (wantNdc === null) continue;
       // Skip anything close to the camera edge, where a small angle error is a
       // large fraction of the screen and the comparison stops meaning anything.
       if (Math.abs(wantNdc) > 0.8) continue;
@@ -3518,6 +3775,40 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       if (Math.abs(delta) > Math.abs(out.worstDelta)) {
         out.worstDelta = Math.round(delta * 1000) / 1000;
         out.worstBearing = Math.round(e.bearing);
+      }
+    }
+
+    /* THE VERTICAL AXIS, WHICH THE HORIZONTAL CHECK CANNOT SEE.
+     *
+     * Every enemy here stands on the same plane as the local player, so the rows
+     * above say nothing about vertical placement - and an up vector pointing the
+     * wrong way passed all of them. That bug shipped once already: the code
+     * computed right x forward instead of forward x right and drew every box
+     * mirrored, and it survived because the only inputs that could have shown it
+     * were themselves broken.
+     *
+     * So: when the camera is level, put a point a known height above its own
+     * eye and a known distance along its own forward, and ask where it lands.
+     * The answer follows from the definition of a perspective projection and
+     * uses no up vector at all:
+     *
+     *     ndcY = (height / distance) / tan(fov/2)
+     *
+     * A correct projection puts it there. An inverted one puts it at -that. */
+    if (cam.pos && cam.basis && cam.fov) {
+      var fwd = cam.basis.fwd;
+      if (Math.abs(fwd[1]) < 0.01) {
+        var tf2 = Math.tan(cam.fov * Math.PI / 180 / 2);
+        var dist = 10, lift = 1;
+        var tgt = [cam.pos[0] + fwd[0] * dist, cam.pos[1] + fwd[1] * dist + lift, cam.pos[2] + fwd[2] * dist];
+        var pr2 = project(cam.pos, tgt, w, out.canvas.h);
+        if (pr2) {
+          var got = (0.5 - pr2.y / out.canvas.h) * 2;
+          var want = (lift / dist) / tf2;
+          out.vertical = { got: Math.round(got * 1000) / 1000,
+                           want: Math.round(want * 1000) / 1000,
+                           off: Math.round((got - want) * 1000) / 1000 };
+        }
       }
     }
     return out;
@@ -3680,6 +3971,10 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     radar();
     if (ESP.boxes) boxCanvas();
     var live = null;
+    // Once per tick, before anything projects. Three calls into the game's VM
+    // per box instead of per tick is a difference an eight-player match can
+    // feel, and it would show up as the jitter this feature is trying to fix.
+    try { refreshCamera(); } catch (_) {}
     try { live = liveEnemies(); } catch (_) {}
     try { drawEsp(); } catch (_) {}
     try { drawBoxes(live); } catch (_) {}
@@ -3763,6 +4058,22 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
         // chosen offset and the in-band candidate count are both reported: a
         // tie resolved silently is a tie that is wrong silently.
         view: viewState(),
+        // The camera, read from the game's own Transform and Camera. This is the
+        // input the whole projection used to guess, and it is published in full
+        // - pointer, quaternion, position, fov - because a wrong answer here is
+        // a wrong answer on every box at once.
+        camera: (function () {
+          try {
+            var c = refreshCamera();
+            return { ok: c.ok, source: c.source, why: c.why, tried: c.tried,
+                     camPtr: "0x" + c.camPtr.toString(16),
+                     tfPtr: "0x" + c.tfPtr.toString(16),
+                     fov: c.fov, quat: c.quat, pos: c.pos,
+                     basis: c.basis, errors: c.errors.slice(0, 4) };
+          } catch (e) {
+            return { ok: false, error: String((e && e.message) || e).slice(0, 120) };
+          }
+        })(),
         // Whether the projection may be trusted AT ALL. When this is false the
         // boxes are deliberately not drawn - see viewAngles().
         angles: (function () {
