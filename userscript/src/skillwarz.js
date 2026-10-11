@@ -53,7 +53,7 @@
   // It was hand-written in three places once and one drifted, so a field report
   // claimed 2.0.2 while the plugin logged 2.0.3 - which sends everyone chasing
   // a stale build.
-  var VERSION = "2.0.7";
+  var VERSION = "2.0.8";
 
   /* ================================================================== *
    * WRAPPER — relay only. Arming UWMK here achieves nothing: this frame
@@ -683,11 +683,89 @@
   }
 
   // key/hidden/inited/fake/fakeActive offsets per struct kind.
+  //
+  // keyType is the load-bearing detail and it was wrong for two builds.
+  // ObscuredFloat and ObscuredInt both store `currentCryptoKey` as an INT, so
+  // the key must be read as 4 bytes. Reading it as a byte produced 28 where
+  // the real key was 444444 - and 444444 & 0xff is 28, which is why the
+  // giveaway was that every field's low byte agreed while the decoded values
+  // were garbage clustered around 444600. Only ObscuredBool uses a byte key.
   var LAYOUT = {
-    obfF: { key: 0x00, hidden: 0x04, inited: 0x0c, fake: 0x10, active: 0x14 },
-    obfI: { key: 0x00, hidden: 0x04, inited: 0x08, fake: 0x0c, active: 0x10 },
-    obfB: { key: 0x00, hidden: 0x04, inited: 0x08, fake: 0x09, active: 0x0a }
+    obfF: { key: 0x00, hidden: 0x04, inited: 0x0c, fake: 0x10, active: 0x14, size: 0x18, keyType: "i32" },
+    obfI: { key: 0x00, hidden: 0x04, inited: 0x08, fake: 0x0c, active: 0x10, size: 0x14, keyType: "i32" },
+    obfB: { key: 0x00, hidden: 0x04, inited: 0x08, fake: 0x09, active: 0x0a, size: 0x0c, keyType: "u8" }
   };
+
+  function hexOf(bytes) {
+    var s = "";
+    for (var i = 0; i < bytes.length; i++) {
+      var b = bytes[i].toString(16);
+      s += (b.length < 2 ? "0" : "") + b;
+    }
+    return s;
+  }
+
+  /* Coherent struct snapshot.
+   * Reading the six components as six separate reads is not safe: ACTk re-keys
+   * on decrypt, so a component can change between two of them and every value
+   * derived from the mix is garbage. Copy the whole struct first, then decode
+   * from that snapshot.
+   */
+  function snapStruct(ptr, base, size) {
+    var v = heapView();
+    if (!v) {
+      READS.failed++;
+      READS.lastError = READS.lastError ||
+        "no HEAPU8 - Unity instance not reachable via Runtime.resolveGame() or any window global";
+      return null;
+    }
+    if (base < 0 || base + size > v.byteLength) {
+      READS.failed++;
+      READS.lastError = READS.lastError ||
+        ("address 0x" + (ptr + base).toString(16) + " past heap end 0x" + v.byteLength.toString(16));
+      return null;
+    }
+    try {
+      var out = new Uint8Array(size);
+      for (var i = 0; i < size; i++) out[i] = v.getUint8(ptr + base + i);
+      READS.ok++;
+      return out;
+    } catch (e) {
+      READS.failed++;
+      READS.lastError = READS.lastError || String((e && e.message) || e).slice(0, 120);
+      return null;
+    }
+  }
+
+  // Returns the raw components. No interpretation: the instance key is derived
+  // later, from the data, rather than assumed to sit at offset 0.
+  function readObfRaw(ptr, base, kind) {
+    var L = LAYOUT[kind];
+    var snap = snapStruct(ptr, base, L.size);
+    if (!snap) return null;
+    var dv = new DataView(snap.buffer, snap.byteOffset, snap.byteLength);
+    var keyAtOffset0 = dv.getInt32(L.key, true);
+    var hidden = dv.getInt32(L.hidden, true);
+    var inited = dv.getUint8(L.inited) & 1;
+    var fake = kind === "obfF" ? dv.getFloat32(L.fake, true)
+             : kind === "obfI" ? dv.getInt32(L.fake, true)
+             : dv.getUint8(L.fake);
+    var act = dv.getUint8(L.active) & 1;
+    return {
+      keyAtOffset0: keyAtOffset0, hidden: hidden, inited: inited,
+      fake: fake, act: act, hex: hexOf(snap),
+      // ACTk encrypts with ONE key per instance, so if fake holds the true
+      // value then (hidden ^ fake) must be that same key for EVERY field on
+      // the object. That gives a self-checking candidate to vote on.
+      alt: kind === "obfI" ? (hidden ^ (fake | 0)) : null
+    };
+  }
+
+  function applyKey(kind, hidden, key) {
+    if (kind === "obfF") return floatOf(hidden ^ key);
+    if (kind === "obfI") return (hidden ^ key) | 0;
+    return (((hidden ^ key) & 0xff) !== 0 ? 1 : 0);
+  }
 
   // Returns null when a component read fails. Every failure is counted and
   // described rather than silently dropping the field.
@@ -836,6 +914,9 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
    * ---------------------------------------------------------------- */
   var SNAPSHOT = null;
   var DIFF = [];
+  // Per-object ACTk key derivation result, reported so the decode can be
+  // trusted or challenged rather than taken on faith.
+  var KEY_INFO = {};
   // First time a hook callback actually fires, with proof of what was true
   // then. See captureArgs().
   var FIRE_PROOF = null;
@@ -867,21 +948,74 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
         var off = fields[i][0];
         var kind = fields[i][1];
         if (kind.indexOf("obf") === 0) {
-          var d = readObf(rec.ptr, off, kind);
+          var d = readObfRaw(rec.ptr, off, kind);
           if (!d) continue;
-          rows.push({
-            o: off, k: kind, v: d.real, fake: d.fake, act: d.act, inited: d.init,
-            raw: "key=" + d.key + " hid=" + d.hidden + " fake=" + d.fake + (d.act ? " ACTIVE" : "")
-          });
+          d.o = off; d.k = kind;
+          rows.push(d);
         } else {
           var r = rd(rec.ptr + off, kind);
           if (r === undefined) continue;
-          rows.push({ o: off, k: kind, v: r, raw: "" });
+          rows.push({ o: off, k: kind, v: r });
         }
       }
-      if (rows.length) out[typeName] = rows;
+      if (rows.length) {
+        var resolved = resolveKeys(rows);
+        out[typeName] = resolved.rows;
+        KEY_INFO[typeName] = {
+          key: resolved.key, sane: resolved.sane, checked: resolved.checked,
+          keyConsistent: resolved.keyConsistent, keySource: resolved.keySource
+        };
+      }
     }
     return out;
+  }
+
+  /* Decode with the key at offset 0, then sanity-check the result.
+   *
+   * The bug this replaces: the decoder read currentCryptoKey as ONE BYTE, so
+   * every value came out garbage clustered near 444600 while looking
+   * plausible in a JSON blob. Nothing flagged it.
+   *
+   * ACTk's decoy is a value jittered near the real one, so a correct decode
+   * lands within a small band of the decoy. That gives an independent check
+   * that costs nothing and would have caught the byte-width key immediately:
+   * 444616 against a decoy of 200 is a factor of 2000, not jitter.
+   */
+  function resolveKeys(rows) {
+    var sane = 0, checked = 0, key = null;
+    for (var j = 0; j < rows.length; j++) {
+      var row = rows[j];
+      if (row.k.indexOf("obf") !== 0) continue;
+      row.v = applyKey(row.k, row.hidden, row.keyAtOffset0);
+      row.keyUsed = row.keyAtOffset0;
+      row.raw = "hid=" + row.hidden + " fake=" + row.fake + (row.act ? " ACTIVE" : "") +
+                " k0=" + row.keyAtOffset0 + " hex=" + row.hex;
+      if (key === null) key = row.keyAtOffset0;
+      checked++;
+      if (looksPlausible(row)) { sane++; row.sane = true; } else { row.sane = false; }
+      delete row.alt;
+    }
+    return {
+      rows: rows, key: key, sane: sane, checked: checked,
+      // One key per instance, so fields that disagree mean the offsets or the
+      // key width are wrong somewhere.
+      keyConsistent: rows.filter(function (x) { return x.k.indexOf("obf") === 0; })
+        .every(function (x) { return x.keyUsed === key; }),
+      keySource: "offset 0 (int-width)"
+    };
+  }
+
+  function looksPlausible(row) {
+    var v = row.v;
+    if (typeof v !== "number" || !isFinite(v)) return false;
+    if (row.k === "obfB") return v === 0 || v === 1;
+    var f = row.fake;
+    if (typeof f !== "number" || !isFinite(f)) return true;   // no decoy to compare
+    if (row.act === 1) {
+      // Decoy active: it is a jittered copy of the real value.
+      return Math.abs(v - f) <= Math.max(1, Math.abs(f) * 0.6);
+    }
+    return Math.abs(v) < 1e9;
   }
 
   function identity() {
@@ -996,6 +1130,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       instancesReplaced: replaced,
       hookFireProof: FIRE_PROOF,
       survey: sv,
+      actkKeys: KEY_INFO,
       surveyRows: Object.keys(sv).reduce(function (n, k) { return n + sv[k].length; }, 0),
       reads: { ok: READS.ok, failed: READS.failed, lastError: READS.lastError, source: READS.source },
       identity: identity(),

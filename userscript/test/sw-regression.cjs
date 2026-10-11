@@ -576,6 +576,61 @@ function check(name, cond, detail) {
 }
 
 /* ================================================================== *
+ * ACTk KEY WIDTH. The field bug: currentCryptoKey is an INT for
+ * ObscuredFloat and ObscuredInt, and reading it as one byte produced
+ * plausible-looking nonsense. 444444 & 0xff is 28, and 28 was reported as
+ * the key while every decoded value was garbage - which is why the giveaway
+ * was that the low bytes agreed across fields while nothing else did.
+ *
+ * These keys are deliberately high, so a byte-width read cannot pass. They sit
+ * at offsets the GENERATED map already classifies (HealthScript 0xd4 is
+ * obfI, FPScontroller 0x40 is obfF) - inventing offsets here would test
+ * nothing, which is a mistake this suite already made once.
+ * ================================================================== */
+{
+  const BIG = 0x006c81c;    // 444444, same shape as the real one
+  const KEYV = 0x00abcdef;  // ObscuredFloat key: low byte 0xEF
+  obfInt(OBJ.HealthScript + 0xd4, 200, BIG);
+  obfFloat(OBJ.FPScontroller + 0x40, 12.5, KEYV);
+
+  const r = runFrame({});
+  const ints = (r.report.survey.HealthScript || []).filter(x => x.k === 'obfI');
+  const floats = (r.report.survey.FPScontroller || []).filter(x => x.k === 'obfF');
+
+  const bigRow = ints.find(x => x.o === 0xd4);
+  check('int key with a misleading low byte still decodes',
+    !!(bigRow && bigRow.v === 200), `got ${bigRow && bigRow.v}, expected 200`);
+  check('int key is read as 4 bytes, not 1',
+    !!(bigRow && bigRow.keyAtOffset0 === BIG), `got ${bigRow && bigRow.keyAtOffset0}`);
+  check('a byte-width key would have produced a different value',
+    !!bigRow && ((bigRow.hidden ^ (BIG & 0xff)) | 0) !== 200, 'test is not discriminating');
+
+  const floatRow = floats.find(x => x.o === 0x40);
+  check('float key with a misleading low byte still decodes',
+    !!(floatRow && Math.abs(floatRow.v - 12.5) < 1e-4), `got ${floatRow && floatRow.v}, expected 12.5`);
+  check('float key is read as 4 bytes, not 1',
+    !!(floatRow && floatRow.keyAtOffset0 === KEYV), `got ${floatRow && floatRow.keyAtOffset0}`);
+
+  check('the plausibility check passes on a correct decode',
+    r.report.actkKeys.HealthScript && r.report.actkKeys.HealthScript.sane === r.report.actkKeys.HealthScript.checked,
+    JSON.stringify(r.report.actkKeys.HealthScript));
+  check('every decoded value is flagged sane, not just most',
+    ints.filter(x => x.k === 'obfI').every(x => x.sane === true),
+    JSON.stringify(ints.filter(x => x.sane !== true)));
+  check('a byte-width key would have FAILED the plausibility check',
+    (function () {
+      // Prove the guard is real: decode the big-key row with only the low byte
+      // and confirm the result is rejected.
+      const r2 = r.report.survey.HealthScript.find(x => x.o === 0xd4);
+      if (!r2) return false;
+      const broken = (r2.hidden ^ (BIG & 0xff)) | 0;
+      return Math.abs(broken - r2.fake) > Math.max(1, Math.abs(r2.fake) * 0.6);
+    })(), 'the guard would not have caught the byte-width bug');
+  check('raw struct bytes are reported for offline verification',
+    !!(bigRow && /hex=[0-9a-f]{40}/.test(bigRow.raw)), bigRow && bigRow.raw);
+}
+
+/* ================================================================== *
  * BUILD IDENTITY. VERSION was hand-written in three places and one drifted,
  * and a stale install reached the field twice - once even after being told
  * twice. So: one declaration, hoisted above the portal branch that renders
