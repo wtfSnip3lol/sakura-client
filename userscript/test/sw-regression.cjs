@@ -102,12 +102,25 @@ class FakeVW {
 }
 
 function makeEl() {
-  return {
+  const el = {
     tagName: 'DIV', id: '', style: {}, dataset: {}, children: [], _html: '',
     get innerHTML() { return this._html; }, set innerHTML(v) { this._html = v; },
-    querySelector() { return null; }, appendChild(c) { this.children.push(c); return c; },
+    // Returning a usable stub for id selectors is what lets the PANEL be
+    // tested: the speed toggle only exists as an onclick handler attached here,
+    // so a null-returning querySelector made the whole control untestable.
+    querySelector(sel) {
+      if (typeof sel === 'string' && sel.charAt(0) === '#') {
+        const stub = makeEl();
+        stub.id = sel.slice(1);
+        if (el.ownerDoc) el.ownerDoc._els[sel] = stub;
+        return stub;
+      }
+      return null;
+    },
+    appendChild(c) { this.children.push(c); return c; },
     remove() {}, onclick: null, addEventListener() {}
   };
+  return el;
 }
 
 /* ------------------------------------------------------------------ *
@@ -119,7 +132,7 @@ var BC_HUB = [];
 function sendToPlayer(msg) {
   for (const b of BC_HUB) if (typeof b.onmessage === 'function') b.onmessage({ data: msg });
 }
-function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'resolveGame', scriptDataLate = false, applyFirst = false, resolveButNotApply = false, noInstantiate = false, speed = null, thenOff = false, extraFrames = 0, fireEnemyTwice = null, setup = null, lobby = false }) {
+function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'resolveGame', scriptDataLate = false, applyFirst = false, resolveButNotApply = false, noInstantiate = false, speed = null, thenOff = false, extraFrames = 0, fireEnemyTwice = null, setup = null, lobby = false, deliverVia = 'bc' }) {
   // Reset the channel hub: payload instances from earlier runs would keep
   // their own SPEED_STATE and keep writing to the same heap, which looks
   // exactly like a compounding bug in the payload.
@@ -128,7 +141,7 @@ function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'r
   // Setup runs AFTER seeding: seedObjects() zeroes the heap, so anything a case
   // writes beforehand is wiped and the test fails for the wrong reason.
   if (setup) setup();
-  const posted = [], pluginCalls = [], hookCalls = [], pending = [], listeners = [], order = [];
+  const posted = [], pluginCalls = [], hookCalls = [], pending = [], listeners = [], order = [], portalCommands = [];
   const fireTypes = fireUpdate ? ['FPScontroller', 'HealthScript', 'WeaponManager', 'GG_GameManager', 'EnemyBot'] : [];
 
   // The real game object. Only UWMK holds a reference to it - which is the
@@ -200,7 +213,11 @@ function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'r
 
   const doc = {
     readyState: 'complete', body: makeEl(), documentElement: makeEl(), head: makeEl(),
-    createElement: makeEl, getElementById: () => null, addEventListener() {}
+    createElement: makeEl, getElementById: () => null, addEventListener() {},
+    querySelectorAll(sel) {
+      if (sel !== 'iframe') return [];
+      return [{ contentWindow: { postMessage(m) { portalCommands.push(m); } } }];
+    }
   };
   // The payload sets bc.onmessage; commands arrive this way from the portal.
 class BC {
@@ -248,6 +265,13 @@ class BC {
   const body = src.replace(/^\(function\s*\(\)\s*\{/, '(function(){').replace(/\}\)\(\);\s*$/, '})();');
   const fn = new Function('window', 'document', 'location', 'console', 'navigator',
     'setTimeout', 'WebAssembly', 'BroadcastChannel', body);
+
+  doc._els = {};
+  // Elements the payload creates must know their document, so an id lookup on a
+  // created node can be looked up later by the test.
+  doc.createElement = (tag) => { const e = makeEl(); e.ownerDoc = doc; e.tagName = tag; return e; };
+  doc.body.ownerDoc = doc;
+  doc.documentElement.ownerDoc = doc;
 
   let fatal = null;
   try {
@@ -306,7 +330,15 @@ class BC {
       // Command must land BEFORE the frame it should affect, exactly as the
       // portal sends it while the game is already running.
       if (speed && h.typeName === 'FPScontroller') {
-        sendToPlayer({ __sakura: '__sakura_sw_v2', kind: 'cmd', cmd: 'speed', arg: speed });
+        const msg = { __sakura: '__sakura_sw_v2', kind: 'cmd', cmd: 'speed', arg: speed };
+        // deliverVia models the two real transports. 'bc' is BroadcastChannel,
+        // which is origin-scoped and therefore cannot cross the portal/frame
+        // boundary; 'postMessage' is the one that does.
+        if (deliverVia === 'postMessage') {
+          for (const fn of (listeners['message'] || [])) fn({ data: msg });
+        } else {
+          sendToPlayer(msg);
+        }
       }
       fire();
       for (let n = 0; n < extraFrames; n++) fire();
@@ -320,7 +352,7 @@ class BC {
 
   const reports = posted.filter(m => m && m.kind === 'report').map(m => m.report);
   return {
-    fatal, posted, pluginCalls, hookCalls, reports, order,
+    fatal, posted, pluginCalls, hookCalls, reports, order, listeners, portalCommands, doc,
     pluginVersion: pluginCalls[0] && pluginCalls[0].version,
     report: reports[reports.length - 1]
   };
@@ -732,6 +764,46 @@ function check(name, cond, detail) {
 
   const off = runFrame({ speed: { on: true, factor: 2 }, thenOff: true, extraFrames: 10 });
   check('turning speed OFF stops writes', off.report.speed.on === false, JSON.stringify(off.report.speed));
+}
+
+/* ================================================================== *
+ * CROSS-ORIGIN COMMAND DELIVERY.
+ *
+ * v2.1.0 shipped a speed toggle that never once worked in the field while
+ * every test passed. BroadcastChannel is origin-scoped: the portal posts on
+ * www.crazygames.com and the game runs on *.game-files.crazygames.com, so
+ * the message could never arrive. A single-frame harness cannot catch that,
+ * because in one fake origin BroadcastChannel works perfectly.
+ *
+ * postMessage to contentWindow is the only channel that crosses.
+ * ================================================================== */
+{
+  const r = runFrame({ speed: { on: true, factor: 2 }, deliverVia: 'postMessage' });
+  check('a command delivered over postMessage reaches the player frame',
+    r.report.speed && r.report.speed.on === true && r.report.speed.factor === 2,
+    JSON.stringify(r.report.speed));
+  check('speed actually wrote fields when driven over postMessage',
+    r.report.speed.writes > 0, `writes=${r.report.speed.writes}`);
+  const after = (r.report.survey.FPScontroller || []).filter(x => x.k === 'obfF' && x.o === 0x10);
+  check('the write landed on the real field',
+    after.length === 1 && Math.abs(after[0].v - 8.5) < 1e-3, JSON.stringify(after));
+}
+
+/* The portal side: it must post INTO the iframes, not only broadcast. */
+{
+  const r = runFrame({ hostname: 'www.crazygames.com' });
+  const speedBtn = r.doc._els['#sw2-speed'];
+  check('portal wires a speed toggle', !!(speedBtn && typeof speedBtn.onclick === 'function'),
+    `speedBtn=${!!speedBtn} onclick=${speedBtn && typeof speedBtn.onclick}`);
+  if (speedBtn && speedBtn.onclick) {
+    speedBtn.onclick();
+    check('clicking speed posts a command into the game frame',
+      r.portalCommands.some(m => m && m.kind === 'cmd' && m.cmd === 'speed'),
+      JSON.stringify(r.portalCommands));
+    check('the command targets the game frame, not just a broadcast',
+      r.portalCommands.some(m => m && m.kind === 'cmd' && m.arg && typeof m.arg.on === 'boolean'),
+      JSON.stringify(r.portalCommands.map(m => m && m.arg)));
+  }
 }
 
 /* ================================================================== *

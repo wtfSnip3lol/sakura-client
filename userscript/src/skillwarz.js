@@ -53,7 +53,7 @@
   // It was hand-written in three places once and one drifted, so a field report
   // claimed 2.0.2 while the plugin logged 2.0.3 - which sends everyone chasing
   // a stale build.
-  var VERSION = "2.2.1";
+  var VERSION = "2.2.2";
 
   /* ================================================================== *
    * WRAPPER — relay only. Arming UWMK here achieves nothing: this frame
@@ -82,9 +82,24 @@
 
     function down(cmd, arg) {
       var msg = { __sakura: CHANNEL, kind: "cmd", cmd: cmd, arg: arg };
-      // The portal holds no reference to the player frame (cross-origin), so
-      // commands travel as a BroadcastChannel ping: every Sakura frame on the
-      // page is listening and the player is the one that acts on them.
+      // BroadcastChannel is ORIGIN-SCOPED. The portal posts on
+      // www.crazygames.com while the game runs on
+      // *.game-files.crazygames.com, so a BroadcastChannel message never
+      // crosses. That is why the speed toggle silently did nothing in v2.1.0
+      // while every single-frame test passed.
+      //
+      // postMessage to the frame's contentWindow DOES cross origins - you may
+      // not read a cross-origin document, but you may post into it.
+      try {
+        var frames = document.querySelectorAll("iframe");
+        for (var i = 0; i < frames.length; i++) {
+          try {
+            if (frames[i].contentWindow) frames[i].contentWindow.postMessage(msg, "*");
+          } catch (_) {}
+        }
+      } catch (_) {}
+      // Same-origin fallback: covers local testing and any host where the game
+      // does end up same-origin.
       try {
         var bc = new BroadcastChannel("sakura-sw");
         bc.postMessage(msg);
@@ -351,6 +366,17 @@
   var T0 = (window.__SAKURA_SW__ && window.__SAKURA_SW__.at) || Date.now();
 
   // Snapshot support: the portal cannot reach us, so it pings a BroadcastChannel.
+  // Commands arrive two ways, because neither channel covers every case on its
+// own: postMessage from the portal (the only one that crosses origins) and
+// BroadcastChannel (same-origin / local testing).
+  window.addEventListener("message", function (ev) {
+    try {
+      var d = ev && ev.data;
+      if (!d || d.__sakura !== CHANNEL || d.kind !== "cmd") return;
+      onCommand(d.cmd, d.arg);
+    } catch (_) {}
+  });
+
   try {
     var bc = new BroadcastChannel("sakura-sw");
     bc.onmessage = function (ev) {
