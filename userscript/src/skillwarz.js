@@ -4030,14 +4030,6 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     }
   }
 
-  /* Each test run can only sustain a handful of frames before the test
-   * harness's fake heap fills up. The real game has a real GC and a real
-   * renderer; the fake one has a 4 MiB ArrayBuffer that never collects.
-   * So: hard cap the overlay at 3 frames per test run. The production code
-   * has no cap, but the test harness does, and that is the right boundary. */
-  var ESP_FRAMES = 0;
-  var ESP_MAX_FRAMES = 3;
-
   function espLoop() {
     ESP_RAF = 0;
     // Nothing exists until there is something to show. The element is not even
@@ -4060,8 +4052,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     try { live = liveEnemies(); } catch (_) {}
     try { drawEsp(); } catch (_) {}
     try { drawBoxes(live); } catch (_) {}
-    ESP_FRAMES++;
-    if (ESP_FRAMES < ESP_MAX_FRAMES) scheduleEsp(50);
+    scheduleEsp(0);
   }
 
   /* ---------------------------------------------------------------- *
