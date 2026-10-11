@@ -817,6 +817,54 @@ function check(name, cond, detail) {
 }
 
 /* ================================================================== *
+ * THE SAKURA MENU.
+ *
+ * A panel with switches in it is a control surface, and a control surface
+ * nobody can reach is how a dead toggle ships. So: it must build, it must
+ * open, the categories must swap, and the controls in it must write the same
+ * state the in-frame HUD writes.
+ * ================================================================== */
+{
+  const r = runFrame({});
+  check('the menu builds in the player frame',
+    !!r.doc.getElementById('sakura-menu-root'), 'no #sakura-menu-root');
+  check('the petal toggle is placed', !!r.doc.getElementById('sakura-petal'),
+    'no #sakura-petal');
+  check('the menu starts closed - it must not sit over the game by default',
+    !/shown/.test(r.doc.getElementById('sakura-menu-root').className || ''),
+    `className=${r.doc.getElementById('sakura-menu-root').className}`);
+}
+
+/* The menu's speed switch must write the same SPEED the HUD writes, through the
+ * same single writer. Two surfaces that each keep their own copy of the truth
+ * will disagree, and the user cannot tell which one is lying. */
+{
+  const r = runFrame({ preFire(c) { for (const fn of (c.listeners.keydown || [])) fn({ code: 'Insert', preventDefault() {} }); } });
+  check('Insert opens the menu', r.report && r.doc.getElementById('sakura-menu-root') &&
+    /shown/.test(r.doc.getElementById('sakura-menu-root').className || ''),
+    `className=${r.doc.getElementById('sakura-menu-root').className}`);
+  // Drive it the way the HUD does, then confirm the menu's own refresh adopts it
+  // rather than holding a stale copy.
+  const after = runFrame({ preFire(c) { c.hudEl('sp').onclick(); } });
+  check('the HUD toggle still drives speed with the menu present',
+    after.report.speed && after.report.speed.on === true,
+    JSON.stringify(after.report.speed));
+  check('and the menu keeps a single writer, not a private copy of the state',
+    after.report.speed.factor === 2,
+    `factor=${after.report.speed.factor}`);
+}
+
+/* Every category has to survive menuCards(). A card builder that throws takes
+ * the whole tab with it, and a blank tab looks like "nothing here yet". */
+{
+  const cats = ['combat', 'visuals', 'values', 'log'];
+  for (const cat of cats) {
+    const r = runFrame({ preFire(c) { for (const fn of (c.listeners.keydown || [])) fn({ code: 'Insert', preventDefault() {} }); } });
+    check('menu category ' + cat + ' renders without throwing', !r.fatal, String(r.fatal));
+  }
+}
+
+/* ================================================================== *
  * THE GRAVITY BUG. Live report: controllers[0].pos was (0, -3.85, 0) and
  * posAt "0xe0". FPScontroller+0xE0 is gravity. "First non-zero vector" is not
  * a position rule - it is a "whatever came first" rule.

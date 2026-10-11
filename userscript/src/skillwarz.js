@@ -53,7 +53,7 @@
   // It was hand-written in three places once and one drifted, so a field report
   // claimed 2.0.2 while the plugin logged 2.0.3 - which sends everyone chasing
   // a stale build.
-  var VERSION = "2.8.0";
+  var VERSION = "2.9.0";
 
   /* ================================================================== *
    * WRAPPER — relay only. Arming UWMK here achieves nothing: this frame
@@ -1875,6 +1875,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       if (e.code === "F8") { e.preventDefault(); setSpeed(SPEED.on, SPEED.factor + 0.5); return; }
       if (e.code === "F6") { e.preventDefault(); setSpeed(SPEED.on, SPEED.factor - 0.5); return; }
       // Field of view, because it cannot be read and must be fitted by eye.
+      if (e.code === "Insert") { e.preventDefault(); setMenu(!MENU.open); return; }
       if (e.code === "BracketRight") { e.preventDefault(); VIEW.fov = Math.min(140, VIEW.fov + 2); saveFov(); return; }
       if (e.code === "BracketLeft") { e.preventDefault(); VIEW.fov = Math.max(30, VIEW.fov - 2); saveFov(); return; }
     } catch (_) {}
@@ -1998,6 +1999,502 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     return { x: (ndcX * 0.5 + 0.5) * w, y: (0.5 - ndcY * 0.5) * h, z: z };
   }
 
+  /* ---------------------------------------------------------------- *
+   * THE SAKURA MENU.
+   *
+   * Same design language as the KourStrike menu: frosted glass, a sidebar of
+   * category tabs, a card grid, pill switches and pink-filled sliders, opened
+   * from a petal in the corner and toggled with Insert. SkillWarz had been
+   * running a bare text panel instead - functional, and not what this looks
+   * like everywhere else in the suite.
+   *
+   * It lives in the PLAYER frame, like everything else that matters here: the
+   * portal is two frames away from the heap and every control that had to
+   * cross that boundary is a control that can die in the middle one.
+   *
+   * It is hidden by default and anchored bottom-right. That is the other half
+   * of the earlier complaint: a panel that is always on screen, on top of the
+   * game, is a panel nobody can play past. This one is a corner petal.
+   * ---------------------------------------------------------------- */
+  var MENU = { open: false, cat: "combat", built: false, root: null, cols: null, head: null, sub: null, syncs: [] };
+  // The last emitted report. The menu reads values from here rather than
+  // re-decoding the heap, because the report is already the thing everything
+  // else in this file trusts.
+  var LAST = null;
+
+  var MENU_CATS = [
+    { id: "combat", label: "CMB" },
+    { id: "visuals", label: "VIS" },
+    { id: "values", label: "VAL" },
+    { id: "log", label: "LOG" }
+  ];
+
+  var MENU_CSS =
+    '#sakura-menu-root{all:initial}' +
+    '.mn-panel{position:fixed;right:24px;bottom:24px;width:min(620px,calc(100vw - 48px));max-height:min(500px,calc(100vh - 48px));' +
+    'display:flex;gap:10px;padding:10px;border-radius:22px;pointer-events:auto;z-index:2147483647;' +
+    'background:rgba(24,17,21,.82);backdrop-filter:blur(22px) saturate(150%);-webkit-backdrop-filter:blur(22px) saturate(150%);' +
+    'box-shadow:0 0 0 1px rgba(255,255,255,.06),inset 0 1px 0 rgba(255,255,255,.05),0 30px 80px rgba(0,0,0,.55);' +
+    'opacity:0;transform:translateY(18px);pointer-events:none;transition:opacity .35s ease,transform .45s cubic-bezier(.22,1,.36,1);' +
+    'color:#f6eef2;font-size:13px;font-family:"Inter","Segoe UI",system-ui,sans-serif;}' +
+    '.mn-panel.shown{opacity:1;transform:none;pointer-events:auto;}' +
+    '.mn-side{display:flex;flex-direction:column;align-items:center;gap:4px;width:62px;flex:none;padding:12px 0;' +
+    'border-radius:16px;background:rgba(255,255,255,.025);box-shadow:inset 0 0 0 1px rgba(255,255,255,.05);}' +
+    '.mn-logo{display:grid;place-items:center;width:32px;height:32px;margin-bottom:6px;}' +
+    '.mn-logo-svg{width:25px;height:25px;overflow:visible;filter:drop-shadow(0 0 4px rgba(255,107,157,.8));}' +
+    '.mn-tab{display:flex;align-items:center;justify-content:center;width:52px;height:34px;border:0;border-radius:10px;' +
+    'background:transparent;color:rgba(246,238,242,.4);cursor:pointer;font-size:10px;font-weight:700;font-family:inherit;}' +
+    '.mn-tab:hover{color:rgba(246,238,242,.8);}' +
+    '.mn-tab.active{color:#ff6b9d;background:rgba(255,107,157,.1);}' +
+    '.mn-main{flex:1;min-width:0;display:flex;flex-direction:column;}' +
+    '.mn-top{display:flex;align-items:center;gap:12px;padding:6px 6px 12px;user-select:none;}' +
+    '.mn-titles{flex:1;min-width:0;}' +
+    '.mn-h{font-size:17px;font-weight:650;}' +
+    '.mn-sub{font-size:11px;opacity:.4;}' +
+    '.mn-close{display:grid;place-items:center;width:28px;height:28px;border:0;border-radius:8px;background:transparent;' +
+    'color:inherit;opacity:.45;cursor:pointer;}' +
+    '.mn-close:hover{opacity:1;background:rgba(255,255,255,.05);}' +
+    '.mn-close svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;}' +
+    '.mn-cols{flex:1;min-height:0;overflow-y:auto;display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));' +
+    'align-items:start;align-content:start;gap:10px;padding:0 4px 6px 0;}' +
+    '.mn-cols::-webkit-scrollbar{width:8px;}' +
+    '.mn-cols::-webkit-scrollbar-thumb{background:rgba(255,255,255,.08);border-radius:4px;}' +
+    '.sk-card{border-radius:12px;background:rgba(255,255,255,.025);box-shadow:inset 0 0 0 1px rgba(255,255,255,.05);}' +
+    '.sk-card.on{background:rgba(255,255,255,.04);box-shadow:inset 0 0 0 1px rgba(255,107,157,.28);}' +
+    '.sk-card-head{display:flex;align-items:center;gap:8px;padding:11px 12px;}' +
+    '.sk-card-title{flex:1;min-width:0;}' +
+    '.sk-card-title strong{font-size:13px;font-weight:600;color:rgba(246,238,242,.45);}' +
+    '.sk-card.on .sk-card-title strong{color:#fff0f5;}' +
+    '.sk-mbody{padding:0 12px 10px;}' +
+    '.sk-mdesc{font-size:11px;opacity:.4;margin-bottom:6px;white-space:pre-wrap;}' +
+    '.sk-ctl{display:flex;align-items:center;gap:8px;padding:4px 0;font-size:11.5px;}' +
+    '.sk-label{flex:1;color:rgba(246,238,242,.75);}' +
+    '.sk-hint{display:block;font-size:10px;opacity:.4;}' +
+    '.sk-switch{position:relative;width:26px;height:14px;border:0;border-radius:99px;background:rgba(255,255,255,.07);cursor:pointer;flex:none;}' +
+    '.sk-switch::after{content:"";position:absolute;top:3px;left:3px;width:8px;height:8px;border-radius:50%;' +
+    'background:rgba(255,255,255,.25);transition:left .2s,background .2s;}' +
+    '.sk-switch[aria-checked="true"]{background:rgba(255,107,157,.25);}' +
+    '.sk-switch[aria-checked="true"]::after{left:15px;background:#ff6b9d;}' +
+    '.sk-range{display:flex;align-items:center;gap:8px;}' +
+    '.sk-slider{-webkit-appearance:none;appearance:none;width:96px;height:8px;background:transparent;}' +
+    '.sk-slider::-webkit-slider-runnable-track{height:2px;border-radius:2px;' +
+    'background:linear-gradient(#ff6b9d,#ff6b9d) 0 0 / var(--p,50%) 100% no-repeat,rgba(255,255,255,.08);}' +
+    '.sk-slider::-webkit-slider-thumb{-webkit-appearance:none;width:6px;height:6px;margin-top:-2px;border-radius:50%;background:#ff6b9d;}' +
+    '.sk-val{font-size:11px;font-weight:600;min-width:34px;text-align:right;color:rgba(246,238,242,.8);}' +
+    '.sk-note{font-size:11px;color:rgba(246,238,242,.5);padding:2px 0;white-space:pre-wrap;}' +
+    '.sk-note.err{color:#ff7a93;}' +
+    '.sk-btn{align-self:flex-start;border:0;border-radius:8px;padding:8px 16px;background:#ff6b9d;color:#fff;' +
+    'font-size:11.5px;font-weight:700;cursor:pointer;font-family:inherit;}' +
+    '.sk-btn:hover{filter:brightness(1.1);}' +
+    '.sk-pre{font:11px/1.5 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-word;margin:0;opacity:.75;max-height:280px;overflow:auto;}' +
+    '#sakura-petal{position:fixed;top:12px;right:12px;z-index:2147483646;cursor:pointer;width:26px;height:26px;opacity:.5;' +
+    'transition:opacity .2s;pointer-events:auto;filter:drop-shadow(0 0 4px rgba(255,107,157,.7));}';
+
+  var PETAL_SVG =
+    '<svg viewBox="0 0 24 24"><path d="M12 21c-1.5-2.5-4-4.5-4-7.5 0-2.5 1.8-4.5 4-4.5s4 2 4 4.5c0 3-2.5 5-4 7.5z" ' +
+    'fill="none" stroke="#ff6b9d" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+    '<circle cx="12" cy="10" r="1.5" fill="#ff6b9d"/></svg>';
+
+  var LOGO_SVG =
+    '<svg class="mn-logo-svg" viewBox="0 0 24 24"><path d="M12 21c-1.5-2.5-4-4.5-4-7.5 0-2.5 1.8-4.5 4-4.5s4 2 4 4.5c0 3-2.5 5-4 7.5z" ' +
+    'fill="none" stroke="#ff6b9d" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>' +
+    '<circle cx="12" cy="10" r="1.2" fill="#ff6b9d"/></svg>';
+
+  function el(tag, cls, html) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (html != null) e.innerHTML = html;
+    return e;
+  }
+
+  function mkCard(title, on) {
+    var card = el("div", "sk-card" + (on ? " on" : ""));
+    var head = el("div", "sk-card-head");
+    var t = el("div", "sk-card-title", "<strong>" + title + "</strong>");
+    head.appendChild(t);
+    var body = el("div", "sk-mbody");
+    card.appendChild(head);
+    card.appendChild(body);
+    card.body = body;
+    card.head = t;
+    return card;
+  }
+
+  function mkSwitch(get, set) {
+    var b = el("button", "sk-switch");
+    b.type = "button";
+    var sync = function () { b.setAttribute("aria-checked", get() ? "true" : "false"); };
+    b.onclick = function () { set(!get()); sync(); };
+    sync();
+    b.sync = sync;
+    // Registered so the menu's own controls stay honest when the on-canvas HUD
+    // is used while the menu is open. Two surfaces that both write the same
+    // state will disagree unless the one you are not looking at re-reads.
+    MENU.syncs.push(sync);
+    return b;
+  }
+
+  function mkRange(min, max, step, get, set) {
+    var wrap = el("div", "sk-range");
+    var input = document.createElement("input");
+    input.type = "range";
+    input.className = "sk-slider";
+    input.min = String(min); input.max = String(max); input.step = String(step);
+    var val = el("span", "sk-val");
+    var sync = function () {
+      var v = get();
+      input.value = String(v);
+      val.textContent = (step < 1 ? v.toFixed(1) : String(Math.round(v))) + (input.dataset.unit || "");
+      var pct = ((v - min) / (max - min)) * 100;
+      input.style.setProperty("--p", pct + "%");
+    };
+    input.oninput = function () { set(parseFloat(input.value) || min); sync(); };
+    wrap.appendChild(input);
+    wrap.appendChild(val);
+    wrap.sync = sync;
+    wrap.input = input;
+    sync();
+    MENU.syncs.push(sync);
+    return wrap;
+  }
+
+  function row(label, hint) {
+    var r = el("div", "sk-ctl");
+    var l = el("div", "sk-label", label + (hint ? "<span class='sk-hint'>" + hint + "</span>" : ""));
+    r.appendChild(l);
+    return r;
+  }
+
+  // Values shown on the VAL tab, read from the last emitted report rather than
+  // re-decoded here. The report is already the thing everything else trusts.
+  function valLine(rep, type, off, kind) {
+    var sv = rep && rep.survey && rep.survey[type];
+    if (!sv) return "-";
+    for (var i = 0; i < sv.length; i++) {
+      if (sv[i].o === off) {
+        if (kind === "v3") {
+          var xyz = sv[i].xyz || [sv[i].v, 0, 0];
+          return xyz.map(function (n) { return Math.round(n * 100) / 100; }).join("  ");
+        }
+        var v = sv[i].v;
+        return typeof v === "number" ? (Math.round(v * 1000) / 1000) : String(v);
+      }
+    }
+    return "-";
+  }
+
+  function menuCards(cat) {
+    var rep = LAST;
+    var out = [];
+    var i;
+
+    if (cat === "combat") {
+      var c1 = mkCard("Speed hack", SPEED.on);
+      var d1 = el("div", "sk-mdesc",
+        SPEED.on
+          ? "x" + SPEED.factor.toFixed(1) + " on " + SPEED_SCALED.length + " fields · " +
+            SPEED_TOUCHED + " writes"
+          : "Multiplies movement-speed fields only. Height, step and jump are refused.");
+      var r1 = row("Enabled");
+      r1.appendChild(mkSwitch(function () { return SPEED.on; },
+        function (v) { setSpeed(v, SPEED.factor); d1.textContent = v ? "x" + SPEED.factor.toFixed(1) + " on " + SPEED_SCALED.length + " fields · " + SPEED_TOUCHED + " writes" : "Multiplies movement-speed fields only. Height, step and jump are refused."; }));
+      c1.body.appendChild(d1);
+      c1.body.appendChild(r1);
+      var rng = mkRange(1, 5, 0.5, function () { return SPEED.factor; },
+        function (v) { setSpeed(SPEED.on, v); });
+      rng.input.dataset.unit = "x";
+      var r2 = row("Multiplier", "F8 / F6 also step this");
+      r2.appendChild(rng);
+      c1.body.appendChild(r2);
+      if (SPEED_SKIPPED.length) {
+        var sk = el("div", "sk-note", "Refused: " + SPEED_SKIPPED.slice(0, 4).map(function (s) {
+          return "0x" + (s.o < 0 ? "?" : s.o.toString(16)) + " (" + s.why + ")";
+        }).join("  "));
+        c1.body.appendChild(sk);
+      }
+      out.push(c1);
+
+      var c2 = mkCard("Bindings");
+      var b = el("button", "sk-btn", "Snapshot now (F9)");
+      b.type = "button";
+      b.onclick = function () { onCommand("snapshot"); };
+      c2.body.appendChild(el("div", "sk-mdesc",
+        "F9  snapshot    F7  speed on/off\nF8 / F6  factor +/-0.5\n[  ]  field of view\nInsert  this menu"));
+      c2.body.appendChild(b);
+      out.push(c2);
+    }
+
+    if (cat === "visuals") {
+      var v1 = mkCard("Radar", ESP.on);
+      var rr1 = row("Enabled");
+      rr1.appendChild(mkSwitch(function () { return ESP.on; }, function (v) { ESP.on = v; applyVis(); }));
+      v1.body.appendChild(el("div", "sk-mdesc", "World-space minimap, top-right. Needs only positions."));
+      v1.body.appendChild(rr1);
+      var sp = mkRange(40, 160, 10, function () { return ESP.span; }, function (v) { ESP.span = v; });
+      sp.input.dataset.unit = "m";
+      var rr2 = row("Range", "world units across the radar");
+      rr2.appendChild(sp);
+      v1.body.appendChild(rr2);
+      out.push(v1);
+
+      var v2 = mkCard("Boxes", ESP.boxes);
+      var rr3 = row("Enabled");
+      rr3.appendChild(mkSwitch(function () { return ESP.boxes; }, function (v) { ESP.boxes = v; ESP.on = true; applyVis(); }));
+      v2.body.appendChild(el("div", "sk-mdesc",
+        "Screen-space boxes. The field of view cannot be read from this build, so it is fitted by eye."));
+      v2.body.appendChild(rr3);
+      var fv = mkRange(60, 130, 2, function () { return VIEW.fov; }, function (v) { VIEW.fov = v; saveFov(); });
+      fv.input.dataset.unit = "°";
+      var rr4 = row("Field of view", "[ and ] also step this");
+      rr4.appendChild(fv);
+      v2.body.appendChild(rr4);
+      var n = rep && rep.view;
+      v2.body.appendChild(el("div", "sk-note",
+        "view: " + (n ? (n.mouseLook ? "MouseLook " + n.mouseLook + (n.camera ? "  camera " + n.camera : "") : "no MouseLook yet")
+                      : "no MouseLook yet") +
+        (VIEW.pitchOff || VIEW.yawOff ? "\npitch " + Math.round(VIEW.pitchOff) + "  yaw " + Math.round(VIEW.yawOff) : "")));
+      out.push(v2);
+    }
+
+    if (cat === "values") {
+      var rows = [
+        ["Build", "VERSION", rep ? rep.version : "-"],
+        ["Hooks", "applied / registered", rep ? rep.hooksApplied + " / " + rep.hooksRegisteredAtArm : "-"],
+        ["Heap", "from instantiate()", rep && rep.wasmMemory && rep.wasmMemory.captured
+          ? (Math.round(rep.wasmMemory.bytes / 1048576) + " MB @ " + rep.wasmMemory.atMs + "ms") : "-"],
+        ["Players", "PhotonNetworkSync", rep && rep.esp ? String(rep.esp.playerCount) : "-"],
+        ["Enemies", "everyone but you", rep && rep.esp ? String(rep.esp.enemyCount) : "-"],
+        ["Camera", "off the live manager", rep && rep.esp && rep.esp.camera
+          ? rep.esp.camera + " (" + rep.esp.cameraFrom + ")" : "-"]
+      ];
+      for (i = 0; i < rows.length; i++) {
+        var rr = row(rows[i][0]);
+        var sp2 = el("span", "sk-val");
+        sp2.style.minWidth = "0";
+        sp2.style.flex = "1";
+        sp2.style.textAlign = "right";
+        sp2.textContent = String(rows[i][2]);
+        sp2.dataset.k = rows[i][1];
+        rr.appendChild(sp2);
+        var card = out.length ? out[out.length - 1] : null;
+        if (!card) { card = mkCard("Session", false); out.push(card); }
+        card.body.appendChild(rr);
+        card.body.lastChild.sp = sp2;
+      }
+
+      var c3 = mkCard("Player", false);
+      var lv = [
+        ["Position", "FPScontroller+0x2E4", rep && rep.local && rep.local.feet
+          ? rep.local.feet.map(function (n) { return Math.round(n * 100) / 100; }).join("  ") : "-"],
+        ["Eye", "+0x298", rep && rep.local && rep.local.eye
+          ? rep.local.eye.map(function (n) { return Math.round(n * 100) / 100; }).join("  ") : "-"],
+        ["Walk speed", "0x10", valLine(rep, "FPScontroller", 0x10)],
+        ["Sprint speed", "0x40", valLine(rep, "FPScontroller", 0x40)],
+        ["Jump height", "0x11C", valLine(rep, "FPScontroller", 0x11c)],
+        ["Health", "HealthScript+0xC0", valLine(rep, "HealthScript", 0xc0)]
+      ];
+      for (i = 0; i < lv.length; i++) {
+        var r3 = row(lv[i][0]);
+        var v3 = el("span", "sk-val");
+        v3.style.minWidth = "0"; v3.style.flex = "1"; v3.style.textAlign = "right";
+        v3.textContent = String(lv[i][2]);
+        v3.dataset.k = lv[i][1];
+        r3.appendChild(v3);
+        c3.body.appendChild(r3);
+        c3.body.lastChild.sp = v3;
+      }
+      out.push(c3);
+    }
+
+    if (cat === "log") {
+      var c4 = mkCard("Diagnostics", false);
+      var w = rep && rep.warnings && rep.warnings.length
+        ? rep.warnings.join("\n") : "no warnings";
+      c4.body.appendChild(el("div", "sk-pre", w));
+      out.push(c4);
+      var c5 = mkCard("Report", false);
+      var copy = el("button", "sk-btn", "Copy JSON to clipboard");
+      copy.type = "button";
+      copy.onclick = function () {
+        try {
+          var text = MARK0 + "\n" + JSON.stringify(rep, null, 1) + "\n" + MARK1;
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(function () { copy.textContent = "Copied"; });
+          } else copy.textContent = "Clipboard blocked - open the panel instead";
+        } catch (_) { copy.textContent = "Copy failed"; }
+      };
+      c5.body.appendChild(el("div", "sk-mdesc", "Paste the whole thing when something looks wrong."));
+      c5.body.appendChild(copy);
+      out.push(c5);
+    }
+
+    return out;
+  }
+
+  function applyVis() {
+    try {
+      var rr = radar();
+      if (rr && rr.el) rr.el.style.display = ESP.on ? "" : "none";
+      var bb = BOXES;
+      if (bb && bb.cv) bb.cv.style.display = (ESP.on && ESP.boxes) ? "" : "none";
+    } catch (_) {}
+  }
+
+  function buildMenu() {
+    if (MENU.built) return MENU.root;
+    try {
+      if (!document.body || !document.body.appendChild) return null;
+      if (!document.getElementById("sakura-menu-css")) {
+        var st = document.createElement("style");
+        st.id = "sakura-menu-css";
+        st.textContent = MENU_CSS;
+        (document.head || document.documentElement).appendChild(st);
+      }
+
+      var panel = el("div", "mn-panel");
+      panel.id = "sakura-menu-root";
+
+      var side = el("div", "mn-side");
+      var logo = el("div", "mn-logo", LOGO_SVG);
+      side.appendChild(logo);
+
+      var main = el("div", "mn-main");
+      var top = el("div", "mn-top");
+      var titles = el("div", "mn-titles");
+      var head = el("div", "mn-h", "Sakura SkillWarz");
+      var sub = el("div", "mn-sub", "starting…");
+      titles.appendChild(head);
+      titles.appendChild(sub);
+      var close = el("div", "mn-close",
+        '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg>');
+      close.onclick = function () { setMenu(false); };
+      top.appendChild(titles);
+      top.appendChild(close);
+
+      var cols = el("div", "mn-cols");
+      main.appendChild(top);
+      main.appendChild(cols);
+      panel.appendChild(side);
+      panel.appendChild(main);
+      document.body.appendChild(panel);
+
+      MENU.root = panel;
+      MENU.cols = cols;
+      MENU.head = head;
+      MENU.sub = sub;
+      var buttons = {};
+      for (var c = 0; c < MENU_CATS.length; c++) {
+        var cat = MENU_CATS[c];
+        var b = el("button", "mn-tab", "<small>" + cat.label + "</small>");
+        b.type = "button";
+        b.title = cat.label;
+        (function (cid) {
+          b.onclick = function () { showCat(cid); };
+        })(cat.id);
+        buttons[cat.id] = b;
+        side.appendChild(b);
+      }
+      MENU.buttons = buttons;
+
+      var petal = el("div", null, PETAL_SVG);
+      petal.id = "sakura-petal";
+      petal.title = "Sakura SkillWarz (Insert)";
+      petal.onmouseenter = function () { petal.style.opacity = "1"; };
+      petal.onmouseleave = function () { petal.style.opacity = MENU.open ? "1" : ".5"; };
+      petal.onclick = function (e) { if (e && e.stopPropagation) e.stopPropagation(); setMenu(!MENU.open); };
+      document.body.appendChild(petal);
+      MENU.petal = petal;
+
+      MENU.built = true;
+      showCat(MENU.cat);
+      return panel;
+    } catch (err) {
+      console.warn("%c[sakura] menu unavailable", "color:" + ACCENT, err);
+      return null;
+    }
+  }
+
+  function showCat(cid) {
+    MENU.cat = cid;
+    // Drop the previous tab's controls before building the next ones, or the
+    // refresh loop keeps syncing detached nodes forever.
+    MENU.syncs = [];
+    if (!MENU.cols) return;
+    var cat = null;
+    for (var i = 0; i < MENU_CATS.length; i++) if (MENU_CATS[i].id === cid) cat = MENU_CATS[i];
+    MENU.head.textContent = "Sakura SkillWarz — " + ((cat && cat.label) || "?");
+    for (var k in MENU.buttons) {
+      if (MENU.buttons[k].classList) MENU.buttons[k].className = "mn-tab" + (k === cid ? " active" : "");
+    }
+    var cards = [];
+    try { cards = menuCards(cid); } catch (e) { cards = []; }
+    // replaceChildren is not universal on older WebKit; clear and append is.
+    while (MENU.cols.firstChild) MENU.cols.removeChild(MENU.cols.firstChild);
+    for (var c = 0; c < cards.length; c++) MENU.cols.appendChild(cards[c]);
+  }
+
+  function setMenu(open) {
+    MENU.open = !!open;
+    var p = buildMenu();
+    if (!p) return;
+    p.className = "mn-panel" + (MENU.open ? " shown" : "");
+    if (MENU.petal) MENU.petal.style.opacity = MENU.open ? "1" : ".5";
+    if (MENU.open) {
+      showCat(MENU.cat);
+      // Menu is anchored bottom-right and the radar is top-right; if the window
+      // is too short for both they would sit on top of each other, so the radar
+      // yields rather than stacking.
+      try {
+        var h = window.innerHeight || 800;
+        var rr = radar();
+        if (rr && rr.el) rr.el.style.display = h < 620 ? "none" : (ESP.on ? "" : "none");
+      } catch (_) {}
+    }
+  }
+
+  function refreshMenu() {
+    if (!MENU.open || !MENU.built) return;
+    try {
+      // Controls first: the HUD writes the same state and the menu must not
+      // sit there showing a switch that disagrees with the heap.
+      for (var s = 0; s < MENU.syncs.length; s++) {
+        try { MENU.syncs[s](); } catch (_) {}
+      }
+      var rep = LAST;
+      MENU.sub.textContent = rep
+        ? ("v" + rep.version + "  ·  hooks " + rep.hooksApplied + "/" + rep.hooksTotal +
+           "  ·  players " + ((rep.esp && rep.esp.playerCount) || 0) +
+           "  ·  heap " + (rep.wasmMemory && rep.wasmMemory.captured
+             ? Math.round(rep.wasmMemory.bytes / 1048576) + "MB" : "-"))
+        : "waiting for the first report…";
+      // Only the numbers need refreshing; rebuilding the cards would eat the
+      // focus out from under a slider the user is dragging.
+      var nodes = MENU.cols.querySelectorAll ? MENU.cols.querySelectorAll("[data-k]") : [];
+      for (var i = 0; i < nodes.length; i++) {
+        var k = nodes[i].dataset.k;
+        var val = "";
+        if (k === "VERSION") val = rep ? rep.version : "-";
+        else if (k === "applied / registered") val = rep ? rep.hooksApplied + " / " + rep.hooksRegisteredAtArm : "-";
+        else if (k === "from instantiate()") val = rep && rep.wasmMemory && rep.wasmMemory.captured
+          ? (Math.round(rep.wasmMemory.bytes / 1048576) + " MB @ " + rep.wasmMemory.atMs + "ms") : "-";
+        else if (k === "PhotonNetworkSync") val = rep && rep.esp ? String(rep.esp.playerCount) : "-";
+        else if (k === "everyone but you") val = rep && rep.esp ? String(rep.esp.enemyCount) : "-";
+        else if (k === "off the live manager") val = rep && rep.esp && rep.esp.camera
+          ? rep.esp.camera + " (" + rep.esp.cameraFrom + ")" : "-";
+        else if (k === "FPScontroller+0x2E4") val = rep && rep.local && rep.local.feet
+          ? rep.local.feet.map(function (n) { return Math.round(n * 100) / 100; }).join("  ") : "-";
+        else if (k === "+0x298") val = rep && rep.local && rep.local.eye
+          ? rep.local.eye.map(function (n) { return Math.round(n * 100) / 100; }).join("  ") : "-";
+        else {
+          var parts = k.split("+");
+          val = valLine(rep, parts[0].indexOf("Health") === 0 ? "HealthScript" : "FPScontroller",
+            parseInt(parts[1], 16));
+        }
+        if (val !== nodes[i].textContent) nodes[i].textContent = val;
+      }
+    } catch (_) {}
+  }
+
   function localSpot() {
     var c = INSTANCES.FPScontroller;
     if (!c || !c.ptr) return null;
@@ -2050,7 +2547,9 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       var el = document.createElement("div");
       el.id = "sakura-esp";
       el.style.cssText =
-        "position:fixed;right:8px;top:8px;z-index:2147483646;pointer-events:none;" +
+        // Sits BELOW the petal, which owns the very corner. Two controls in the
+        // same 30 pixels is a control you eventually click by accident.
+        "position:fixed;right:12px;top:46px;z-index:2147483646;pointer-events:none;" +
         "background:rgba(21,12,29,.72);border:1px solid rgba(255,143,177,.4);border-radius:10px;" +
         "padding:4px;font:10px/1.3 ui-monospace,Consolas,monospace;color:#bda9c9;";
       el.innerHTML = '<canvas id="sakura-esp-cv" width="160" height="160" style="display:block"></canvas>' +
@@ -2370,6 +2869,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
   function emit(report) {
     console.log("%c[sakura] SkillWarz report", "color:" + ACCENT + ";font-weight:700", report);
     console.log(MARK0 + "\n" + JSON.stringify(report, null, 1) + "\n" + MARK1);
+    LAST = report;
     try { paintHud(report); } catch (_) {}
     up("report", { report: report });
   }
@@ -2393,6 +2893,11 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     // case where arming ran before the Runtime existed.
     var ticks = 0;
     try { espLoop(); } catch (_) {}
+    try { buildMenu(); } catch (_) {}
+    // Menu numbers refresh on their own clock; the report only lands every
+    // ~1.2s and rebuilding the cards on each one would fight the user for
+    // focus mid-drag.
+    setInterval(refreshMenu, 900);
     emit(safeCollect());
     (function poll() {
       if (!HOOKS.length) {
