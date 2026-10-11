@@ -53,7 +53,7 @@
   // It was hand-written in three places once and one drifted, so a field report
   // claimed 2.0.2 while the plugin logged 2.0.3 - which sends everyone chasing
   // a stale build.
-  var VERSION = "2.2.2";
+  var VERSION = "2.3.0";
 
   /* ================================================================== *
    * WRAPPER — relay only. Arming UWMK here achieves nothing: this frame
@@ -67,8 +67,24 @@
         if (window.parent && window.parent !== window) window.parent.postMessage(d, "*");
         if (window.top && window.top !== window) window.top.postMessage(d, "*");
       } catch (_) {}
+      // v2.2.2 relayed UPWARD ONLY, which is why every panel control stayed dead
+      // even after the postMessage "fix". The portal's direct child iframe is
+      // THIS wrapper, not the player - the real Unity document is a grandchild.
+      // So the portal posted the command into the wrapper and the wrapper threw
+      // it away, because commands are what it has never forwarded. Relaying down
+      // too costs one loop and makes the panel controls survive the real nesting.
+      if (d && d.kind === "cmd") {
+        try {
+          var kids = document.querySelectorAll("iframe");
+          for (var i = 0; i < kids.length; i++) {
+            try {
+              if (kids[i].contentWindow) kids[i].contentWindow.postMessage(d, "*");
+            } catch (_) {}
+          }
+        } catch (_) {}
+      }
     });
-    console.log("%c[sakura] SW-WRAPPER ACTIVE (relay only)", "color:" + ACCENT);
+    console.log("%c[sakura] SW-WRAPPER ACTIVE (relay up+down)", "color:" + ACCENT);
     return;
   }
 
@@ -1298,11 +1314,12 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
 
   function onCommand(cmd, arg) {
     if (cmd === "speed") {
-      if (arg && typeof arg.on === "boolean") SPEED.on = arg.on;
-      if (arg && typeof arg.factor === "number") {
-        SPEED.factor = Math.min(5, Math.max(1, arg.factor));
-      }
-      if (!SPEED.on) SPEED_STATE = {};
+      // Routed through setSpeed so the HUD, the keys and the portal panel can
+      // never disagree about whether speed is on.
+      setSpeed(
+        arg && typeof arg.on === "boolean" ? arg.on : SPEED.on,
+        arg && typeof arg.factor === "number" ? arg.factor : SPEED.factor
+      );
       return;
     }
     if (cmd !== "snapshot") return;
@@ -1323,9 +1340,136 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     up("report", { report: collect() });
   }
 
-  // F9 is the in-frame equivalent of the panel's Snapshot button.
+  /* ---------------------------------------------------------------- *
+   * In-frame controls.
+   *
+   * Every control used to live in the portal panel, which is a structural
+   * mistake on CrazyGames: the portal is two frames away from the heap, and a
+   * command has to survive portal -> wrapper -> player. v2.2.2 fixed the portal's
+   * postMessage target and the toggle still never applied - two single-frame
+   * tests passed, because neither of them contains a grandchild iframe. A test
+   * harness cannot see this class of bug, so the fix is architectural: put the
+   * controls in the frame that owns the pointer. Nothing has to cross an origin
+   * boundary to reach them.
+   *
+   * F7 speed on/off | F6/F8 factor -/+ 0.5 | F9 snapshot. The keys exist so the
+   * whole thing is usable even if the canvas eats a click.
+   * ---------------------------------------------------------------- */
+  var HUD = null;
+
+  function hud() {
+    if (HUD) return HUD;
+    try {
+      if (!document.body || !document.body.appendChild) return null;
+      if (!document.getElementById("sakura-sw-hud-css")) {
+        var css = document.createElement("style");
+        css.id = "sakura-sw-hud-css";
+        css.textContent = "#sakura-sw-hud{all:initial}";
+        (document.head || document.documentElement).appendChild(css);
+      }
+      var el = document.createElement("div");
+      el.id = "sakura-sw-hud";
+      el.style.cssText =
+        "position:fixed;left:8px;bottom:8px;z-index:2147483647;display:flex;flex-direction:column;gap:4px;" +
+        "background:rgba(21,12,29,.92);border:1px solid rgba(255,143,177,.45);border-radius:10px;" +
+        "padding:6px 8px;font:11px/1.45 ui-monospace,Consolas,monospace;color:#f7eef5;" +
+        "box-shadow:0 10px 30px -12px #000;user-select:none;-webkit-user-select:none;";
+
+      var bar =
+        '<div data-a="bar" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;max-width:290px;">' +
+        '<b style="color:' + ACCENT + '">sakura</b>' +
+        '<button data-a="sp" style="background:transparent;border:1px solid rgba(255,143,177,.45);' +
+        'color:#f7eef5;border-radius:6px;padding:2px 8px;cursor:pointer;font:inherit;">Speed off</button>' +
+        '<input data-a="fx" type="range" min="1" max="5" step="0.5" value="2" style="width:92px;accent-color:' + ACCENT + ';">' +
+        '<span data-a="fv" style="color:#bda9c9;min-width:30px;">2.0x</span>' +
+        '<button data-a="snap" style="background:transparent;border:1px solid rgba(255,143,177,.45);' +
+        'color:#f7eef5;border-radius:6px;padding:2px 7px;cursor:pointer;font:inherit;">Snap</button>' +
+        '<button data-a="fold" style="margin-left:auto;background:transparent;border:1px solid rgba(255,143,177,.45);' +
+        'color:#f7eef5;border-radius:6px;padding:1px 6px;cursor:pointer;font:inherit;">-</button>' +
+        '</div>' +
+        '<div data-a="st" style="color:#8d7a99;max-width:290px;"></div>';
+      el.innerHTML = bar;
+
+      var q = function (a) { return el.querySelector('[data-a="' + a + '"]'); };
+      var st = q("st");
+      var spBtn = q("sp");
+      var fx = q("fx");
+      var fv = q("fv");
+      var barRow = q("bar");
+
+      if (spBtn) spBtn.onclick = function () { setSpeed(!SPEED.on, SPEED.factor); };
+      if (fx) fx.oninput = function () { setSpeed(SPEED.on, parseFloat(fx.value) || 1); };
+      if (q("snap")) q("snap").onclick = function () { onCommand("snapshot"); };
+      if (q("fold")) q("fold").onclick = function () {
+        if (!barRow) return;
+        var folded = barRow.style.display === "none";
+        barRow.style.display = folded ? "" : "none";
+        q("fold").textContent = folded ? "-" : "+";
+      };
+
+      document.body.appendChild(el);
+      HUD = { el: el, st: st, sp: spBtn, fx: fx, fv: fv };
+      return HUD;
+    } catch (err) {
+      console.warn("%c[sakura] in-frame HUD disabled", "color:" + ACCENT, err);
+      return null;
+    }
+  }
+
+  // The single writer for speed state. Every surface - HUD, keys, portal panel -
+  // goes through here, so the player frame can never hold a stale "off".
+  var SPEED_DEFAULT_ON = 2;   // see below
+
+  function setSpeed(on, factor) {
+    var wasOn = SPEED.on;
+    SPEED.on = !!on;
+    // 1.0x is the neutral value the report shows while speed is off, so a naive
+    // OFF -> ON toggle turns it on at a multiplier of one: the button lights up,
+    // the heap is written, nothing visibly changes, and it reads as broken all
+    // over again. Turning it on from off with the factor untouched jumps to 2x
+    // so the first press does something. An explicit factor is always honoured.
+    if (SPEED.on && !wasOn && (factor === undefined || factor === null || Number(factor) === 1)) {
+      factor = SPEED_DEFAULT_ON;
+    }
+    SPEED.factor = Math.min(SPEED.max, Math.max(SPEED.min, Number(factor) || 1));
+    if (!SPEED.on) SPEED_STATE = {};
+    var h = hud();
+    if (h) {
+      if (h.sp) {
+        h.sp.textContent = SPEED.on ? "Speed ON" : "Speed off";
+        h.sp.style.background = SPEED.on ? ACCENT : "transparent";
+        h.sp.style.color = SPEED.on ? "#2a0f1b" : "#f7eef5";
+      }
+      if (h.fx) h.fx.value = String(SPEED.factor);
+      if (h.fv) h.fv.textContent = SPEED.factor.toFixed(1) + "x";
+    }
+  }
+
+  function paintHud(rep) {
+    var h = hud();
+    if (!h || !h.st) return;
+    try {
+      var objs = Object.keys((rep && rep.instances) || {}).length;
+      var mem = WASM_MEMORY ? (WASM_MEMORY.buffer.byteLength / 1048576).toFixed(0) + "MB" : "no-mem";
+      var t = "v" + (rep && rep.version || VERSION) + "  hooks " +
+              ((rep && rep.hooksApplied) || 0) + "/" + ((rep && rep.hooksTotal) || 0) +
+              "  objs " + objs + "  mem " + mem +
+              "  writes " + SPEED_TOUCHED;
+      h.st.textContent = t;
+      h.st.style.color = (rep && rep.hooksApplied > 0) ? "#7ee0a8" : "#ffd48a";
+    } catch (_) {}
+  }
+
+  // Key bindings. The Unity canvas holds focus, but every keydown in this
+  // document still passes the window capture phase, so these work mid-round.
   window.addEventListener("keydown", function (e) {
-    if (e && e.code === "F9") { e.preventDefault(); onCommand("snapshot"); }
+    if (!e) return;
+    try {
+      if (e.code === "F9") { e.preventDefault(); onCommand("snapshot"); return; }
+      if (e.code === "F7") { e.preventDefault(); setSpeed(!SPEED.on, SPEED.factor); return; }
+      if (e.code === "F8") { e.preventDefault(); setSpeed(SPEED.on, SPEED.factor + 0.5); return; }
+      if (e.code === "F6") { e.preventDefault(); setSpeed(SPEED.on, SPEED.factor - 0.5); return; }
+    } catch (_) {}
   }, true);
 
   /* ---------------------------------------------------------------- *
@@ -1467,6 +1611,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
   function emit(report) {
     console.log("%c[sakura] SkillWarz report", "color:" + ACCENT + ";font-weight:700", report);
     console.log(MARK0 + "\n" + JSON.stringify(report, null, 1) + "\n" + MARK1);
+    try { paintHud(report); } catch (_) {}
     up("report", { report: report });
   }
 
@@ -1505,4 +1650,8 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
 
   if (document.body) run();
   else document.addEventListener("DOMContentLoaded", run, { once: true });
+  // Paint the controls as soon as there is a body to put them in, independently
+  // of the report loop, so they exist even if the first collect() throws.
+  if (document.body) { try { hud(); } catch (_) {} }
+  else document.addEventListener("DOMContentLoaded", function () { try { hud(); } catch (_) {} }, { once: true });
 })();

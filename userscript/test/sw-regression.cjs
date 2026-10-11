@@ -103,17 +103,27 @@ class FakeVW {
 
 function makeEl() {
   const el = {
-    tagName: 'DIV', id: '', style: {}, dataset: {}, children: [], _html: '',
+    tagName: 'DIV', id: '', style: {}, dataset: {}, children: [], _html: '', _els: {},
     get innerHTML() { return this._html; }, set innerHTML(v) { this._html = v; },
     // Returning a usable stub for id selectors is what lets the PANEL be
     // tested: the speed toggle only exists as an onclick handler attached here,
     // so a null-returning querySelector made the whole control untestable.
+    // Attribute selectors ([data-a="..."]) are supported for the same reason and
+    // with stable identity, because the in-frame HUD - now the PRIMARY control
+    // surface - is addressed that way. A harness that cannot reach the controls
+    // is how a dead toggle shipped twice.
     querySelector(sel) {
-      if (typeof sel === 'string' && sel.charAt(0) === '#') {
-        const stub = makeEl();
-        stub.id = sel.slice(1);
-        if (el.ownerDoc) el.ownerDoc._els[sel] = stub;
-        return stub;
+      if (typeof sel !== 'string') return null;
+      if (sel.charAt(0) === '#' || sel.charAt(0) === '[') {
+        if (!el._els[sel]) {
+          const stub = makeEl();
+          stub.id = sel.charAt(0) === '#' ? sel.slice(1) : sel;
+          // Range inputs are read through .value by the HUD's oninput.
+          stub.value = '1';
+          el._els[sel] = stub;
+          if (el.ownerDoc) el.ownerDoc._els[sel] = stub;
+        }
+        return el._els[sel];
       }
       return null;
     },
@@ -132,7 +142,7 @@ var BC_HUB = [];
 function sendToPlayer(msg) {
   for (const b of BC_HUB) if (typeof b.onmessage === 'function') b.onmessage({ data: msg });
 }
-function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'resolveGame', scriptDataLate = false, applyFirst = false, resolveButNotApply = false, noInstantiate = false, speed = null, thenOff = false, extraFrames = 0, fireEnemyTwice = null, setup = null, lobby = false, deliverVia = 'bc' }) {
+function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'resolveGame', scriptDataLate = false, applyFirst = false, resolveButNotApply = false, noInstantiate = false, speed = null, thenOff = false, extraFrames = 0, fireEnemyTwice = null, setup = null, lobby = false, deliverVia = 'bc', preFire = null }) {
   // Reset the channel hub: payload instances from earlier runs would keep
   // their own SPEED_STATE and keep writing to the same heap, which looks
   // exactly like a compounding bug in the payload.
@@ -142,6 +152,9 @@ function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'r
   // writes beforehand is wiped and the test fails for the wrong reason.
   if (setup) setup();
   const posted = [], pluginCalls = [], hookCalls = [], pending = [], listeners = [], order = [], portalCommands = [];
+  // Declared out here so the return statement can hand it to the test; the try
+  // block fills it in. A `const` inside the try would not survive to the return.
+  let ctx = null;
   const fireTypes = fireUpdate ? ['FPScontroller', 'HealthScript', 'WeaponManager', 'GG_GameManager', 'EnemyBot'] : [];
 
   // The real game object. Only UWMK holds a reference to it - which is the
@@ -315,6 +328,16 @@ class BC {
     if (scriptDataLate) Runtime.revealScriptData();
     if (!applyFirst) applyPass();
     const plugin = Runtime.plugins[0];
+
+    // Pre-fire hook, so a case can exercise a real control surface (the
+    // in-frame HUD button, a key binding) under exactly the same conditions the
+    // cross-origin portal path is tested under. ctx.hud / ctx.hudEl reach the
+    // controls the payload painted into the player document.
+    ctx = { win, doc, listeners, Runtime };
+    ctx.hud = doc.body.children.find(c => c && c.id === 'sakura-sw-hud') || null;
+    ctx.hudEl = (name) => (ctx.hud && ctx.hud._els ? ctx.hud._els['[data-a="' + name + '"]'] : null);
+    if (preFire) { try { preFire(ctx); } catch (e) { fatal = 'preFire threw: ' + e.message; } }
+
     if (plugin) for (const h of plugin.hooks) {
       if (!h.applied || !fireTypes.includes(h.typeName)) continue;
       // A lobby: EnemyBot and GG_GameManager simply do not tick.
@@ -352,7 +375,7 @@ class BC {
 
   const reports = posted.filter(m => m && m.kind === 'report').map(m => m.report);
   return {
-    fatal, posted, pluginCalls, hookCalls, reports, order, listeners, portalCommands, doc,
+    fatal, posted, pluginCalls, hookCalls, reports, order, listeners, portalCommands, doc, ctx,
     pluginVersion: pluginCalls[0] && pluginCalls[0].version,
     report: reports[reports.length - 1]
   };
@@ -804,6 +827,98 @@ function check(name, cond, detail) {
       r.portalCommands.some(m => m && m.kind === 'cmd' && m.arg && typeof m.arg.on === 'boolean'),
       JSON.stringify(r.portalCommands.map(m => m && m.arg)));
   }
+}
+
+/* ================================================================== *
+ * THE THREE-FRAME NESTING. THE BUG THAT SHIPPED TWICE.
+ *
+ * v2.2.2 "fixed" the command channel by pointing the portal at
+ * contentWindow.postMessage, and it still never worked, for a reason no
+ * single-frame test can express: on CrazyGames the portal's only direct child
+ * iframe is the WRAPPER (games.crazygames.com). The Unity document is a
+ * grandchild. So the portal posted into the wrapper, and the wrapper - which
+ * relayed upward only, because upward is all a report needs - dropped it.
+ *
+ * The durable fix is that controls now live in the frame that owns the heap.
+ * These cases pin both halves: the wrapper really does relay a command down, and
+ * the in-frame control works with no portal, no wrapper and no message at all.
+ * ================================================================== */
+{
+  const w = runFrame({ hostname: 'games.crazygames.com' });
+  w.portalCommands.length = 0;
+  const deliver = (msg) => { for (const fn of (w.listeners.message || [])) fn({ data: msg }); };
+
+  deliver({ __sakura: '__sakura_sw_v2', kind: 'cmd', cmd: 'speed', arg: { on: true, factor: 2 } });
+  check('wrapper relays a command DOWN into the player frame',
+    w.portalCommands.some(m => m && m.kind === 'cmd' && m.cmd === 'speed'),
+    JSON.stringify(w.portalCommands));
+  check('the relayed command keeps its argument',
+    w.portalCommands.some(m => m && m.kind === 'cmd' && m.arg && m.arg.on === true),
+    JSON.stringify(w.portalCommands.map(m => m && m.arg)));
+
+  const before = w.portalCommands.length;
+  deliver({ __sakura: '__sakura_sw_v2', kind: 'report', report: { version: 'x' } });
+  check('wrapper still does NOT push reports down into the player',
+    w.portalCommands.length === before,
+    `pushed ${w.portalCommands.length - before} report(s) down`);
+}
+
+/* The in-frame control: no cross-origin hop, no transport, no portal. */
+{
+  const r = runFrame({ preFire(c) { c.hudEl('sp').onclick(); } });
+  check('player frame paints its own controls',
+    !!r.ctx.hud, 'no #sakura-sw-hud in the player document');
+  check('the in-frame toggle turns speed on with no portal involved',
+    r.report.speed && r.report.speed.on === true, JSON.stringify(r.report.speed));
+  check('the in-frame toggle really writes the heap',
+    r.report.speed.writes > 0, `writes=${r.report.speed.writes}`);
+  const after = (r.report.survey.FPScontroller || []).filter(x => x.k === 'obfF' && x.o === 0x10);
+  check('the in-frame write landed on the real field',
+    after.length === 1 && Math.abs(after[0].v - 8.5) < 1e-3, JSON.stringify(after));
+}
+
+/* The regression that came out of the case above. Turning speed on from off at
+ * the neutral 1.0 writes the heap without changing a single number, so the
+ * button lights up and the game looks completely unaffected - which is
+ * indistinguishable, to the player, from the dead toggle this replaces. */
+{
+  const r = runFrame({ preFire(c) { c.hudEl('sp').onclick(); } });
+  check('the FIRST press does not turn it on at a no-op 1.0x',
+    r.report.speed && r.report.speed.factor > 1, JSON.stringify(r.report.speed));
+  check('the HUD slider shows the factor that was actually applied',
+    r.ctx.hudEl('fx') && r.ctx.hudEl('fx').value === String(r.report.speed.factor),
+    `value=${r.ctx.hudEl('fx') && r.ctx.hudEl('fx').value} applied=${r.report.speed.factor}`);
+}
+
+/* One writer. A command arriving from any surface must repaint the control, or
+ * the HUD would sit there claiming "off" while the heap is being modified. */
+{
+  const r = runFrame({ speed: { on: true, factor: 2.5 }, deliverVia: 'postMessage' });
+  const sp = r.ctx.hudEl('sp');
+  check('a command from the portal repaints the in-frame button',
+    sp && sp.textContent === 'Speed ON', `textContent=${sp && sp.textContent}`);
+  check('and the in-frame button shows the factor that was applied',
+    r.ctx.hudEl('fv') && r.ctx.hudEl('fv').textContent === '2.5x',
+    `textContent=${r.ctx.hudEl('fv') && r.ctx.hudEl('fv').textContent}`);
+}
+
+/* Key bindings work while the Unity canvas holds focus - every keydown in this
+ * document still crosses the window capture phase. */
+{
+  const r = runFrame({ preFire(c) { for (const fn of (c.listeners.keydown || [])) fn({ code: 'F7', preventDefault() {} }); } });
+  check('F7 turns speed on with no pointer and no portal',
+    r.report.speed && r.report.speed.on === true && r.report.speed.writes > 0,
+    JSON.stringify(r.report.speed));
+}
+{
+  const r = runFrame({ preFire(c) {
+    for (let i = 0; i < 4; i++) for (const fn of (c.listeners.keydown || [])) fn({ code: 'F8', preventDefault() {} });
+  } });
+  check('F8 raises the factor and the report agrees',
+    r.report.speed && Math.abs(r.report.speed.factor - 3) < 1e-6, JSON.stringify(r.report.speed));
+  check('the HUD factor label tracks the keys',
+    r.ctx.hudEl('fv') && r.ctx.hudEl('fv').textContent === '3.0x',
+    `textContent=${r.ctx.hudEl('fv') && r.ctx.hudEl('fv').textContent}`);
 }
 
 /* ================================================================== *
