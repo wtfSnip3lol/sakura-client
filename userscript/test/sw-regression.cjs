@@ -405,11 +405,17 @@ class BC {
                 const idx = plugin.hooks.filter(x => x.typeName === 'MouseLook' && x.kind === 1).indexOf(hh);
                 hh.callback(new FakeVW(vals[idx] === undefined ? 0 : vals[idx]),
                             new FakeVW(mouseLook.self === undefined ? 0x2c000 : mouseLook.self));
-              } else if (hh.params && hh.params.length === 2) {
+              } else if (hh.params && hh.params.length >= 2) {
                 const sVals = mouseLook.sets || [];
                 const idx = plugin.hooks.filter(x => x.typeName === 'MouseLook' && x.kind === 0).indexOf(hh);
-                hh.callback(new FakeVW(mouseLook.self === undefined ? 0x2c000 : mouseLook.self),
-                            new FakeVW(sVals[idx] === undefined ? 0 : sVals[idx]));
+                const a0 = sVals[idx];
+                // A scalar in the set list drives the (float) setters; a
+                // [a, b] pair drives the (float, float) setters, which is how
+                // the real SetLookAngles(pitch, yaw) arrives.
+                const args = [new FakeVW(mouseLook.self === undefined ? 0x2c000 : mouseLook.self)];
+                args.push(new FakeVW(Array.isArray(a0) ? a0[0] : (a0 === undefined ? 0 : a0)));
+                if (Array.isArray(a0)) args.push(new FakeVW(a0[1]));
+                hh.callback.apply(null, args);
               }
             }
           }
@@ -1564,6 +1570,67 @@ function check(name, cond, detail) {
     r.report.angles && Math.abs(r.report.angles.centreX - 0.5) < 1e-3
       && Math.abs(r.report.angles.centreY - 0.5) < 1e-3,
     `centreX=${r.report.angles && r.report.angles.centreX} centreY=${r.report.angles && r.report.angles.centreY}`);
+}
+
+/* ================================================================== *
+ * BOTH ANGLES IN ONE CALL.
+ *
+ * MouseLook has exactly two methods taking (float, float). A look controller
+ * with a two-float setter is setting both angles at once - SetLookAngles(pitch,
+ * yaw) - every time the player moves the mouse. Both angles arrive together,
+ * from the game's own code, with no struct offset involved.
+ *
+ * Which argument is which is settled by RANGE, not by position: pitch is
+ * bounded to +/-90, yaw is not. So the bounded one is pitch whichever order the
+ * author used - and that is the point, because "the first argument is pitch" is
+ * exactly the kind of assumption that has cost four releases here.
+ */
+{
+  const ml = 0x2c000;
+  const s1 = 0x40000;
+  // pitch -23, yaw 137. Deliberately NOT pitch-first: the bounded one must be
+  // picked as pitch, so the test fails if anything reads argument order.
+  const mk = (pair) => runFrame({
+    fireMany: { PhotonNetworkSync: [s1] },
+    mouseLook: { self: ml, getters: [], sets: [pair] },
+    setup() {
+      wI32(s1 + 0x30, ml);
+      wF32(ml + 0x18, 360); wF32(ml + 0x1c, 0); wF32(ml + 0x28, 999);
+      wF32(OBJ.FPScontroller + 0x2e4, -40); wF32(OBJ.FPScontroller + 0x2e8, 5); wF32(OBJ.FPScontroller + 0x2ec, 12);
+      wF32(s1 + 0x6c, -40); wF32(s1 + 0x70, 5.2); wF32(s1 + 0x74, 52);
+      wI32(s1 + 0x7c, 10);
+    }
+  });
+  const a = mk([137, -23]).report.angles;
+  check('the two-float setter pair is captured',
+    a && a.setterPair && a.setterPair.hits > 0,
+    JSON.stringify(a && a.setterPair));
+  check('pitch is the BOUNDED argument, not the first one',
+    a && Math.abs(a.rawPitch - -23) < 1e-3,
+    `rawPitch=${a && a.rawPitch}`);
+  check('yaw is the unbounded one, not the second by position',
+    a && Math.abs(a.rawYaw - 137) < 1e-3,
+    `rawYaw=${a && a.rawYaw}`);
+  check('the source names the setter, not a struct guess',
+    a && a.source && a.source.indexOf('setter pair') === 0,
+    `source=${a && a.source}`);
+  check('the argument order is reported so the pairing can be checked',
+    a && a.setterPair && /unresolved|b,a|a,b/.test(a.setterPair.order),
+    JSON.stringify(a && a.setterPair));
+
+  // Same pair, other order: the answer must not change. That is the property
+  // that makes this identification safe.
+  const b = mk([-23, 137]).report.angles;
+  check('reversing the arguments gives the same pitch and yaw',
+    b && Math.abs(b.rawPitch - -23) < 1e-3 && Math.abs(b.rawYaw - 137) < 1e-3,
+    `pitch=${b && b.rawPitch} yaw=${b && b.rawYaw}`);
+
+  // Neither bounded -> not a pitch/yaw pair, and it must say so rather than
+  // pick one.
+  const c = mk([500, 900]).report.angles;
+  check('a pair with neither value bounded is reported unresolved, not guessed',
+    c && /unresolved/.test(c.setterPair.order),
+    JSON.stringify(c && c.setterPair));
 }
 
 /* The menu opens bottom-right, which is where this game keeps the weapon and

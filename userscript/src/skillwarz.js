@@ -1305,7 +1305,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     return function () {
       try {
         var rec = VIEW_HOOKS[methodName] ||
-          (VIEW_HOOKS[methodName] = { last: null, hits: 0, setLast: null, setHits: 0 });
+          (VIEW_HOOKS[methodName] = { last: null, hits: 0, setLast: null, setHits: 0, setB: null, pairHits: 0 });
         var a = arguments;
         if (kind === "get") {
           var r = a[0];
@@ -1316,6 +1316,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
           }
         } else {
           if (a[1] && typeof a[1].val === "function") { rec.setLast = a[1].val(); rec.setHits++; }
+          if (a[2] && typeof a[2].val === "function") { rec.setB = a[2].val(); rec.pairHits++; }
           if (a[0] && typeof a[0].val === "function") { var t2 = a[0].val(); if (t2) ML_INSTANCE = t2; }
         }
       } catch (_) {}
@@ -1335,6 +1336,17 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
             viewHookCallback("get", m.name)
           );
         } else if (m.ret === "void" && m.params.length === 1 && m.params[0] === "float") {
+          // THE ONE THAT ENDS THE GUESSING.
+          //
+          // MouseLook has exactly two methods taking (float, float), and a look
+          // controller with a two-float setter is setting both angles at once -
+          // SetLookAngles(pitch, yaw) - every time the player moves the mouse.
+          // That is BOTH angles arriving together, from the game's own code, with
+          // no struct offset involved and nothing for anyone to identify.
+          //
+          // Which argument is which is settled by range and not by position:
+          // pitch is bounded to +/-90 and yaw is not, so the bounded one is
+          // pitch by definition whichever order the author used.
           plugin.hookPrefix(
             { typeName: "MouseLook", methodName: m.name, params: m.wasmParams, returnType: undefined },
             viewHookCallback("set", m.name)
@@ -1346,6 +1358,35 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     }
     VIEW_HOOKS_REGISTERED = true;
     return true;
+  }
+
+  // The most recent (a, b) pair written by any two-float setter, split into
+  // pitch and yaw by range rather than by argument position.
+  function lastAnglePair() {
+    var best = null, bestHits = 0;
+    for (var k in VIEW_HOOKS) {
+      var rec = VIEW_HOOKS[k];
+      if (rec.pairHits && rec.pairHits > bestHits &&
+          typeof rec.setLast === "number" && typeof rec.setB === "number" &&
+          isFinite(rec.setLast) && isFinite(rec.setB)) {
+        best = { rawA: rec.setLast, rawB: rec.setB, hits: rec.pairHits, name: k };
+        bestHits = rec.pairHits;
+      }
+    }
+    if (!best) return null;
+    var aBounded = best.rawA >= -90 && best.rawA <= 90;
+    var bBounded = best.rawB >= -90 && best.rawB <= 90;
+    // Exactly one bounded -> that is the pitch. Both or neither -> the pair is
+    // not a pitch/yaw pair, and it is reported as such rather than guessed at.
+    if (aBounded !== bBounded) {
+      best.pitch = aBounded ? best.rawA : best.rawB;
+      best.yaw = aBounded ? best.rawB : best.rawA;
+      best.order = aBounded ? "a,b" : "b,a";
+    } else {
+      best.pitch = null; best.yaw = null;
+      best.order = "unresolved (" + (aBounded ? "both bounded" : "neither bounded") + ")";
+    }
+    return best;
   }
 
   // UWMK assigns tableIndex during its one-shot apply pass. Hooks that never
@@ -2286,23 +2327,31 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     if (ML_INSTANCE !== ml) ML_INSTANCE = ml;
 
     ANGLE.getters = getterRows(ml);
+    var pair = lastAnglePair();
+
+    // Preferred source: the two-float setter, because it carries both angles in
+    // one call and range alone says which is which.
     var yawG = getterFor(YAW_OFF);
     var pitchG = null;
     for (var g in VIEW_HOOKS) {
       if (g === yawG) continue;
       var rc = VIEW_HOOKS[g];
       if (!rc.hits || rc.last === null) continue;
-      // A pitch is bounded and a heading is not. Among the getters that are not
-      // the yaw, the bounded one is the pitch.
       if (rc.last >= -90 && rc.last <= 90) { pitchG = g; break; }
     }
     ANGLE.yawGetter = yawG; ANGLE.pitchGetter = pitchG;
 
     var yaw, pitch;
-    if (yawG) { yaw = VIEW_HOOKS[yawG].last; ANGLE.source = "getter"; }
-    else { yaw = rd(ml + YAW_OFF, "f32"); ANGLE.source = "field 0x28 (guess)"; }
-    if (pitchG) pitch = VIEW_HOOKS[pitchG].last;
-    else pitch = rd(ml + PITCH_OFF, "f32");
+    if (pair && pair.pitch !== null) {
+      pitch = pair.pitch; yaw = pair.yaw;
+      ANGLE.source = "setter pair (" + pair.order + ")";
+    } else if (yawG) {
+      yaw = VIEW_HOOKS[yawG].last; ANGLE.source = "getter";
+      pitch = pitchG ? VIEW_HOOKS[pitchG].last : rd(ml + PITCH_OFF, "f32");
+    } else {
+      yaw = rd(ml + YAW_OFF, "f32"); pitch = rd(ml + PITCH_OFF, "f32");
+      ANGLE.source = "field 0x28 (guess)";
+    }
 
     ANGLE.rawYaw = yaw; ANGLE.rawPitch = pitch;
     if (typeof yaw !== "number" || !isFinite(yaw) || typeof pitch !== "number" || !isFinite(pitch)) {
@@ -2651,10 +2700,13 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       v2.body.appendChild(el("div", "sk-note",
         "view: " + (n ? (n.mouseLook ? "MouseLook " + n.mouseLook + (n.camera ? "  camera " + n.camera : "") : "no MouseLook yet")
                       : "no MouseLook yet") +
-        (ang ? "\n" + (ang.source === "getter"
+        (ang ? "\n" + (ang.source && ang.source.indexOf("setter pair") === 0
+                 ? "from SetLookAngles" + ang.source.slice(11) + "\nyaw   " + Math.round(ang.rawYaw) +
+                   "\npitch " + Math.round(ang.rawPitch)
+                 : ang.source === "getter"
                  ? "read from MouseLook getters\nyaw   " + ang.yawAt + " = " + Math.round(ang.rawYaw) +
                    "\npitch " + ang.pitchAt + " = " + Math.round(ang.rawPitch)
-                 : "GUESSING from struct offsets +0x28 and +0x1C\nthe angle getters are hooked but have not fired") : "") +
+                 : "GUESSING from struct offsets +0x28 and +0x1C\nthe angle hooks have not fired yet") : "") +
         (LEGACY_OFFSET_CLEARED ? "\n(cleared a stale saved correction)" : "")));
       out.push(v2);
     }
@@ -3507,6 +3559,10 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
                    // rotation is one slider from right, and only if the wrong
                    // thing is a number in the report.
                    source: ANGLE.source,
+                   setterPair: (function () {
+                     var p = lastAnglePair();
+                     return p ? { a: p.rawA, b: p.rawB, hits: p.hits, order: p.order } : null;
+                   })(),
                    yawAt: ANGLE.yawGetter || "0x28 (guess)",
                    pitchAt: ANGLE.pitchGetter || "0x1c (guess)",
                    getters: ANGLE.getters,
