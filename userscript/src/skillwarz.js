@@ -1995,18 +1995,45 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
 
   function saveFov() { try { localStorage.setItem(FOV_KEY, String(VIEW.fov)); } catch (_) {} }
 
-  // Which two of MouseLook's floats are pitch and yaw is still an open question
-  // - see viewState(). Until a deliberate turn names them, this reads the pair
-  // that behaves like a look angle: bounded, and the only two that sit in the
-  // same place in the struct as the Camera pointer they drive.
+  /* Which two of MouseLook's floats are pitch and yaw is still an open question
+   * - see viewState(). Until a deliberate turn names them this reads the pair
+   * that behaves like a look angle, and it CHECKS that it got one.
+   *
+   * It did not check, and the 2.9.4 field report is what that cost: the floats
+   * read -360, 360, 0, 0, 0, so this returned pitch 360 / yaw 0. cos(360) is 1
+   * and sin(360) is 0, which pins forward to (0,0,1) and flattens the vertical
+   * axis entirely - every box was projected from one fixed world orientation and
+   * ignored where the player was actually looking. They drew cleanly, on
+   * nothing.
+   *
+   * A pitch outside +/-90 is not a pitch. Nothing here guesses past that: the
+   * pair is either angle-shaped or it is not, and "not" draws no boxes and says
+   * why. A silent wrong answer is how this project has failed most often.
+   */
+  var ANGLE = { pitch: null, yaw: null, identified: false, why: "no MouseLook yet" };
+
   function viewAngles() {
     var v = viewState();
-    if (!v || !v.mouseLook) return null;
+    if (!v || !v.mouseLook) { ANGLE.identified = false; ANGLE.why = "no MouseLook yet"; return null; }
     var ml = parseInt(v.mouseLook, 16);
-    var pitch = rd(ml + 0x18, "f32");
-    var yaw = rd(ml + 0x1c, "f32");
-    if (typeof pitch !== "number" || typeof yaw !== "number") return null;
-    return { pitch: pitch + VIEW.pitchOff, yaw: yaw + VIEW.yawOff };
+    var p = rd(ml + 0x18, "f32");
+    var y = rd(ml + 0x1c, "f32");
+    if (typeof p !== "number" || typeof y !== "number" ||
+        !isFinite(p) || !isFinite(y)) {
+      ANGLE.identified = false; ANGLE.why = "MouseLook floats unreadable";
+      return null;
+    }
+    // Both candidates are reported so a turn can be matched against them even
+    // while the pair is being rejected - the diff is what identifies them.
+    ANGLE.pitch = p; ANGLE.yaw = y;
+    var bad = [];
+    if (p < -90 || p > 90) bad.push("0x18=" + Math.round(p) + " is not a pitch");
+    ANGLE.why = bad.length ? bad.join("; ") : "";
+    if (bad.length) { ANGLE.identified = false; return null; }
+    ANGLE.identified = true;
+    ANGLE.pitch = p + VIEW.pitchOff;
+    ANGLE.yaw = y + VIEW.yawOff;
+    return ANGLE;
   }
 
   function project(from, to, w, h) {
@@ -2280,18 +2307,40 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       var v2 = mkCard("Boxes", ESP.boxes);
       var rr3 = row("Enabled");
       rr3.appendChild(mkSwitch(function () { return ESP.boxes; }, function (v) { ESP.boxes = v; ESP.on = true; applyVis(); }));
+      // Saying "boxes on" while the projection is known to be wrong is the same
+      // lie as drawing them. The switch stays live so the state is visible, but
+      // the card says outright that nothing will be drawn and why.
+      var ang = rep && rep.angles;
       v2.body.appendChild(el("div", "sk-mdesc",
-        "Screen-space boxes. The field of view cannot be read from this build, so it is fitted by eye."));
+        ang && !ang.identified
+          ? "Not drawing. " + (ang.why || "view angles unidentified") +
+            " - these two floats are not pitch and yaw. Press F9, turn about 90°, press F9."
+          : (ang && !ang.fovSane
+              ? "Field of view is " + Math.round(ang.fov) + "°, outside the sane band. Reset it below."
+              : "Screen-space boxes. The field of view cannot be read from this build, so it is fitted by eye.")));
       v2.body.appendChild(rr3);
       var fv = mkRange(60, 130, 2, function () { return VIEW.fov; }, function (v) { VIEW.fov = v; saveFov(); });
       fv.input.dataset.unit = "°";
       var rr4 = row("Field of view", "[ and ] also step this");
       rr4.appendChild(fv);
+      var rr5 = row("Reset view", "fov back to 75, offsets clear");
+      var resetBtn = el("button", "sk-btn", "Reset");
+      resetBtn.addEventListener("click", function () {
+        VIEW.fov = 75; VIEW.pitchOff = 0; VIEW.yawOff = 0; saveFov();
+        // showCat, not just refreshMenu: the card's own text says whether the
+        // projection is usable, and only a rebuild re-renders it.
+        showCat(MENU.cat);
+      });
+      rr5.appendChild(resetBtn);
       v2.body.appendChild(rr4);
+      v2.body.appendChild(rr5);
       var n = rep && rep.view;
       v2.body.appendChild(el("div", "sk-note",
         "view: " + (n ? (n.mouseLook ? "MouseLook " + n.mouseLook + (n.camera ? "  camera " + n.camera : "") : "no MouseLook yet")
                       : "no MouseLook yet") +
+        (ang ? "\nreading 0x18=" + (ang.rawPitch === null ? "-" : Math.round(ang.rawPitch)) +
+               "  0x1C=" + (ang.rawYaw === null ? "-" : Math.round(ang.rawYaw)) +
+               (ang.identified ? "  (accepted as pitch/yaw)" : "  (rejected)") : "") +
         (VIEW.pitchOff || VIEW.yawOff ? "\npitch " + Math.round(VIEW.pitchOff) + "  yaw " + Math.round(VIEW.yawOff) : "")));
       out.push(v2);
     }
@@ -3046,6 +3095,25 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
         // chosen offset and the in-band candidate count are both reported: a
         // tie resolved silently is a tie that is wrong silently.
         view: viewState(),
+        // Whether the projection may be trusted AT ALL. When this is false the
+        // boxes are deliberately not drawn - see viewAngles().
+        angles: (function () {
+          var a = viewAngles();
+          // A point one metre straight ahead must land at the centre of the
+          // screen. If it does not, the projection is wrong in a way no offset
+          // slider can describe, and saying so here is cheaper than the user
+          // discovering it on a screenshot.
+          var cx = null, cy = null;
+          var me = localSpot();
+          if (me) {
+            var pr = project(me.eye, [me.eye[0], me.eye[1], me.eye[2] + 1], 1000, 1000);
+            if (pr) { cx = pr.x / 1000; cy = pr.y / 1000; }
+          }
+          return { identified: ANGLE.identified, why: ANGLE.why,
+                   rawPitch: ANGLE.pitch, rawYaw: ANGLE.yaw, fov: VIEW.fov,
+                   fovSane: VIEW.fov >= 60 && VIEW.fov <= 110,
+                   centreX: cx, centreY: cy };
+        })(),
         fov: VIEW.fov,
         // ESP state is reported, not just drawn. A toggle whose result cannot be
         // observed from outside cannot be tested, which is how a dead control

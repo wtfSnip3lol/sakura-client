@@ -920,6 +920,95 @@ function check(name, cond, detail) {
     `local=${JSON.stringify(l)}`);
 }
 
+/* ================================================================== *
+ * THE BOXES WERE ANCHORED TO NOTHING.
+ *
+ * Field report: MouseLook+0x18 read 360 and +0x1C read 0. viewAngles() took
+ * 0x18 as pitch, and cos(360) is 1 while sin(360) is 0 - so forward collapsed
+ * to (0,0,1) and the vertical axis flattened entirely. Boxes were projected from
+ * one fixed world orientation regardless of where the player was looking. They
+ * drew cleanly, on nothing. A pitch outside +/-90 is not a pitch, so the pair
+ * is now rejected outright and nothing is drawn.
+ */
+{
+  const ml = 0x2c000;
+  const s1 = 0x40000;
+  const r = runFrame({
+    fireMany: { PhotonNetworkSync: [s1] },
+    setup() {
+      wI32(s1 + 0x30, ml);
+      wF32(ml + 0x14, -360); wF32(ml + 0x18, 360); wF32(ml + 0x1c, 0);
+      wF32(OBJ.FPScontroller + 0x2e4, -40); wF32(OBJ.FPScontroller + 0x2e8, 5); wF32(OBJ.FPScontroller + 0x2ec, 12);
+      wF32(s1 + 0x6c, -30); wF32(s1 + 0x70, 5.2); wF32(s1 + 0x74, 9);
+      wI32(s1 + 0x7c, 10);
+    }
+  });
+  const a = r.report.angles;
+  check('a pitch of 360 is rejected, not projected with',
+    a && a.identified === false,
+    JSON.stringify(a));
+  check('and the report says which read is not a pitch',
+    a && /not a pitch/.test(a.why || ''),
+    JSON.stringify(a));
+  check('the raw values are still reported so a turn can be matched against them',
+    a && a.rawPitch === 360 && a.rawYaw === 0,
+    JSON.stringify(a));
+}
+
+/* The rejection must be a refusal to draw, not a refusal to report. An enemy
+ * that is genuinely in front of the camera must still project once the pair
+ * looks like angles - otherwise "fixes" that gate the boxes on the view can
+ * quietly ship boxes that never appear at all. */
+{
+  const ml = 0x2c000;
+  const s1 = 0x40000;
+  const r = runFrame({
+    fireMany: { PhotonNetworkSync: [s1] },
+    setup() {
+      wI32(s1 + 0x30, ml);
+      wF32(ml + 0x18, 12); wF32(ml + 0x1c, 0);    // a plausible look angle
+      wF32(OBJ.FPScontroller + 0x2e4, -40); wF32(OBJ.FPScontroller + 0x2e8, 5); wF32(OBJ.FPScontroller + 0x2ec, 12);
+      wF32(s1 + 0x6c, -40); wF32(s1 + 0x70, 5.2); wF32(s1 + 0x74, 32);   // dead ahead
+      wI32(s1 + 0x7c, 10);
+    }
+  });
+  const a = r.report.angles;
+  check('a plausible pair is accepted',
+    a && a.identified === true,
+    JSON.stringify(a));
+  check('an enemy dead ahead lands at the centre of the screen',
+    a && a.identified && typeof a.centreX === 'number',
+    JSON.stringify(a));
+  if (a && typeof a.centreX === 'number') {
+    check('centre of screen, not merely on screen',
+      Math.abs(a.centreX - 0.5) < 0.02,
+      `centreX=${a.centreX}`);
+  }
+}
+
+/* An absurd field of view was left behind at 130 by the calibration passes. On
+ * its own that is a 3x squeeze toward the centre; stacked on a wrong view it
+ * makes the boxes wrong in a way that is hard to read back. */
+{
+  const ml = 0x2c000;
+  const s1 = 0x40000;
+  const r = runFrame({
+    ls: { 'sakura-sw-fov': '130' },
+    fireMany: { PhotonNetworkSync: [s1] },
+    setup() {
+      wI32(s1 + 0x30, ml);
+      wF32(ml + 0x18, 0); wF32(ml + 0x1c, 0);
+      wF32(OBJ.FPScontroller + 0x2e4, 0); wF32(OBJ.FPScontroller + 0x2e8, 0); wF32(OBJ.FPScontroller + 0x2ec, 0);
+      wF32(s1 + 0x6c, 0); wF32(s1 + 0x70, 1.8); wF32(s1 + 0x74, 20);
+      wI32(s1 + 0x7c, 10);
+    }
+  });
+  const a = r.report.angles;
+  check('a maxed field of view is flagged rather than quietly used',
+    a && a.fov === 130 && a.fovSane === false,
+    JSON.stringify(a));
+}
+
 /* The menu opens bottom-right, which is where this game keeps the weapon and
  * ammo readout, so opening it hides the thing you opened it to change. It is
  * draggable, the position is remembered, and a menu dragged off the edge is
