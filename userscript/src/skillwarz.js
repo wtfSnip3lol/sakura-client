@@ -3389,6 +3389,74 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     } catch (_) { return { w: 0, h: 0 }; }
   }
 
+  /* Does the projection agree with geometry computed a different way?
+   *
+   * Every hand-rolled projection has an unverifiable core, and this one has been
+   * wrong in five different places across five releases. What makes it
+   * checkable: an enemy's BEARING to the local player is already computed by
+   * the radar, from world positions alone, with no projection involved. For a
+   * perspective camera at pitch zero
+   *
+   *   ndcX = tan(bearing) / (tan(fov/2) * aspect)
+   *
+   * and the enemy dead ahead (bearing 0) must land exactly at centre. So the
+   * expected screen X can be derived from a number that has nothing to do with
+   * the code being tested, and the two compared.
+   *
+   * This turns "the boxes look wrong" from a judgement into a measurement. If
+   * the enemy at bearing 0 is not at centre, the report says so in numbers, and
+   * a mismatch is 0.5 (centre) versus not-0.5 rather than a screenshot. */
+  function projectionCheck() {
+    var out = { rows: [], worstBearing: null, worstDelta: 0, canvas: null };
+    try {
+      out.canvas = { w: (BOXES && BOXES.cv) ? BOXES.cv.width : 0,
+                     h: (BOXES && BOXES.cv) ? BOXES.cv.height : 0,
+                     innerW: window.innerWidth, innerH: window.innerHeight,
+                     dpr: window.devicePixelRatio || 1 };
+    } catch (_) {}
+    var live = liveEnemies();
+    if (!live || !live.me) return out;
+    var w = out.canvas.w || 1000, h = out.canvas.h || 1000;
+    var aspect = w / h;
+    var t = Math.tan(VIEW.fov * Math.PI / 180 / 2);
+    for (var i = 0; i < live.list.length && i < 8; i++) {
+      var e = live.list[i];
+      if (typeof e.bearing !== "number" || typeof e.d !== "number" || e.d < 0.5) continue;
+      var pr = project(live.me.eye, [e.x, e.y, e.z], w, h);
+      if (!pr) continue;
+      var ndcX = pr.x / w - 0.5;
+      var wantNdc = Math.tan(e.bearing * Math.PI / 180) / (t * aspect);
+      // Skip anything close to the camera edge, where a small angle error is a
+      // large fraction of the screen and the comparison stops meaning anything.
+      if (Math.abs(wantNdc) > 0.8) continue;
+      var delta = ndcX - wantNdc;
+      out.rows.push({ d: Math.round(e.d), bearing: Math.round(e.bearing),
+                      at: Math.round(ndcX * 1000) / 1000,
+                      want: Math.round(wantNdc * 1000) / 1000,
+                      off: Math.round(delta * 1000) / 1000 });
+      if (Math.abs(delta) > Math.abs(out.worstDelta)) {
+        out.worstDelta = Math.round(delta * 1000) / 1000;
+        out.worstBearing = Math.round(e.bearing);
+      }
+    }
+    return out;
+  }
+
+  /* One player box.
+   *
+   * The previous version projected the feet and the head and took the bounding
+   * box of the two points. Those points share an X and a Z and differ only in Y,
+   * so x1 - x0 was ZERO, every box collapsed onto the 3-pixel minimum, and what
+   * the user saw was a dot near the player rather than a box on them. "Barely
+   * even on the player" was exactly that: right-ish place, three pixels wide.
+   *
+   * A box has to be built the way a box is built - height from the projected
+   * span, width from the character's proportions - not from the extent of two
+   * vertically stacked points. */
+  var BOX_TOP = 1.75;     // character height above the ground position
+  var BOX_BELOW = 0.25;   // a little under the feet, so it never floats
+  var BOX_ASPECT = 0.42;  // width / height for a human silhouette
+
   function drawBoxes(live) {
     var b = BOXES;
     if (!b) return;
@@ -3408,17 +3476,17 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     for (var i = 0; i < live.list.length; i++) {
       var e = live.list[i];
       var mate = (myTeam !== null && e.team === myTeam);
-      // Feet and head. 1.8 units is the human height this game uses; if it is
-      // wrong the box is the wrong height, not the wrong place.
-      var feet = project(me.eye, [e.x, e.y - 1.0, e.z], dim.w, dim.h);
-      var head = project(me.eye, [e.x, e.y + 0.8, e.z], dim.w, dim.h);
+      // e.y is the GROUND, so the box runs from just under the feet to the top
+      // of the head. The old code hung it from eye -1.0 to eye +0.8, which put
+      // the middle of the box nearly two metres below where the player stands.
+      var feet = project(me.eye, [e.x, e.y - BOX_BELOW, e.z], dim.w, dim.h);
+      var head = project(me.eye, [e.x, e.y + BOX_TOP, e.z], dim.w, dim.h);
       if (!feet || !head) continue;
-      var x0 = Math.min(feet.x, head.x), x1 = Math.max(feet.x, head.x);
-      var y0 = Math.min(feet.y, head.y), y1 = Math.max(feet.y, head.y);
-      // Scale with distance so a far box is a dot, not a billboard.
-      var bw = Math.max(3, Math.min(60, (x1 - x0)));
-      var bh = Math.max(6, Math.min(140, (y1 - y0)));
-      var cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+      var bh = Math.abs(head.y - feet.y);
+      if (!(bh > 0)) continue;                    // degenerate: behind, or on the eye
+      var bw = Math.max(2, Math.min(90, bh * BOX_ASPECT));
+      if (bh > 420) continue;                      // something is badly wrong; do not paint it
+      var cx = (feet.x + head.x) / 2, cy = (feet.y + head.y) / 2;
       ctx2.strokeStyle = mate ? "rgba(79,143,106,.9)" : "rgba(255,110,116,.95)";
       ctx2.lineWidth = mate ? 1 : 2;
       ctx2.strokeRect(cx - bw / 2, cy - bh / 2, bw, bh);
@@ -3665,7 +3733,8 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
                    legacyOffsetsCleared: LEGACY_OFFSET_CLEARED,
                    fov: VIEW.fov,
                    fovSane: VIEW.fov >= 60 && VIEW.fov <= 110,
-                   centreX: cx, centreY: cy, aboveY: ay, belowY: by };
+                   centreX: cx, centreY: cy, aboveY: ay, belowY: by,
+                   projection: projectionCheck() };
         })(),
         fov: VIEW.fov,
         // ESP state is reported, not just drawn. A toggle whose result cannot be

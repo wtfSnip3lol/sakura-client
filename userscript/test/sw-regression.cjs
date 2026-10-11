@@ -303,6 +303,9 @@ const CONSOLE = [];
 const consoleRec = (level) => (...a) => { CONSOLE.push(level + ': ' + a.map(String).join(' ')); };
 
   const win = {
+    // A real viewport. At 1x1 every projection collapses and a box is two pixels
+    // wide, which is the harness manufacturing the very bug it should catch.
+    innerWidth: 1920, innerHeight: 1080, devicePixelRatio: 1,
     document: doc,
     location: { hostname: hostname || 'skillwarz.game-files.crazygames.com', href: 'https://x/' },
     console: { log: consoleRec('log'), warn: consoleRec('warn'), error: consoleRec('error'), info: consoleRec('info'), debug: consoleRec('debug') },
@@ -328,7 +331,27 @@ const consoleRec = (level) => (...a) => { CONSOLE.push(level + ': ' + a.map(Stri
   doc._els = {};
   // Elements the payload creates must know their document, so an id lookup on a
   // created node can be looked up later by the test.
-  doc.createElement = (tag) => { const e = makeEl(); e.ownerDoc = doc; e.tagName = tag; return e; };
+  doc.createElement = (tag) => {
+    const e = makeEl();
+    e.ownerDoc = doc;
+    e.tagName = tag;
+    // A box being three pixels wide is invisible in a boolean and obvious in
+    // the numbers, so strokeRect records what it was asked to paint.
+    if (tag === 'canvas') {
+      const calls = [];
+      e.rectCalls = calls;
+      e.getContext = () => ({
+        clearRect() {}, beginPath() {}, arc() {}, fill() {}, stroke() {},
+        fillText() {}, moveTo() {}, lineTo() {}, save() {}, restore() {},
+        strokeRect(x, y, w, h) { calls.push({ x, y, w, h }); },
+        set strokeStyle(v) {}, get strokeStyle() { return ''; },
+        set fillStyle(v) {}, get fillStyle() { return ''; },
+        set lineWidth(v) {}, get lineWidth() { return 1; },
+        set font(v) {}, get font() { return ''; },
+      });
+    }
+    return e;
+  };
   doc.body.ownerDoc = doc;
   doc.documentElement.ownerDoc = doc;
   // getElementById must reflect the tree. Answering null unconditionally is
@@ -388,6 +411,18 @@ const consoleRec = (level) => (...a) => { CONSOLE.push(level + ': ' + a.map(Stri
     // controls the payload painted into the player document.
     ctx = { win, doc, listeners, Runtime };
     ctx.hud = doc.body.children.find(c => c && c.id === 'sakura-sw-hud') || null;
+    // Canvases are created lazily, so this walks the tree when asked rather
+    // than snapshotting it once and missing anything drawn later.
+    ctx.canvases = () => {
+      const found = [];
+      const walk = (n) => {
+        if (!n) return;
+        if (n.tagName === 'canvas') found.push(n);
+        (n.children || []).forEach(walk);
+      };
+      walk(doc.body);
+      return found;
+    };
     ctx.hudEl = (name) => (ctx.hud && ctx.hud._els ? ctx.hud._els['[data-a="' + name + '"]'] : null);
     if (preFire) { try { preFire(ctx); } catch (e) { fatal = 'preFire threw: ' + e.message; } }
 
@@ -477,6 +512,12 @@ const consoleRec = (level) => (...a) => { CONSOLE.push(level + ': ' + a.map(Stri
     // pairs. The snapshot command needs two presses with the heap changed in
     // between, and there is no game frame left to hang that off.
     if (post) post((cmd, arg) => sendToPlayer({ __sakura: '__sakura_sw_v2', kind: 'cmd', cmd, arg }), ctx);
+    // A command sent to the payload makes it schedule more work (the ESP loop
+    // re-arms itself on a timer), so drain once more afterwards. Without this a
+    // test that drives a control in `post` can never observe the paint that
+    // control causes.
+    guard = 0;
+    while (pending.length && guard++ < 200) pending.shift()();
   } catch (e) { fatal = e.message; }
 
   const reports = posted.filter(m => m && m.kind === 'report').map(m => m.report);
@@ -1706,6 +1747,84 @@ function check(name, cond, detail) {
     wrong === 0, `${wrong} of ${checked} wrong`);
   check('and the one whose only competitor was a velocity is not drawn as a velocity',
     true, '');
+}
+
+/* ================================================================== *
+ * THE BOXES WERE THREE PIXELS WIDE.
+ *
+ * drawBoxes projected the feet and the head and took the bounding box of the
+ * two resulting points. Those points share an X and a Z and differ only in Y,
+ * so x1 - x0 was exactly zero, every box fell through to Math.max(3, ...), and
+ * what shipped was a 3-pixel dot roughly placed - which is precisely how "barely
+ * even on the player" reads.
+ *
+ * The box is now built from the projected HEIGHT with a silhouette aspect
+ * ratio, which is the only thing that can make a box on a vertical pair of
+ * points.
+ */
+{
+  const ml = 0x2c000;
+  const s1 = 0x40000;
+  const scene = () => {
+    wI32(s1 + 0x30, ml);
+    wF32(ml + 0x18, 360); wF32(ml + 0x1c, 0); wF32(ml + 0x28, 0);
+    // NOT at the world origin: pickPos refuses a struct whose every Vector3
+    // reads zero, which is correct behaviour and useless as a fixture.
+    for (const o of [0x154, 0x160, 0x2e4, 0x3d0]) {
+      wF32(OBJ.FPScontroller + o, -40); wF32(OBJ.FPScontroller + o + 4, 0); wF32(OBJ.FPScontroller + o + 8, -20);
+    }
+    // 30m dead ahead at yaw 0, i.e. bearing 0 from us
+    wF32(s1 + 0x6c, -40); wF32(s1 + 0x70, 0); wF32(s1 + 0x74, 10);
+    wI32(s1 + 0x7c, 10);
+  };
+  const r = runFrame({
+    fireMany: { PhotonNetworkSync: [s1] },
+    setup: scene
+  });
+  const pr = r.report.angles && r.report.angles.projection;
+  check('the projection is checked against geometry, and reports the canvas it used',
+    pr && pr.canvas && typeof pr.canvas.w === 'number',
+    JSON.stringify(pr && pr.canvas));
+  check('an enemy dead ahead projects to the centre, per the bearing check',
+    pr && pr.rows.some(x => x.d > 25 && x.d < 35 && Math.abs(x.bearing) < 3 && Math.abs(x.at) < 0.02),
+    JSON.stringify(pr && pr.rows));
+  check('the measured position matches the position derived from bearing alone',
+    pr && pr.rows.length > 0 && pr.rows.every(x => Math.abs(x.at - x.want) < 0.05),
+    JSON.stringify(pr && pr.rows));
+  check('and the worst disagreement is small, not merely present',
+    pr && Math.abs(pr.worstDelta) < 0.05,
+    `worstDelta=${pr && pr.worstDelta} at bearing ${pr && pr.worstBearing}`);
+}
+
+/* The box geometry itself: a vertical pair must not collapse the width. */
+{
+  const ml = 0x2c000;
+  const s1 = 0x40000;
+  const r = runFrame({
+    fireMany: { PhotonNetworkSync: [s1] },
+    setup() {
+      wI32(s1 + 0x30, ml);
+      wF32(ml + 0x18, 360); wF32(ml + 0x1c, 0); wF32(ml + 0x28, 0);
+      for (const o of [0x154, 0x160, 0x2e4, 0x3d0]) {
+        wF32(OBJ.FPScontroller + o, -40); wF32(OBJ.FPScontroller + o + 4, 0); wF32(OBJ.FPScontroller + o + 8, -20);
+      }
+      wF32(s1 + 0x6c, -40); wF32(s1 + 0x70, 0); wF32(s1 + 0x74, 10);
+      wI32(s1 + 0x7c, 10);
+    },
+    // Boxes only paint when the layer is switched on, so switch it on the way
+    // the user does and let the ESP loop run.
+    post(send, c) { c.hudEl('esp').onclick(); send('snapshot'); }
+  });
+  const rects = ((r.ctx.canvases && r.ctx.canvases()) || []).flatMap(c => c.rectCalls || []);
+  check('at least one box is drawn for the enemy', rects.length > 0, `rects=${rects.length}`);
+  const wide = rects.filter(x => x.w > 4);
+  check('and it is wider than the old 3-pixel floor, not collapsed by the '
+    + 'feet/head pair sharing an X and Z',
+    wide.length > 0,
+    JSON.stringify(rects.map(x => `w=${x.w && x.w.toFixed(1)} h=${x.h && x.h.toFixed(1)}`)));
+  check('the box is taller than it is wide, as a standing figure is',
+    wide.length > 0 && wide.every(x => x.h > x.w),
+    JSON.stringify(wide.map(x => `w=${x.w.toFixed(1)} h=${x.h.toFixed(1)}`)));
 }
 
 /* The menu opens bottom-right, which is where this game keeps the weapon and
