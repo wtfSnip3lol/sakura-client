@@ -53,7 +53,7 @@
   // It was hand-written in three places once and one drifted, so a field report
   // claimed 2.0.2 while the plugin logged 2.0.3 - which sends everyone chasing
   // a stale build.
-  var VERSION = "2.4.0";
+  var VERSION = "2.5.0";
 
   /* ================================================================== *
    * WRAPPER — relay only. Arming UWMK here achieves nothing: this frame
@@ -603,8 +603,26 @@
     { type: "FPScontroller", keep: true },
     { type: "HealthScript", keep: true },
     { type: "WeaponManager", keep: false },
+    // ---- ESP capture set, rebuilt from dump.cs after two lobby reports ----
+    //
+    // GG_GameManager and EnemyBot were the wrong targets. Both hooks resolved
+    // and applied (hooksResolved 5/5), and neither EVER fired - not because a
+    // signature was wrong, but because the instances did not exist. The dump
+    // explains why:
+    //
+    //   * GG_GameManager is the BASE class. Team Deathmatch - the mode actually
+    //     being played - uses TDM_GameManager : MonoBehaviourPunCallbacks, a
+    //     separate class with its own Camera at +0x2C and its own List<Player>
+    //     at +0x50. Nothing ever instantiates the base.
+    //   * EnemyBot has an Update() at RVA 0x34B0, but EnemyBot is the bot's
+    //     BRAIN. NPC_Cotroller is the bot's body: it owns the world Vector3s
+    //     (+0x14, +0x5C, +0xF0), a CapsuleCollider at +0x98, three Transforms
+    //     and the bot's own HealthScript at +0xD0 - and its Update() runs once
+    //     per bot, per frame. Hooking it as a LIST captures every enemy the
+    //     moment a round starts, which is what EnemyBot never did.
+    { type: "TDM_GameManager", keep: true },
     { type: "GG_GameManager", keep: true },
-    // Enemies: many instances, so this one is a LIST not a single pointer.
+    { type: "NPC_Cotroller", keep: true, many: true },
     { type: "EnemyBot", keep: true, many: true }
   ];
   var ASSEMBLIES = [
@@ -1000,11 +1018,24 @@
       if (!d || d.inited !== 1) continue;          // never write an uninitialised struct
       var cur = applyKey("obfF", d.hidden, d.keyAtOffset0);
       if (typeof cur !== "number" || !isFinite(cur)) continue;
-      var a = Math.abs(cur);
+      var key = ptr + ":" + off;
+      var st = SPEED_STATE[key];
+      // If the current value is not the one we last wrote, the game changed it -
+      // rebase, or the multiplier compounds into orbit within a second.
+      if (!st || cur !== st.lastWritten) st = SPEED_STATE[key] = { base: cur, lastWritten: null };
+      // GROUP ON THE BASE, NOT ON WHAT WE LAST WROTE.
+      //
+      // This was a live bug, visible in a field report at 5x: the sprint fields
+      // read 84, so a fourth sprint field holding 16.8 had no company left and
+      // was refused as a "singleton". Grouping on our own output is circular -
+      // the harder you push the multiplier, the more real speed fields fall out
+      // of the cluster. st.base is the value the GAME wrote and never moves.
+      var b = st.base;
+      var a = Math.abs(b);
       // Generous enough that a real speed is never discarded before grouping;
       // the grouping is what decides, not this.
       if (a < 1e-4 || a > 1e5) { SPEED_SKIPPED.push({ o: off, v: cur, why: "implausible" }); continue; }
-      cands.push({ o: off, v: cur, a: a });
+      cands.push({ o: off, v: cur, a: a, base: b, key: key, st: st });
     }
 
     // Group by agreement. Each group keeps the running mean so a chain of
@@ -1057,14 +1088,18 @@
           SPEED_SKIPPED.push({ o: f.o, v: f.v, why: "below floor " + floor.toFixed(2) });
           continue;
         }
-        var key = ptr + ":" + f.o;
-        var st = SPEED_STATE[key];
-        // If the current value is not the one we last wrote, the game changed
-        // it - rebase, or the multiplier compounds into orbit within a second.
-        if (!st || f.v !== st.lastWritten) st = SPEED_STATE[key] = { base: f.v, lastWritten: null };
-        var target = st.base * SPEED.factor;
+        var target = f.base * SPEED.factor;
         if (writeObfValue(ptr, f.o, "obfF", target)) {
-          st.lastWritten = target;
+          // fround, and this is not cosmetic. The heap stores 32-bit floats, so
+          // a read-back yields Math.fround(target). Storing the un-rounded double
+          // made `cur !== st.lastWritten` true on EVERY frame for any value that
+          // is not exactly representable, which re-based the base each frame and
+          // compounded the multiplier: 16.7568 * 5 = 83.784 -> f32 83.7839965
+          // != 83.7839969 -> rebase -> *5 -> 418.92 -> and climbing. A field
+          // report had stayed at exactly 84 only because 4.2117 * 5 happened to
+          // round-trip bit-for-bit. One more frame of luck and the player is
+          // travelling at 10^40.
+          f.st.lastWritten = Math.fround(target);
           SPEED_TOUCHED++;
           SPEED_SCALED.push("0x" + f.o.toString(16));
         }
@@ -1079,7 +1114,7 @@
    * offset is the only stable identity worth reporting.
    * ---------------------------------------------------------------- */
   /*__SKILLWARZ_FIELDS_START__*/
-var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"],[112,"obfF"],[136,"obfF"],[160,"obfF"],[184,"obfB"],[196,"obfF"],[220,"i32"],[224,"v3"],[236,"u8"],[240,"obfF"],[264,"i32"],[268,"u8"],[272,"i32"],[276,"u8"],[277,"u8"],[284,"obfF"],[308,"obfF"],[332,"f32"],[336,"f32"],[340,"v3"],[352,"v3"],[364,"f32"],[368,"f32"],[392,"u8"],[396,"f32"],[408,"v3"],[420,"u8"],[436,"f32"],[440,"f32"],[444,"u8"],[445,"u8"],[448,"obfF"],[472,"f32"],[476,"u8"],[480,"obfF"],[504,"v3"],[520,"obfB"],[536,"f32"],[540,"f32"],[588,"f32"],[592,"f32"],[596,"f32"],[600,"f32"],[604,"u8"],[605,"u8"],[606,"u8"],[608,"f32"],[612,"u8"],[613,"u8"],[616,"f32"],[620,"f32"],[624,"f32"],[628,"f32"],[632,"f32"],[636,"f32"],[640,"f32"],[644,"v3"],[660,"u8"],[664,"v3"],[676,"f32"],[684,"v3"],[696,"f32"],[700,"f32"],[704,"f32"],[708,"u8"],[709,"u8"],[712,"f32"],[732,"f32"],[740,"v3"],[752,"v3"],[764,"f32"],[768,"f32"],[772,"f32"],[776,"f32"],[780,"v3"],[792,"u8"],[796,"v3"],[808,"i32"],[812,"f32"],[816,"f32"],[820,"f32"],[828,"f32"],[832,"u8"],[833,"u8"],[844,"u8"],[845,"u8"],[846,"u8"],[848,"f32"],[852,"f32"],[856,"f32"],[860,"f32"],[864,"f32"],[868,"u8"],[872,"f32"],[876,"f32"],[880,"u8"],[888,"v3"],[900,"v3"],[912,"v3"],[924,"f32"],[928,"f32"],[932,"f32"],[936,"v3"],[948,"i32"],[952,"u8"],[956,"i32"],[960,"f32"],[964,"f32"],[968,"f32"],[972,"f32"],[976,"v3"],[988,"i32"],[992,"u8"],[993,"u8"],[994,"u8"],[996,"f32"],[1000,"i32"]],"HealthScript":[[88,"u8"],[92,"i32"],[128,"f32"],[132,"f32"],[136,"f32"],[140,"f32"],[144,"f32"],[148,"f32"],[160,"i32"],[164,"i32"],[168,"u8"],[169,"u8"],[170,"u8"],[171,"u8"],[192,"obfI"],[212,"obfI"],[232,"obfI"],[252,"obfI"],[272,"obfI"],[292,"obfB"],[304,"obfF"],[328,"f32"],[332,"f32"],[336,"f32"],[340,"f32"],[348,"f32"],[352,"v3"],[368,"f32"],[376,"f32"],[384,"u8"],[396,"u8"],[400,"i32"]],"PlayerConfig":[],"WeaponManager":[[24,"i32"],[28,"i32"],[32,"u8"],[36,"i32"],[100,"obfF"],[124,"f32"],[132,"i32"],[136,"u8"],[137,"u8"],[140,"i32"],[144,"f32"],[152,"f32"],[172,"i32"],[188,"u8"],[220,"obfI"],[240,"obfI"],[260,"f32"],[264,"f32"],[268,"f32"],[280,"f32"],[288,"f32"],[296,"u8"],[300,"obfI"],[320,"obfI"],[340,"obfI"],[360,"obfB"],[372,"obfB"],[384,"obfB"],[396,"obfB"],[420,"obfB"],[432,"obfI"],[460,"i32"],[464,"u8"],[468,"i32"],[472,"i32"],[512,"i32"],[532,"u8"],[540,"u8"],[541,"u8"],[542,"u8"],[543,"u8"],[592,"i32"],[600,"u8"]],"GG_GameManager":[[36,"u8"],[44,"f32"],[68,"u8"],[69,"u8"],[72,"f32"],[76,"f32"],[80,"i32"],[84,"i32"],[88,"u8"],[116,"u8"],[120,"f32"],[124,"f32"],[144,"i32"],[148,"u8"],[180,"i32"],[188,"i32"],[192,"i32"],[232,"obfI"],[252,"obfI"],[272,"obfI"],[300,"u8"],[304,"i32"],[356,"u8"],[368,"f32"],[384,"u8"],[392,"u8"],[420,"u8"],[424,"i32"],[428,"f32"],[432,"u8"],[433,"u8"],[440,"i32"],[444,"i32"],[448,"f32"],[452,"i32"],[456,"f32"],[460,"i32"],[464,"i32"]],"EnemyBot":[[32,"f32"],[36,"v3"],[48,"u8"],[52,"f32"],[56,"f32"],[60,"u8"],[68,"f32"],[72,"f32"],[76,"u8"],[77,"u8"]]};
+var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"],[112,"obfF"],[136,"obfF"],[160,"obfF"],[184,"obfB"],[196,"obfF"],[220,"i32"],[224,"v3"],[236,"u8"],[240,"obfF"],[264,"i32"],[268,"u8"],[272,"i32"],[276,"u8"],[277,"u8"],[284,"obfF"],[308,"obfF"],[332,"f32"],[336,"f32"],[340,"v3"],[352,"v3"],[364,"f32"],[368,"f32"],[392,"u8"],[396,"f32"],[408,"v3"],[420,"u8"],[436,"f32"],[440,"f32"],[444,"u8"],[445,"u8"],[448,"obfF"],[472,"f32"],[476,"u8"],[480,"obfF"],[504,"v3"],[520,"obfB"],[536,"f32"],[540,"f32"],[588,"f32"],[592,"f32"],[596,"f32"],[600,"f32"],[604,"u8"],[605,"u8"],[606,"u8"],[608,"f32"],[612,"u8"],[613,"u8"],[616,"f32"],[620,"f32"],[624,"f32"],[628,"f32"],[632,"f32"],[636,"f32"],[640,"f32"],[644,"v3"],[660,"u8"],[664,"v3"],[676,"f32"],[684,"v3"],[696,"f32"],[700,"f32"],[704,"f32"],[708,"u8"],[709,"u8"],[712,"f32"],[732,"f32"],[740,"v3"],[752,"v3"],[764,"f32"],[768,"f32"],[772,"f32"],[776,"f32"],[780,"v3"],[792,"u8"],[796,"v3"],[808,"i32"],[812,"f32"],[816,"f32"],[820,"f32"],[828,"f32"],[832,"u8"],[833,"u8"],[844,"u8"],[845,"u8"],[846,"u8"],[848,"f32"],[852,"f32"],[856,"f32"],[860,"f32"],[864,"f32"],[868,"u8"],[872,"f32"],[876,"f32"],[880,"u8"],[888,"v3"],[900,"v3"],[912,"v3"],[924,"f32"],[928,"f32"],[932,"f32"],[936,"v3"],[948,"i32"],[952,"u8"],[956,"i32"],[960,"f32"],[964,"f32"],[968,"f32"],[972,"f32"],[976,"v3"],[988,"i32"],[992,"u8"],[993,"u8"],[994,"u8"],[996,"f32"],[1000,"i32"]],"HealthScript":[[88,"u8"],[92,"i32"],[128,"f32"],[132,"f32"],[136,"f32"],[140,"f32"],[144,"f32"],[148,"f32"],[160,"i32"],[164,"i32"],[168,"u8"],[169,"u8"],[170,"u8"],[171,"u8"],[192,"obfI"],[212,"obfI"],[232,"obfI"],[252,"obfI"],[272,"obfI"],[292,"obfB"],[304,"obfF"],[328,"f32"],[332,"f32"],[336,"f32"],[340,"f32"],[348,"f32"],[352,"v3"],[368,"f32"],[376,"f32"],[384,"u8"],[396,"u8"],[400,"i32"]],"PlayerConfig":[],"WeaponManager":[[24,"i32"],[28,"i32"],[32,"u8"],[36,"i32"],[100,"obfF"],[124,"f32"],[132,"i32"],[136,"u8"],[137,"u8"],[140,"i32"],[144,"f32"],[152,"f32"],[172,"i32"],[188,"u8"],[220,"obfI"],[240,"obfI"],[260,"f32"],[264,"f32"],[268,"f32"],[280,"f32"],[288,"f32"],[296,"u8"],[300,"obfI"],[320,"obfI"],[340,"obfI"],[360,"obfB"],[372,"obfB"],[384,"obfB"],[396,"obfB"],[420,"obfB"],[432,"obfI"],[460,"i32"],[464,"u8"],[468,"i32"],[472,"i32"],[512,"i32"],[532,"u8"],[540,"u8"],[541,"u8"],[542,"u8"],[543,"u8"],[592,"i32"],[600,"u8"]],"GG_GameManager":[[36,"u8"],[44,"f32"],[68,"u8"],[69,"u8"],[72,"f32"],[76,"f32"],[80,"i32"],[84,"i32"],[88,"u8"],[116,"u8"],[120,"f32"],[124,"f32"],[144,"i32"],[148,"u8"],[180,"i32"],[188,"i32"],[192,"i32"],[232,"obfI"],[252,"obfI"],[272,"obfI"],[300,"u8"],[304,"i32"],[356,"u8"],[368,"f32"],[384,"u8"],[392,"u8"],[420,"u8"],[424,"i32"],[428,"f32"],[432,"u8"],[433,"u8"],[440,"i32"],[444,"i32"],[448,"f32"],[452,"i32"],[456,"f32"],[460,"i32"],[464,"i32"]],"TDM_GameManager":[[24,"u8"],[32,"u8"],[33,"u8"],[36,"f32"],[88,"u8"],[92,"f32"],[96,"f32"],[100,"i32"],[104,"i32"],[108,"u8"],[109,"u8"],[112,"f32"],[116,"f32"],[120,"i32"],[140,"u8"],[144,"obfI"],[216,"obfI"],[236,"obfI"],[256,"obfI"],[276,"u8"],[348,"u8"],[352,"i32"],[364,"u8"],[388,"u8"],[392,"f32"],[396,"i32"],[400,"i32"],[404,"f32"],[408,"i32"],[412,"i32"],[416,"f32"],[420,"f32"],[424,"i32"],[432,"u8"],[433,"u8"],[440,"f32"]],"NPC_Cotroller":[[20,"v3"],[32,"f32"],[36,"f32"],[86,"u8"],[87,"u8"],[92,"v3"],[156,"u8"],[160,"f32"],[164,"f32"],[184,"f32"],[188,"f32"],[200,"u8"],[204,"f32"],[216,"f32"],[220,"f32"],[224,"f32"],[228,"u8"],[236,"f32"],[240,"v3"],[252,"f32"],[256,"i32"],[260,"f32"],[264,"f32"],[268,"f32"],[276,"v3"],[288,"f32"],[292,"f32"],[308,"v3"],[324,"u8"],[328,"f32"],[336,"v3"],[352,"i32"],[364,"i32"],[368,"f32"],[372,"u8"],[376,"v4"],[392,"f32"],[396,"f32"],[400,"f32"],[408,"u8"],[416,"i32"]],"TargetHealth":[[16,"i32"],[20,"i32"],[52,"u8"],[68,"i32"],[72,"i32"],[76,"i32"],[80,"i32"],[132,"f32"],[140,"f32"],[144,"u8"],[148,"f32"],[164,"u8"],[168,"i32"],[172,"i32"],[192,"f32"],[204,"u8"]],"SectatorCamera":[[20,"f32"],[24,"f32"],[28,"f32"],[32,"v3"],[44,"v3"],[72,"i32"],[76,"i32"],[80,"f32"],[84,"i32"],[88,"f32"],[92,"u8"],[96,"v3"],[108,"v4"],[124,"u8"],[128,"i32"]]};
 /*__SKILLWARZ_FIELDS_END__*/
 
   /* ---------------------------------------------------------------- *
@@ -1112,7 +1147,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
         if (!p) return;
         if (many) {
           // Enemy entities are many, not one. ESP needs every one of them.
-          if (!ENEMIES[p]) ENEMIES[p] = { ptr: p, firstSeen: Date.now(), hits: 0 };
+          if (!ENEMIES[p]) ENEMIES[p] = { ptr: p, kind: typeName, firstSeen: Date.now(), hits: 0 };
           ENEMIES[p].hits++;
         } else {
         var rec = INSTANCES[typeName];
@@ -1252,43 +1287,81 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
   }
 
   function recon() {
-    var out = { enemies: [], camera: null, playerList: null, wasmTypes: null };
+    var out = { enemies: [], camera: null, cameraFrom: null, playerList: null, managers: {}, wasmTypes: null };
 
+    // Every "many" capture is an enemy candidate. NPC_Cotroller is the one that
+    // actually ticks, so it is read first and EnemyBot is kept only as a
+    // fallback - EnemyBot carries one Vector3 at +0x24 and nothing else useful,
+    // while NPC_Cotroller has three world Vector3s, a CapsuleCollider and the
+    // bot's own HealthScript.
     var eKeys = Object.keys(ENEMIES);
+    var enemyFields = (SK_FIELDS.NPC_Cotroller && SK_FIELDS.NPC_Cotroller.length)
+      ? SK_FIELDS.NPC_Cotroller : (SK_FIELDS.EnemyBot || []);
     for (var i = 0; i < eKeys.length && i < 24; i++) {
       var rec = ENEMIES[eKeys[i]];
-      var fields = SK_FIELDS.EnemyBot || [];
-      var row = { ptr: "0x" + rec.ptr.toString(16), hits: rec.hits, pos: null };
+      var fields = enemyFields;
+      var row = {
+        ptr: "0x" + rec.ptr.toString(16),
+        kind: rec.kind || null,
+        hits: rec.hits,
+        firstSeenMs: rec.firstSeen - T0,
+        pos: null, posAt: null, allVecs: [], scalars: [], health: null
+      };
+      // EVERY vector, not just the first. Picking the first one found is how a
+      // NavMeshAgent-adjacent scratch vector gets mistaken for a world position
+      // and the whole ESP lands 200 metres off.
       for (var f = 0; f < fields.length; f++) {
         if (fields[f][1] !== "v3") continue;
-        row.pos = readVec(rec.ptr, fields[f][0], 3);
-        row.posAt = "0x" + fields[f][0].toString(16);
-        break;
+        var v = readVec(rec.ptr, fields[f][0], 3);
+        if (!v) continue;
+        row.allVecs.push({ o: "0x" + fields[f][0].toString(16), v: v });
+        if (row.pos === null && v[0] !== 0 && v[2] !== 0) {
+          row.pos = v;
+          row.posAt = "0x" + fields[f][0].toString(16);
+        }
       }
       row.scalars = fields
         .filter(function (x) { return x[1] === "f32"; })
-        .map(function (x) { return { o: x[0], v: rd(rec.ptr + x[0], "f32") }; })
+        .map(function (x) { return { o: "0x" + x[0].toString(16), v: rd(rec.ptr + x[0], "f32") }; })
         .filter(function (x) { return x.v !== undefined && isFinite(x.v); })
-        .slice(0, 6);
+        .slice(0, 10);
+      // The bot's HealthScript pointer is the cleanest identity check: if it
+      // resolves, this really is a live enemy body and not a stale object.
+      var hp = rd(rec.ptr + 0xd0, "u32");
+      if (hp) row.health = "0x" + (hp >>> 0).toString(16);
       out.enemies.push(row);
     }
     out.enemyCount = eKeys.length;
 
-    // The camera and the player list hang off GG_GameManager, which we already
-    // capture every frame.
-    var gm = INSTANCES.GG_GameManager;
-    if (gm && gm.ptr) {
-      var camPtr = rd(gm.ptr + 0x14, "u32");
-      var listPtr = rd(gm.ptr + 0x5c, "u32");
-      out.camera = camPtr ? "0x" + (camPtr >>> 0).toString(16) : null;
-      out.playerList = listPtr ? "0x" + (listPtr >>> 0).toString(16) : null;
-    } else {
-      // Name the reason. Both recon targets hang off things that only exist
-      // during a match: EnemyBot objects are spawned per enemy, and
-      // GG_GameManager.Update does not tick on the lobby screen. An empty
-      // enemy list from a menu is expected, not a bug to chase.
-      out.note = "EnemyBot and GG_GameManager Update() never fired - no enemies and no " +
-        "GG_GameManager, which is what a lobby looks like. Run the recon INSIDE a live match.";
+    // The camera and the player list hang off whichever manager is actually
+    // live. TDM_GameManager is Team Deathmatch's own manager and carries
+    // Camera at +0x2C and List<Player> at +0x50; GG_GameManager is its unused
+    // base with Camera at +0x14 and List<Player> at +0x5C. Reading both and
+    // saying which one answered means the report never has to guess.
+    var GM_CAM = { TDM_GameManager: 0x2c, GG_GameManager: 0x14 };
+    var GM_LIST = { TDM_GameManager: 0x50, GG_GameManager: 0x5c };
+    for (var m in INSTANCES) {
+      var rec2 = INSTANCES[m];
+      if (!rec2 || !rec2.ptr) continue;
+      if (!(m in GM_CAM)) continue;
+      out.managers[m] = "0x" + rec2.ptr.toString(16);
+      var c = rd(rec2.ptr + GM_CAM[m], "u32");
+      var l = rd(rec2.ptr + GM_LIST[m], "u32");
+      if (c && out.camera === null) { out.camera = "0x" + (c >>> 0).toString(16); out.cameraFrom = m; }
+      if (l && out.playerList === null) out.playerList = "0x" + (l >>> 0).toString(16);
+    }
+
+    if (out.enemyCount === 0 && !out.camera) {
+      // Name the reason, precisely. NPC_Cotroller and TDM_GameManager only exist
+      // once a round loads, so an empty list from a menu is expected - but
+      // "expected" is not the same as "explained", and a silent empty list sent
+      // me hunting three times.
+      out.note = "No NPC_Cotroller and no TDM_GameManager, so no enemies and no camera. " +
+        "That is what the lobby looks like - run the recon INSIDE a live round, " +
+        "not the menu.";
+    } else if (out.enemyCount === 0) {
+      out.note = "A game manager is live but no NPC_Cotroller has ticked yet - " +
+        "enemies spawn a moment after the round starts.";
     }
 
     // Which WASM signatures actually exist. internalWasmTypes is populated
@@ -1531,11 +1604,13 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
         '<button data-a="fold" style="margin-left:auto;background:transparent;border:1px solid rgba(255,143,177,.45);' +
         'color:#f7eef5;border-radius:6px;padding:1px 6px;cursor:pointer;font:inherit;">-</button>' +
         '</div>' +
-        '<div data-a="st" style="color:#8d7a99;max-width:290px;"></div>';
+        '<div data-a="st" style="color:#8d7a99;max-width:290px;"></div>' +
+        '<div data-a="st2" style="color:#8d7a99;max-width:290px;"></div>';
       el.innerHTML = bar;
 
       var q = function (a) { return el.querySelector('[data-a="' + a + '"]'); };
       var st = q("st");
+      var st2 = q("st2");
       var spBtn = q("sp");
       var fx = q("fx");
       var fv = q("fv");
@@ -1552,7 +1627,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       };
 
       document.body.appendChild(el);
-      HUD = { el: el, st: st, sp: spBtn, fx: fx, fv: fv };
+      HUD = { el: el, st: st, st2: st2, sp: spBtn, fx: fx, fv: fv };
       return HUD;
     } catch (err) {
       console.warn("%c[sakura] in-frame HUD disabled", "color:" + ACCENT, err);
@@ -1594,13 +1669,25 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     if (!h || !h.st) return;
     try {
       var objs = Object.keys((rep && rep.instances) || {}).length;
+      var esp = (rep && rep.esp) || null;
+      var foes = esp ? (esp.enemyCount || 0) : 0;
       var mem = WASM_MEMORY ? (WASM_MEMORY.buffer.byteLength / 1048576).toFixed(0) + "MB" : "no-mem";
       var t = "v" + (rep && rep.version || VERSION) + "  hooks " +
               ((rep && rep.hooksApplied) || 0) + "/" + ((rep && rep.hooksTotal) || 0) +
               "  objs " + objs + "  mem " + mem +
               "  writes " + SPEED_TOUCHED;
       h.st.textContent = t;
-      h.st.style.color = (rep && rep.hooksApplied > 0) ? "#7ee0a8" : "#ffd48a";
+      // The round-live indicator, on screen, in the frame that matters. Two
+      // reports in a row said "run the recon INSIDE a live match" and both came
+      // from the menu; a number that goes non-zero is harder to misread than a
+      // sentence explaining what to go and do.
+      var line2 = h.st2;
+      if (line2) {
+        line2.textContent = foes > 0
+          ? "ENEMIES " + foes + (esp && esp.camera ? "  cam " + esp.cameraFrom : "  cam -")
+          : "no enemies yet (lobby?)  cam " + (esp && esp.camera ? esp.cameraFrom : "-");
+        line2.style.color = foes > 0 ? "#7ee0a8" : "#8d7a99";
+      }
     } catch (_) {}
   }
 

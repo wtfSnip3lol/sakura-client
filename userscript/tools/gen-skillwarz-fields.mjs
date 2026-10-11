@@ -6,7 +6,14 @@ import { readFileSync, writeFileSync } from 'fs';
 
 const dumpPath = process.argv[2] || 'C:/Users/wh1sp/AppData/Local/Temp/opencode/swdump/dump.cs';
 const outPath = process.argv[3] || 'src/skillwarz-fields.json';
-const wanted = (process.argv[4] || 'FPScontroller,HealthScript,PlayerConfig,WeaponManager,GG_GameManager').split(',');
+// NPC_Cotroller is the bot's body (world Vector3s, CapsuleCollider, its own
+// HealthScript) and is the only per-enemy type whose Update() is confirmed to
+// tick. TDM_GameManager is the manager for the mode actually in play;
+// GG_GameManager is its unused base. SectatorCamera carries a Quaternion and a
+// Vector3, which is the cheapest possible route to a camera orientation.
+const wanted = (process.argv[4] ||
+  'FPScontroller,HealthScript,PlayerConfig,WeaponManager,GG_GameManager,TDM_GameManager,NPC_Cotroller,TargetHealth,SectatorCamera'
+).split(',');
 
 // Read as latin1, NOT utf8. The obfuscated member names contain raw bytes that
 // utf8 decoding turns into U+2028/U+2029, and JS \s matches those - which splits

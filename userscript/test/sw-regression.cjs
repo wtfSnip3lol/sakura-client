@@ -63,7 +63,7 @@ function obfBool(base, real, key) {
   // look exactly like a compounding bug.
   const OBJ = {};
   let base = 0x20000;
-  for (const t of ['FPScontroller', 'HealthScript', 'WeaponManager', 'GG_GameManager', 'EnemyBot']) {
+  for (const t of ['FPScontroller', 'HealthScript', 'WeaponManager', 'GG_GameManager', 'TDM_GameManager', 'NPC_Cotroller', 'EnemyBot']) {
     OBJ[t] = base;
     base += 0x1000;
   }
@@ -176,7 +176,10 @@ function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'r
   // Declared out here so the return statement can hand it to the test; the try
   // block fills it in. A `const` inside the try would not survive to the return.
   let ctx = null;
-  const fireTypes = fireUpdate ? ['FPScontroller', 'HealthScript', 'WeaponManager', 'GG_GameManager', 'EnemyBot'] : [];
+  // EnemyBot stays hooked as a fallback but is NOT simulated here: it is a
+  // brain, its Update() never ticked in the field, and letting it fire would
+  // double-count every enemy the NPC_Cotroller hook already captured.
+  const fireTypes = fireUpdate ? ['FPScontroller', 'HealthScript', 'WeaponManager', 'GG_GameManager', 'TDM_GameManager', 'NPC_Cotroller'] : [];
 
   // The real game object. Only UWMK holds a reference to it - which is the
   // whole point of heapVia='resolveGame'.
@@ -377,16 +380,20 @@ class BC {
 
     if (plugin) for (const h of plugin.hooks) {
       if (!h.applied || !fireTypes.includes(h.typeName)) continue;
-      // A lobby: EnemyBot and GG_GameManager simply do not tick.
-      if (lobby && (h.typeName === 'EnemyBot' || h.typeName === 'GG_GameManager')) continue;
+      // A lobby: nothing round-scoped ticks. Enemy bodies, the bot brains and
+      // both game managers only exist once a round has actually loaded.
+      if (lobby && (h.typeName === 'EnemyBot' || h.typeName === 'GG_GameManager'
+                   || h.typeName === 'TDM_GameManager' || h.typeName === 'NPC_Cotroller')) continue;
       const rec = OBJ[h.typeName];
       if (rec === undefined) continue;
       const fire = (ptr) => {
         try { h.callback(new FakeVW(ptr === undefined ? rec : ptr)); }
         catch (e) { fatal = 'hook threw: ' + e.message; }
       };
-      // An enemy hook fires once per EnemyBot instance in a real match.
-      if (fireEnemyTwice && h.typeName === 'EnemyBot') { for (const ep of fireEnemyTwice) fire(ep); continue; }
+      // A bot hook fires once per NPC_Cotroller instance in a real match. The body
+      // is the capture target, not the brain: EnemyBot's Update() never ticked
+      // in the field while the signature was perfectly valid.
+      if (fireEnemyTwice && h.typeName === 'NPC_Cotroller') { for (const ep of fireEnemyTwice) fire(ep); continue; }
       // Command must land BEFORE the frame it should affect, exactly as the
       // portal sends it while the game is already running.
       if (speed && h.typeName === 'FPScontroller') {
@@ -438,7 +445,7 @@ function check(name, cond, detail) {
     !!(r.pluginCalls[0].referencedAssemblies || []).includes('Assembly-CSharp.dll'), 'game types live here');
   check('a report is posted to the portal', !!r.report, 'no report');
 
-  check('Update() hooks are registered on the player types', r.hookCalls.length === 5, `hooks=${r.hookCalls.length}`);
+  check('Update() hooks are registered on the player types', r.hookCalls.length === 7, `hooks=${r.hookCalls.length}`);
   check('hooks use the IL2CPP (this, MethodInfo*) -> void signature',
     r.hookCalls.every(h => h.methodName === 'Update' && Array.isArray(h.params)
       && h.params.length === 2 && h.params[0] === 'i32' && h.returnType === undefined),
@@ -514,7 +521,7 @@ function check(name, cond, detail) {
 {
   const r = runFrame({ scriptDataLate: true });
   check('hooks register with NO scriptData available at all',
-    r.hookCalls.length === 5, `hooks=${r.hookCalls.length} (names alone must suffice)`);
+    r.hookCalls.length === 7, `hooks=${r.hookCalls.length} (names alone must suffice)`);
   const iHook = r.order.indexOf('hookPrefix:FPScontroller');
   const iData = r.order.indexOf('scriptData');
   check('hooks are registered BEFORE scriptData appears',
@@ -524,11 +531,11 @@ function check(name, cond, detail) {
     r.order[0] === 'createPlugin' && r.order[1] && r.order[1].startsWith('hookPrefix:'),
     `order=${r.order.slice(0, 3).join(' -> ')}`);
   check('reported hooksRegisteredAtArm matches what was registered',
-    r.report.hooksRegisteredAtArm === 5, String(r.report.hooksRegisteredAtArm));
+    r.report.hooksRegisteredAtArm === 7, String(r.report.hooksRegisteredAtArm));
 
   const dbl = runFrame({});
   check('registerHooks is idempotent (no duplicate hooks on retry)',
-    dbl.hookCalls.length === 5, `hooks=${dbl.hookCalls.length} - registered twice?`);
+    dbl.hookCalls.length === 7, `hooks=${dbl.hookCalls.length} - registered twice?`);
 }
 
 /* ================================================================== *
@@ -539,7 +546,7 @@ function check(name, cond, detail) {
   // UWMK's apply pass runs while plugin.hooks is still empty: too late.
   const late = runFrame({ applyFirst: true });
   check('registered-too-late is detected and named',
-    late.hookCalls.length === 5 && late.report.hooksApplied === 0,
+    late.hookCalls.length === 7 && late.report.hooksApplied === 0,
     `hooks=${late.hookCalls.length} applied=${late.report.hooksApplied}`);
   check('too-late: hooksResolved is 0 (UWMK never saw them)',
     late.report.hooksResolved === 0, `hooksResolved=${late.report.hooksResolved}`);
@@ -674,7 +681,7 @@ function check(name, cond, detail) {
  * ================================================================== */
 {
   const r = runFrame({ heapVia: 'none', noInstantiate: true });
-  check('blocked heap: still captures objects', Object.keys(r.report.instances || {}).length === 4,
+  check('blocked heap: still captures objects', Object.keys(r.report.instances || {}).length === 5,
     JSON.stringify(r.report.instances));
   check('blocked heap: survey is honestly empty',
     r.report.surveyRows === 0, `rows=${r.report.surveyRows}`);
@@ -701,10 +708,10 @@ function check(name, cond, detail) {
     !noHooks.report.warnings.some(w => /were even SEEN/.test(w)),
     JSON.stringify(noHooks.report.warnings));
   check('reports hooksApplied=0 rather than claiming success',
-    noHooks.report.hooksApplied === 0 && noHooks.report.hooksTotal === 5,
+    noHooks.report.hooksApplied === 0 && noHooks.report.hooksTotal === 7,
     JSON.stringify([noHooks.report.hooksApplied, noHooks.report.hooksTotal]));
   check('signature-mismatch branch shows UWMK DID resolve the methods',
-    noHooks.report.hooksResolved === 5, `hooksResolved=${noHooks.report.hooksResolved}`);
+    noHooks.report.hooksResolved === 7, `hooksResolved=${noHooks.report.hooksResolved}`);
 }
 {
   const idle = runFrame({ fireUpdate: false });
@@ -718,23 +725,34 @@ function check(name, cond, detail) {
 /* ================================================================== *
  * ESP RECON. Everything ESP needs exists in this build; the one thing that
  * does not is a world-to-screen projection.
- *   EnemyBot+0x24 inline Vector3 = cached world position
- *   GG_GameManager+0x14 Camera, +0x5C List<Player>
+ *   NPC_Cotroller+0x14 / +0x5C / +0xF0 inline Vector3s = the bot body's world
+ *     position, the target point and the velocity. NPC_Cotroller+0xD0 is the
+ *     bot's own HealthScript, which is how a live body is told from a stale
+ *     object.
+ *   TDM_GameManager+0x2C Camera, +0x50 List<Player>
+ *   GG_GameManager is the unused BASE class of the two above: it kept resolving
+ *   its hook and never once fired, because Team Deathmatch instantiates
+ *   TDM_GameManager. Reading both and reporting which answered means the
+ *     report never has to guess.
+ *
  * Transform exposes no IL2CPP fields and Plugin.call() is dead here, so the
  * projection has to come from a hooked call - and a guessed signature fails
  * module validation and stops the game booting. So report which WASM shapes
  * actually exist instead of gambling on one.
  * ================================================================== */
 {
-  // Two enemies at distinct positions.
-  const e1 = OBJ.EnemyBot, e2 = OBJ.EnemyBot + 0x800;
+  // Two bot bodies at distinct positions, and their HealthScript pointers.
+  const e1 = OBJ.NPC_Cotroller, e2 = OBJ.NPC_Cotroller + 0x800;
   const r = runFrame({
     fireEnemyTwice: [e1, e2],
     setup() {
-      wF32(e1 + 0x24, 10.5); wF32(e1 + 0x28, 1.25); wF32(e1 + 0x2c, -3.0);
-      wF32(e2 + 0x24, -4.5); wF32(e2 + 0x28, 0.5);  wF32(e2 + 0x2c, 7.75);
-      wI32(OBJ.GG_GameManager + 0x14, 0x7000000);   // Camera ref (a value)
-      wI32(OBJ.GG_GameManager + 0x5c, 0x300000);    // List<Player> ref
+      wF32(e1 + 0x14, 10.5); wF32(e1 + 0x18, 1.25); wF32(e1 + 0x1c, -3.0);
+      wF32(e1 + 0x5c, 99.0); wF32(e1 + 0x60, 0.0);  wF32(e1 + 0x64, 88.0); // a decoy vector
+      wF32(e2 + 0x14, -4.5); wF32(e2 + 0x18, 0.5);  wF32(e2 + 0x1c, 7.75);
+      wI32(e1 + 0xd0, 0x555000);                        // bot HealthScript ref
+      wI32(e2 + 0xd0, 0x556000);
+      wI32(OBJ.TDM_GameManager + 0x2c, 0x7000000);   // Camera
+      wI32(OBJ.TDM_GameManager + 0x50, 0x300000);    // List<Player>
       wI32(0x300000 + 0x10, 0x301000);              // List._items
       wI32(0x300000 + 0x18, 7);                     // List._size
     }
@@ -748,14 +766,42 @@ function check(name, cond, detail) {
   check('the second enemy is distinct, not overwritten',
     esp.enemies.some(x => x.pos && Math.abs(x.pos[0] + 4.5) < 1e-4 && Math.abs(x.pos[1] - 0.5) < 1e-4),
     JSON.stringify(esp.enemies.map(x => x.pos)));
-  check('camera pointer is read off GG_GameManager+0x14',
+  check('camera pointer is read off TDM_GameManager+0x2c',
     esp.camera === '0x7000000', `camera=${esp.camera}`);
-  check('player list pointer is read off GG_GameManager+0x5c',
+  check('and the report says WHICH manager answered',
+    esp.cameraFrom === 'TDM_GameManager', `cameraFrom=${esp.cameraFrom}`);
+  check('player list pointer is read off TDM_GameManager+0x50',
     esp.playerList === '0x300000', `playerList=${esp.playerList}`);
   check('actual WASM signatures are reported for safe hook selection',
     esp.wasmTypes && typeof esp.wasmTypes === 'object', JSON.stringify(esp.wasmTypes).slice(0, 120));
-  check('EnemyBot position is read from 0x24, not a misclassified pointer field',
-    esp.enemies.every(x => x.posAt === '0x24'), JSON.stringify(esp.enemies.map(x => x.posAt)));
+  check('EVERY vector on the bot body is reported, not just the first',
+    esp.enemies.some(x => x.allVecs && x.allVecs.length >= 2),
+    JSON.stringify(esp.enemies.map(x => (x.allVecs || []).length)));
+  check('a live body is identifiable by its HealthScript pointer',
+    esp.enemies.every(x => !!x.health), JSON.stringify(esp.enemies.map(x => x.health)));
+  check('enemies are tagged with the type that produced them',
+    esp.enemies.every(x => x.kind === 'NPC_Cotroller'), JSON.stringify(esp.enemies.map(x => x.kind)));
+}
+
+/* The exact regression: EnemyBot+0x24 was the only vector read, so the first
+ * vector found won and a scratch value could be reported as a world position. */
+{
+  const e1 = OBJ.NPC_Cotroller;
+  const r = runFrame({
+    fireEnemyTwice: [e1],
+    setup() {
+      // 0x14 is all zeros; the real position is 0x5C. A "first non-zero vector
+      // wins" rule would also land here, but the decoy check proves the whole
+      // set is surfaced so the choice can be made from evidence.
+      wF32(e1 + 0x14, 0); wF32(e1 + 0x18, 0); wF32(e1 + 0x1c, 0);
+      wF32(e1 + 0x5c, 10.5); wF32(e1 + 0x60, 1.25); wF32(e1 + 0x64, -3.0);
+    }
+  });
+  const esp = r.report.esp || {};
+  check('a zeroed first vector does not hide the real position',
+    esp.enemies.length === 1 && esp.enemies[0].pos &&
+      Math.abs(esp.enemies[0].pos[0] - 10.5) < 1e-4,
+    JSON.stringify(esp.enemies[0]));
 }
 
 /* The recon must SAY why it is empty. An empty enemy list from a lobby is
@@ -765,7 +811,7 @@ function check(name, cond, detail) {
   const r = runFrame({ lobby: true });
   const esp = r.report.esp || {};
   check('an empty recon explains itself instead of returning a bare empty list',
-    !!(esp.note && /match/i.test(esp.note)), JSON.stringify(esp.note));
+    !!(esp.note && /round|match/i.test(esp.note)), JSON.stringify(esp.note));
   check('the explanation is surfaced as a warning',
     r.report.warnings.some(w => /^ESP: /.test(w)), JSON.stringify(r.report.warnings));
 }
@@ -842,6 +888,59 @@ function check(name, cond, detail) {
 
   const off = runFrame({ speed: { on: true, factor: 2 }, thenOff: true, extraFrames: 10 });
   check('turning speed OFF stops writes', off.report.speed.on === false, JSON.stringify(off.report.speed));
+}
+
+/* THE COMPOUNDING FAULT. The heap stores float32; JS multiplies in float64. If
+ * the "did the game overwrite me?" check compares a read-back against the
+ * un-rounded double, it is false for ANY value that does not round-trip
+ * exactly - so the base is re-taken from our own output every frame and the
+ * multiplier squares. A field report read exactly 83.78 after 68s only because
+ * 4.2117 * 5 happened to be bit-exact; the values one field over compounded to
+ * 418.92 within 30 frames. */
+{
+  // 3.7 is NOT exactly representable and neither is 3.7 * 3.
+  const r = runFrame({
+    speed: { on: true, factor: 3 },
+    setup() {
+      [[0x10, 3.7], [0x28, 3.7], [0x58, 3.7], [0x88, 3.7], [0xa0, 3.7]].forEach(([o, v]) =>
+        obfFloat(OBJ.FPScontroller + o, v, 0x51));
+      [0x40, 0x70, 0x1c0].forEach(o => obfFloat(OBJ.FPScontroller + o, 14.9, 0x33));
+    },
+    extraFrames: 120
+  });
+  const at = (o) => (r.report.survey.FPScontroller || []).find(x => x.o === o);
+  check('a value that does not round-trip exactly still stays at base * factor',
+    Math.abs(at(0x10).v - 3.7 * 3) < 1e-3, `got ${at(0x10).v}, want ${3.7 * 3}`);
+  check('and it does not run away over 120 frames',
+    Math.abs(at(0x10).v) < 20, `got ${at(0x10).v}`);
+  check('the sprint cluster is stable too',
+    Math.abs(at(0x40).v - 14.9 * 3) < 1e-3, `got ${at(0x40).v}, want ${14.9 * 3}`);
+  check('no value exploded', (r.report.survey.FPScontroller || [])
+    .filter(x => x.k === 'obfF').every(x => Math.abs(x.v) < 100),
+    JSON.stringify((r.report.survey.FPScontroller || []).filter(x => x.k === 'obfF').map(x => x.v)));
+}
+
+/* THE CLUSTERING WAS CIRCULAR. Caught by a field report at 5x: the sprint
+ * fields read 84, so a fourth sprint field holding 16.8 no longer had company
+ * and was refused as a "singleton". Grouping on our own output means the harder
+ * you push the multiplier, the more real speed fields fall out of the cluster.
+ * The base - the value the GAME wrote - never moves. */
+{
+  const r = runFrame({
+    speed: { on: true, factor: 5 },
+    setup() {
+      // 0x1E0 is a fourth sprint field the game initialises mid-match. It holds
+      // the unscaled 16.8 while the other three already read 84.
+      obfFloat(OBJ.FPScontroller + 0x1e0, 16.8076, 0x51);
+    },
+    extraFrames: 30
+  });
+  check('a speed field that keeps its own base is still recognised after scaling',
+    r.report.speed.scaled.includes('0x1e0'),
+    `scaled=${JSON.stringify(r.report.speed.scaled)}`);
+  check('and it is not written off as a singleton',
+    !r.report.speed.skipped.some(s => s.o === 480 && s.why === 'singleton'),
+    JSON.stringify(r.report.speed.skipped));
 }
 
 /* A build with no cluster at all must say so instead of silently doing nothing. */
