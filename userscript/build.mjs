@@ -176,7 +176,27 @@ ${vendor}
 ;
 }
 `;
-const swSrc = fs.readFileSync(path.join(here, "src", "skillwarz.js"), "utf8");
+const swSrcRaw = fs.readFileSync(path.join(here, "src", "skillwarz.js"), "utf8");
+
+// The payload's own VERSION must track package.json. It used to be a hardcoded
+// literal that nothing rewrote, so `report.version` read 2.9.3 while the payload
+// was shipping 2.9.5 - and because the build badge compares that same constant
+// against the arm-time tag, the badge could never turn red and the whole
+// version-verify workflow was checking nothing. A THROW if the marker is missing
+// or already substituted: a silent no-op here is exactly the bug this fixes.
+const VERSION_MARKER = /var VERSION = "[^"]*";\s*\/\/__SKILLWARZ_VERSION__/;
+if (!VERSION_MARKER.test(swSrcRaw)) {
+  throw new Error(
+    "build: src/skillwarz.js has no VERSION marker line " +
+    "(`var VERSION = \"x.y.z\";   //__SKILLWARZ_VERSION__`). " +
+    "The payload's reported version would drift from package.json again."
+  );
+}
+const swSrc = swSrcRaw.replace(VERSION_MARKER, `var VERSION = "${pkg.version}";   //__SKILLWARZ_VERSION__`);
+if (!swSrc.includes(`var VERSION = "${pkg.version}";`)) {
+  throw new Error(`build: failed to stamp VERSION ${pkg.version} into the SkillWarz payload`);
+}
+console.log(`stamped payload VERSION ${pkg.version}`);
 write("dist/sakura.skillwarz.user.js", HEADER_SW + SW_VENDOR_BLOCK + "\n" + await obfuscate(swSrc));
 
 // 6. Mirror the Cookie Clicker payload into the launcher's resources/ folder so

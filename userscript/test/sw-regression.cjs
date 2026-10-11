@@ -1009,6 +1009,121 @@ function check(name, cond, detail) {
     JSON.stringify(a));
 }
 
+/* ================================================================== *
+ * FOUR COPIES BEAT ONE.
+ *
+ * The 2.9.3 field report put the body at (39.474, 5.097, 25.414) in FOUR
+ * offsets - +0x154, +0x160, +0x2E4, +0x3D0 - and at (37.267, 6.543, 35.151) in
+ * +0x298, a point thirteen metres away. "Largest horizontal extent" picked
+ * +0x298 precisely because it was slightly further from the map centre, so the
+ * radar origin, the eye, every box and the ground band used for every other
+ * entity were all measured from the wrong place.
+ */
+{
+  const c = OBJ.FPScontroller;
+  const r = runFrame({
+    setup() {
+      // the four agreeing copies
+      for (const o of [0x154, 0x160, 0x2e4, 0x3d0]) {
+        wF32(c + o, 39.474); wF32(c + o + 4, 5.097); wF32(c + o + 8, 25.414);
+      }
+      // the stray, further from the map centre
+      wF32(c + 0x298, 37.267); wF32(c + 0x29c, 6.543); wF32(c + 0x2a0, 35.151);
+      // gravity, which is early in the field map and has zero horizontal reach
+      wF32(c + 0xe0, 0); wF32(c + 0xe4, -3.851); wF32(c + 0xe8, 0);
+    }
+  });
+  const l = r.report.local;
+  check('the position with four identical copies wins over the lone stray',
+    l && Math.abs(l.feet[0] - 39.474) < 1e-3 && Math.abs(l.feet[2] - 25.414) < 1e-3,
+    JSON.stringify(l && l.feet));
+  check('the stray thirteen metres away is not chosen',
+    l && l.posAt !== '0x298',
+    `posAt=${l && l.posAt}`);
+  check('every offset holding that point is listed as evidence',
+    l && l.copies && l.copies.length === 4,
+    JSON.stringify(l && l.copies));
+  check('and the chosen offset is one of them',
+    l && l.copies.indexOf(l.posAt) !== -1,
+    `posAt=${l && l.posAt} copies=${JSON.stringify(l && l.copies)}`);
+}
+
+/* The radar used to read a hardcoded +0x34 while the report read the position it
+ * picked by ground band, so the dot on screen and the number in the report were
+ * two different points about three metres apart vertically. They must be one. */
+{
+  const s1 = 0x40000;
+  const r = runFrame({
+    fireMany: { PhotonNetworkSync: [s1] },
+    setup() {
+      wF32(OBJ.FPScontroller + 0x2e4, -40); wF32(OBJ.FPScontroller + 0x2e8, 5); wF32(OBJ.FPScontroller + 0x2ec, 12);
+      wF32(OBJ.FPScontroller + 0x154, -40); wF32(OBJ.FPScontroller + 0x158, 5); wF32(OBJ.FPScontroller + 0x15c, 12);
+      wF32(OBJ.FPScontroller + 0x160, -40); wF32(OBJ.FPScontroller + 0x164, 5); wF32(OBJ.FPScontroller + 0x168, 12);
+      wF32(OBJ.FPScontroller + 0x3d0, -40); wF32(OBJ.FPScontroller + 0x3d4, 5); wF32(OBJ.FPScontroller + 0x3d8, 12);
+      // +0x34 is up at head height, +0x6C is on the ground, same XZ
+      wF32(s1 + 0x34, -30); wF32(s1 + 0x38, 8.03); wF32(s1 + 0x3c, -60);
+      wF32(s1 + 0x6c, -30); wF32(s1 + 0x70, 5.18); wF32(s1 + 0x74, -60);
+      wI32(s1 + 0x7c, 10);
+    }
+  });
+  const p = (r.report.esp.players || [])[0] || {};
+  check('the reported player position is the one on the ground',
+    p.posAt === '0x6c' && Math.abs(p.pos[1] - 5.18) < 1e-2,
+    `posAt=${p.posAt} pos=${JSON.stringify(p.pos)}`);
+  check('the head vector is dropped by the ground band, not left to compete',
+    p.inBand === 1 && p.cluster === 1,
+    `inBand=${p.inBand} cluster=${p.cluster}`);
+}
+
+/* Within one cluster the LOWEST point is the representative. On a character the
+ * feet and a raised aim point share an XZ, so they tie on horizontal extent and
+ * only the height separates them - and everything downstream (radar origin,
+ * distance, the ground band for other entities) should be measured from the
+ * feet.
+ *
+ * Note the radius: consensus clusters at 2.5 units, while a real head/feet gap
+ * measured 2.85. Those two therefore do NOT cluster, and are separated by the
+ * ground band instead. This case pins the tie-break where the band cannot
+ * reach, not a claim that a real head/feet pair always lands here. */
+{
+  const s1 = 0x40000;
+  const r = runFrame({
+    fireMany: { PhotonNetworkSync: [s1] },
+    setup() {
+      // no FPScontroller at all, so groundY() is null and there is no band
+      wF32(s1 + 0x34, -30); wF32(s1 + 0x38, 7.18); wF32(s1 + 0x3c, -60);
+      wF32(s1 + 0x6c, -30); wF32(s1 + 0x70, 5.18); wF32(s1 + 0x74, -60);
+      wI32(s1 + 0x7c, 10);
+    }
+  });
+  const p = (r.report.esp.players || [])[0] || {};
+  check('with no ground band, the feet win the tie against a point above them',
+    p.posAt === '0x6c' && Math.abs(p.pos[1] - 5.18) < 1e-2,
+    `posAt=${p.posAt} pos=${JSON.stringify(p.pos)}`);
+  check('and both are recognised as one character, so neither was discarded',
+    p.cluster === 2,
+    `cluster=${p.cluster}`);
+}
+
+/* The version the payload reports must be the version that was built. It used
+ * to be a literal nothing rewrote, so a 2.9.5 payload reported 2.9.3 - and the
+ * build badge, which compares that constant against the arm-time tag, could
+ * never turn red. build.mjs now stamps it and throws if the marker is absent. */
+{
+  const srcText = fs.readFileSync(path.join(__dirname, '..', 'src', 'skillwarz.js'), 'utf8');
+  const buildText = fs.readFileSync(path.join(__dirname, '..', 'build.mjs'), 'utf8');
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+  check('the payload carries a version marker for the build to stamp',
+    /var VERSION = "[^"]*";\s*\/\/__SKILLWARZ_VERSION__/.test(srcText),
+    'no //__SKILLWARZ_VERSION__ marker on the VERSION line');
+  check('the build refuses to ship a payload with no marker, rather than no-oping',
+    /throw new Error/.test(buildText) && /__SKILLWARZ_VERSION__/.test(buildText),
+    'build.mjs does not validate the marker');
+  check('package.json is the single source of that version',
+    typeof pkg.version === 'string' && /^2\.\d+\.\d+$/.test(pkg.version),
+    `pkg.version=${pkg.version}`);
+}
+
 /* The menu opens bottom-right, which is where this game keeps the weapon and
  * ammo readout, so opening it hides the thing you opened it to change. It is
  * draggable, the position is remembered, and a menu dragged off the edge is

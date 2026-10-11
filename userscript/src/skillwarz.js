@@ -53,7 +53,11 @@
   // It was hand-written in three places once and one drifted, so a field report
   // claimed 2.0.2 while the plugin logged 2.0.3 - which sends everyone chasing
   // a stale build.
-  var VERSION = "2.9.3";
+  // Reads as 2.9.3 while running 2.9.5 code: this was a literal that build.mjs
+  // never rewrote, so the build badge was comparing a constant against itself
+  // for three releases and could never turn red. build.mjs replaces this line
+  // with the real package version - see SKILLWARZ_VERSION in build.mjs.
+  var VERSION = "2.9.3";   //__SKILLWARZ_VERSION__
 
   /* ================================================================== *
    * WRAPPER — relay only. Arming UWMK here achieves nothing: this frame
@@ -1367,6 +1371,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     row.pos = pick.pos;
     row.posAt = pick.posAt;
     row.inBand = pick.inBand;
+    row.cluster = pick.cluster;
     row.reach = pick.reach;
     void best;
     var spec = REFS[typeName];
@@ -2693,71 +2698,105 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
   // The local player's ground height, used to pick which of several world
   // positions on another object is actually that character. Null until we know
   // where we are standing.
+  //
+  // NOT a hardcoded +0x2E4. localSpot() picks the position by consensus and the
+  // pick has changed before; a ground reference that disagrees with the origin
+  // it is supposed to filter against produces a band that is quietly wrong for
+  // every other entity.
   function groundY() {
     try {
-      var c = INSTANCES.FPScontroller;
-      if (!c || !c.ptr) return null;
-      // The three copies at +0x154, +0x160 and +0x2E4 agree with each other in
-      // every report so far, so this is stable ground truth rather than a guess.
-      var v = readVec(c.ptr, 0x2e4, 3);
-      return v ? v[1] : null;
+      var m = localSpot();
+      return m && m.feet ? m.feet[1] : null;
     } catch (_) { return null; }
   }
 
   /* Pick the position Vector3.
    *
    * These classes hold SEVERAL world positions - the character's, plus
-   * waypoints, targets and spawn anchors - and "furthest from the world origin"
-   * just picks whichever happens to sit nearest the map centre. That is silently
-   * wrong for some entities on every run: bot 2 in the 2.9.3 report picked
-   * +0x134 and bot 3 picked +0xF0, because those two happened to be further out.
+   * waypoints, targets and spawn anchors. Two rules, in order.
    *
-   * Everyone on this map stands on the same ground plane, so the position is
-   * the vector in the LOCAL player's height band with the largest horizontal
-   * extent. And how many were in band is reported, because a tie that gets
-   * resolved silently is a tie that is wrong silently.
+   * 1. CONSENSUS. The body position is stored in more than one place. On
+   *    FPScontroller in the 2.9.3 field report, +0x154, +0x160, +0x2E4 and
+   *    +0x3D0 all held (39.474, 5.097, 25.414) - four identical copies - while
+   *    +0x298 held (37.267, 6.543, 35.151), a point thirteen metres away. Four
+   *    votes beat one, and the earlier "furthest from the world origin" rule
+   *    picked +0x298 precisely because it was slightly further out.
+   *
+   * 2. HEIGHT BAND, for when nothing duplicates. Everyone stands on the same
+   *    ground plane, so drop anything whose Y is far from the local player's,
+   *    then take the largest horizontal extent.
+   *
+   * Cluster size is reported. A tie resolved silently is a tie that is wrong
+   * silently, and that is how bots came to be drawn at +0x134 in one frame and
+   * +0xF0 in the next.
    */
   var GROUND_TOL = 2.5;
+  // Two candidates count as "the same point" within this many world units.
+  var CLUSTER_R2 = 6.25;
   // Standing eye height above the feet. A constant because it is one, and
   // because reading it off the struct meant reading a reused scratch field.
   var EYE_H = 1.8;
+
   function pickPos(vecs, groundY) {
-    var best = null, bestReach = 0, inBand = 0;
+    var pool = [], i, j;
     var known = (groundY !== null && groundY !== undefined && isFinite(groundY));
-    for (var i = 0; i < vecs.length; i++) {
+    for (i = 0; i < vecs.length; i++) {
       var v = vecs[i].v;
-      if (!v) continue;
       // An all-zero Vector3 is never anybody's position - on an uninitialised
       // object it is what every v3 field reads as, and gravity at +0xE0 is
-      // early enough in the field map to win the tie-break outright. Without
-      // this the local player gets reported as standing at (0,0,0).
+      // early enough in the field map to win the tie-break outright.
+      if (!v) continue;
       if (v[0] === 0 && v[1] === 0 && v[2] === 0) continue;
-      var h = v[0] * v[0] + v[2] * v[2];
       if (known && Math.abs(v[1] - groundY) > GROUND_TOL) continue;
-      if (known) inBand++;
-      // `!best ||` still matters: standing exactly on the map origin gives every
-      // real candidate h == 0, and a bare `h > bestReach` then selects nothing
-      // at all - local player reported as null, radar with no origin.
-      if (!best || h > bestReach) { bestReach = h; best = vecs[i]; }
+      pool.push(vecs[i]);
     }
-    if (!best) {
+    if (!pool.length) {
       // Nothing in band - the local player is not known yet, or this entity is
       // somewhere the band does not cover. Fall back rather than report nothing.
-      inBand = 0;
-      for (var j = 0; j < vecs.length; j++) {
-        var v2 = vecs[j].v;
+      for (i = 0; i < vecs.length; i++) {
+        var v2 = vecs[i].v;
         if (!v2) continue;
         if (v2[0] === 0 && v2[1] === 0 && v2[2] === 0) continue;
-        var h2 = v2[0] * v2[0] + v2[2] * v2[2];
-        if (!best || h2 > bestReach) { bestReach = h2; best = vecs[j]; }
+        pool.push(vecs[i]);
       }
-      // No fallback to vecs[0] on purpose. A struct where every Vector3 reads
-      // exactly zero carries no position at all, and returning one anyway
-      // means drawing the local player at the world origin - confidently and
-      // wrongly. Nothing is a truthful answer; espLive() gates on it.
     }
-    return { pos: best ? best.v : null, posAt: best ? best.o : null,
-             inBand: inBand, reach: Math.sqrt(bestReach) };
+    if (!pool.length) {
+      // Every Vector3 reads exactly zero: there is no position here, and saying
+      // so is the only truthful answer. espLive() gates on it.
+      return { pos: null, posAt: null, inBand: 0, cluster: 0, reach: 0 };
+    }
+
+    // Single-link clustering. n is ~20 at most, so the quadratic form is not
+    // worth avoiding and the merge rule is easy to reason about.
+    var groups = [];
+    for (i = 0; i < pool.length; i++) {
+      var a = pool[i].v;
+      var gi = -1;
+      for (j = 0; j < groups.length; j++) {
+        var c = groups[j].c[0].v;
+        var dx = a[0] - c[0], dy = a[1] - c[1], dz = a[2] - c[2];
+        if (dx * dx + dy * dy + dz * dz <= CLUSTER_R2) { gi = j; break; }
+      }
+      if (gi === -1) groups.push({ c: [pool[i]] });
+      else groups[gi].c.push(pool[i]);
+    }
+
+    var bestG = groups[0];
+    for (j = 1; j < groups.length; j++) if (groups[j].c.length > bestG.c.length) bestG = groups[j];
+
+    // Representative of the winning cluster: the member reaching furthest out,
+    // and on an exact tie the LOWEST one. A character stacks its feet and its
+    // head at the same XZ - PhotonNetworkSync holds 0x34 and 0x6C about three
+    // metres apart with identical horizontal extent - and the feet are what the
+    // radar, the distance and the ground band should all be measured from.
+    var rep = bestG.c[0], reach = -1;
+    for (j = 0; j < bestG.c.length; j++) {
+      var b = bestG.c[j].v;
+      var h = b[0] * b[0] + b[2] * b[2];
+      if (h > reach || (h === reach && b[1] < rep.v[1])) { reach = h; rep = bestG.c[j]; }
+    }
+    return { pos: rep.v, posAt: rep.o, inBand: known ? pool.length : 0,
+             cluster: bestG.c.length, groups: groups.length, reach: Math.sqrt(reach) };
   }
 
   function localSpot() {
@@ -2775,6 +2814,10 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       var v = readVec(c.ptr, fields[i][0], 3);
       if (v) vecs.push({ o: "0x" + fields[i][0].toString(16), v: v });
     }
+    // No ground band here, and that is deliberate rather than lazy: this IS the
+    // ground reference every other entity is filtered against, so it cannot be
+    // filtered against one. Consensus alone identifies it - the body position is
+    // held by four offsets at once, the scratch vectors are held by none.
     var pick = pickPos(vecs, null);
     if (!pick.pos) return null;
     // Eye height is a constant, not a field. It is reported so it can be
@@ -2785,6 +2828,10 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       feet: feet,
       posAt: pick.posAt,
       inBand: pick.inBand,
+      cluster: pick.cluster,
+      copies: vecs.filter(function (q) {
+        return q.v[0] === feet[0] && q.v[1] === feet[1] && q.v[2] === feet[2];
+      }).map(function (q) { return q.o; }),
       eye: [feet[0], feet[1] + EYE_H, feet[2]],
       reach: pick.reach,
       pitch: rd(c.ptr + 0x16c, "f32"),
@@ -2802,11 +2849,25 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     var keys = Object.keys(sync);
     for (var i = 0; i < keys.length && i < 32; i++) {
       var rec = sync[keys[i]];
-      var p = readVec(rec.ptr, 0x34, 3);
-      // The local instance reads zero; skip it rather than plotting the origin.
-      if (!p || (p[0] === 0 && p[1] === 0 && p[2] === 0)) continue;
+      // The SAME rule the report uses, not a hardcoded +0x34. The two used to
+      // disagree: the report picked a position by ground band and the radar
+      // took +0x34 whatever it held, so the dot you saw and the number you
+      // read were two different points about three metres apart vertically.
+      var sv = [];
+      var sf = SK_FIELDS.PhotonNetworkSync || [];
+      for (var q = 0; q < sf.length; q++) {
+        if (sf[q][1] !== "v3") continue;
+        var qv = readVec(rec.ptr, sf[q][0], 3);
+        if (qv) sv.push({ o: "0x" + sf[q][0].toString(16), v: qv });
+      }
+      var pick = pickPos(sv, me ? me.feet[1] : null);
+      var p = pick.pos;
+      // The local instance has no network position; skip it rather than
+      // plotting the origin.
+      if (!p) continue;
       var row = {
-        ptr: rec.ptr, x: p[0], y: p[1], z: p[2],
+        ptr: rec.ptr, x: p[0], y: p[1], z: p[2], posAt: pick.posAt,
+        inBand: pick.inBand, cluster: pick.cluster,
         team: rd(rec.ptr + 0x58, "i32"),
         localFlag: rd(rec.ptr + 0x7c, "i32")
       };
@@ -3123,6 +3184,9 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
           var m = localSpot();
           if (!m) return null;
           return { ptr: "0x" + m.ptr.toString(16), feet: m.feet, eye: m.eye, posAt: m.posAt,
+                   // Every offset holding this exact point. Four of them is what
+                   // identifies it; one is a guess, and the report should say so.
+                   copies: m.copies, cluster: m.cluster,
                    eyeHeight: EYE_H, pitch: m.pitch, yaw: m.yaw, reach: m.reach };
         })(),
       uwmkLog: UWMK_LOG.slice(0, 20),
