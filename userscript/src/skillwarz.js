@@ -53,7 +53,7 @@
   // It was hand-written in three places once and one drifted, so a field report
   // claimed 2.0.2 while the plugin logged 2.0.3 - which sends everyone chasing
   // a stale build.
-  var VERSION = "2.3.0";
+  var VERSION = "2.4.0";
 
   /* ================================================================== *
    * WRAPPER — relay only. Arming UWMK here achieves nothing: this frame
@@ -123,7 +123,39 @@
       } catch (_) {}
     }
 
+    // Remembered across reloads. The panel used to "not hide": X removed the
+    // node, then the very next report called ensureRoot(), getElementById
+    // returned null because the node was gone, and the panel rebuilt itself -
+    // every 1.2 seconds, forever. Nothing was wrong with the button; the
+    // removal was simply not recorded anywhere.
+    var HIDE_KEY = "sakura-sw-panel-hidden";
+    function isHidden() {
+      try { return localStorage.getItem(HIDE_KEY) === "1"; } catch (_) { return false; }
+    }
+    function setHidden(v) {
+      try { v ? localStorage.setItem(HIDE_KEY, "1") : localStorage.removeItem(HIDE_KEY); } catch (_) {}
+      try { var el = document.getElementById("sakura-sw-v2"); if (el) el.remove(); } catch (_) {}
+      try {
+        var tab = document.getElementById("sakura-sw-v2-tab");
+        if (v && !tab && document.body) {
+          var t = document.createElement("div");
+          t.id = "sakura-sw-v2-tab";
+          t.style.cssText =
+            "position:fixed;left:12px;top:12px;z-index:2147482999;cursor:pointer;user-select:none;" +
+            "background:rgba(21,12,29,.9);border:1px solid rgba(255,143,177,.5);color:" + ACCENT + ";" +
+            "border-radius:999px;padding:4px 12px;font:11px/1.4 ui-monospace,Consolas,monospace;";
+          t.textContent = "sakura";
+          t.onclick = function () { setHidden(false); panel(); };
+          document.body.appendChild(t);
+        } else if (!v && tab) {
+          tab.remove();
+        }
+      } catch (_) {}
+    }
+
     function ensureRoot() {
+      // The guard that was missing: a removed panel must stay removed.
+      if (isHidden()) return null;
       var el = document.getElementById("sakura-sw-v2");
       if (el) return el;
       if (!document.body || !document.body.appendChild) return null;
@@ -155,7 +187,10 @@
 
     function build(root) {
       root.style.cssText =
-        "position:fixed;left:12px;top:12px;z-index:2147483000;width:min(52vw,620px);max-height:78vh;" +
+        // The panel is pinned over the game, so it starts COLLAPSED to a small tab.
+// A 620px, 78vh panel sitting on top of the thing it is inspecting is a panel
+// nobody can play past.
+"position:fixed;left:12px;top:12px;z-index:2147483000;max-width:min(52vw,620px);max-height:78vh;" +
         "background:#150c1d;color:#f7eef5;border:1px solid rgba(255,143,177,.5);border-radius:14px;" +
         "font:12px/1.5 ui-monospace,Consolas,monospace;box-shadow:0 20px 50px -20px #000;" +
         "display:flex;flex-direction:column;overflow:hidden;";
@@ -169,8 +204,10 @@
         '<span id="sw2-build" style="color:#7a6586;font-size:11px;padding:1px 6px;border:1px solid rgba(255,143,177,.35);border-radius:999px;">v?</span>' +
         '<span id="sw2-status" style="color:#bda9c9">waiting for game frame…</span>' +
         '<button id="sw2-copy" style="display:none;margin-left:auto;background:' + ACCENT + ';border:0;color:#2a0f1b;border-radius:7px;padding:4px 10px;font-weight:700;cursor:pointer;">Copy JSON</button>' +
+        '<button id="sw2-toggle" style="background:transparent;border:1px solid rgba(255,143,177,.4);color:#f7eef5;border-radius:7px;padding:4px 8px;cursor:pointer;">open</button>' +
         '<button id="sw2-x" style="background:transparent;border:1px solid rgba(255,143,177,.4);color:#f7eef5;border-radius:7px;padding:4px 8px;cursor:pointer;">x</button>' +
         '</div>' +
+        '<div id="sw2-body" style="display:none;">' +
         '<div style="padding:8px 12px;border-bottom:1px solid rgba(255,143,177,.18);display:flex;gap:8px;align-items:center;flex:0 0 auto;flex-wrap:wrap;">' +
         '<button id="sw2-speed" style="background:transparent;border:1px solid rgba(255,143,177,.4);color:#f7eef5;border-radius:7px;padding:4px 10px;cursor:pointer;">Speed off</button>' +
         '<input id="sw2-factor" type="range" min="1" max="5" step="0.1" value="1" style="width:120px;accent-color:' + ACCENT + ';">' +
@@ -179,13 +216,16 @@
         '<span id="sw2-hint" style="color:#8d7a99">F9 twice while walking / sprinting / jumping marks which field is which.</span>' +
         '</div>' +
         '<pre id="sw2-out" style="margin:0;padding:10px 12px;overflow:auto;flex:1 1 auto;white-space:pre-wrap;word-break:break-word;font:inherit;' +
-        'max-height:62vh;">No report yet.\n\nThis panel updates itself when the game frame loads — no console needed.\n\nIf it stays empty, Tampermonkey is not injecting into the cross-origin game frame.</pre>';
+        'max-height:62vh;">No report yet.\n\nThis panel updates itself when the game frame loads — no console needed.\n\nIf it stays empty, Tampermonkey is not injecting into the cross-origin game frame.</pre>' +
+        '</div>';
 
       var statusEl = root.querySelector("#sw2-status");
       var buildEl = root.querySelector("#sw2-build");
       var outEl = root.querySelector("#sw2-out");
       var copyBtn = root.querySelector("#sw2-copy");
       var closeBtn = root.querySelector("#sw2-x");
+      var toggleBtn = root.querySelector("#sw2-toggle");
+      var bodyEl = root.querySelector("#sw2-body");
       var snapBtn = root.querySelector("#sw2-snap");
       var speedBtn = root.querySelector("#sw2-speed");
       var factorEl = root.querySelector("#sw2-factor");
@@ -193,7 +233,18 @@
       var hintEl = root.querySelector("#sw2-hint");
       var payload = null;
 
-      if (closeBtn) closeBtn.onclick = function () { try { root.remove(); } catch (_) {} };
+      // Collapsed by default: the header pill and nothing else. Opening it is
+      // one click; it never has to be fought with.
+      var open = false;
+      function layout() {
+        if (bodyEl) bodyEl.style.display = open ? "" : "none";
+        if (toggleBtn) toggleBtn.textContent = open ? "close" : "open";
+        root.style.width = open ? "min(52vw,620px)" : "auto";
+        root.style.background = open ? "#150c1d" : "rgba(21,12,29,.9)";
+      }
+      if (toggleBtn) toggleBtn.onclick = function () { open = !open; layout(); };
+      layout();
+      if (closeBtn) closeBtn.onclick = function () { setHidden(true); };
       if (snapBtn) snapBtn.onclick = function () { down("snapshot"); };
       // Speed state lives in the PLAYER frame (the only place with the pointer).
       // The portal just relays intent and renders whatever comes back.
@@ -358,8 +409,13 @@
       }
     });
 
-    if (document.body) panel();
-    else document.addEventListener("DOMContentLoaded", panel, { once: true });
+    // Hidden panels leave a one-word tab behind, so X is never a dead end.
+    function boot() {
+      if (isHidden()) { setHidden(true); return; }
+      panel();
+    }
+    if (document.body) boot();
+    else document.addEventListener("DOMContentLoaded", boot, { once: true });
     return;
   }
 
@@ -902,11 +958,41 @@
    * multiplier cannot compound frame over frame.
    */
   var SPEED = { on: false, factor: 1, min: 0.5, max: 50 };
-  var SPEED_STATE = {};   // "ptr:offset" -> { base, lastWritten }
+
+  /* SELECTING THE RIGHT FIELDS - the "hella tall" bug.
+   *
+   * The first implementation scaled every inited ObscuredFloat that decoded
+   * inside [0.5, 50]. On FPScontroller that range also contains 1.75, 1.05 and
+   * 0.62 - a jump height and two step offsets. Scaling them doubled jump and
+   * step while doing nothing useful horizontally, which the player correctly
+   * described as "it just made me hella tall". A magnitude window is the wrong
+   * discriminator; a magnitude window wide enough to hold a 4.2 walk speed
+   * always holds a 1.75 jump too.
+   *
+   * What actually separates them is that movement speed is REDUNDANT. Every
+   * field report carries five ObscuredFloats reading 4.19-4.21 and three
+   * reading 16.76-16.82: walk and sprint, each replicated because the game keeps
+   * several copies. The height and step fields are single numbers with nothing
+   * agreeing with them. So: group the decoded floats by agreement and scale only
+   * the groups that have company.
+   *
+   * The floor is derived, not hardcoded - half the smallest agreeing group.
+   * A rebalance that moves walk speed to 2.5 still scales; a jump height
+   * doubled or not is never a multiple of that group's magnitude by accident.
+   */
+  var SPEED_TOL = 0.03;          // 3%. The two real clusters span 0.5%.
+  var SPEED_MIN_MEMBERS = 2;     // "has company"
+  var SPEED_STATE = {};          // "ptr:offset" -> { base, lastWritten }
   var SPEED_TOUCHED = 0;
+  var SPEED_SCALED = [];         // offsets written this frame
+  var SPEED_SKIPPED = [];        // { o, v, why } for everything deliberately left alone
 
   function applySpeed(ptr) {
     var fields = SK_FIELDS.FPScontroller || [];
+    var cands = [];
+    SPEED_SKIPPED = [];
+    SPEED_SCALED = [];
+
     for (var i = 0; i < fields.length; i++) {
       var off = fields[i][0];
       if (fields[i][1] !== "obfF") continue;
@@ -914,16 +1000,74 @@
       if (!d || d.inited !== 1) continue;          // never write an uninitialised struct
       var cur = applyKey("obfF", d.hidden, d.keyAtOffset0);
       if (typeof cur !== "number" || !isFinite(cur)) continue;
-      if (Math.abs(cur) < SPEED.min || Math.abs(cur) > SPEED.max) continue;
-      var k = ptr + ":" + off;
-      var st = SPEED_STATE[k];
-      // If the current value is not the one we last wrote, the game changed it
-      // - rebase, or the multiplier compounds into orbit within a second.
-      if (!st || cur !== st.lastWritten) st = SPEED_STATE[k] = { base: cur, lastWritten: null };
-      var target = st.base * SPEED.factor;
-      if (writeObfValue(ptr, off, "obfF", target)) {
-        st.lastWritten = target;
-        SPEED_TOUCHED++;
+      var a = Math.abs(cur);
+      // Generous enough that a real speed is never discarded before grouping;
+      // the grouping is what decides, not this.
+      if (a < 1e-4 || a > 1e5) { SPEED_SKIPPED.push({ o: off, v: cur, why: "implausible" }); continue; }
+      cands.push({ o: off, v: cur, a: a });
+    }
+
+    // Group by agreement. Each group keeps the running mean so a chain of
+    // values (4.190, 4.196, 4.211) cannot straddle the tolerance and split.
+    var groups = [];
+    for (var c = 0; c < cands.length; c++) {
+      var ca = cands[c].a, g = null;
+      for (var k = 0; k < groups.length; k++) {
+        var ratio = groups[k].mean / ca;
+        if (ratio > 1 - SPEED_TOL && ratio < 1 + SPEED_TOL) { g = groups[k]; break; }
+      }
+      if (!g) { g = { mean: ca, members: [] }; groups.push(g); }
+      g.members.push(cands[c]);
+      g.mean = 0;
+      for (var m = 0; m < g.members.length; m++) g.mean += g.members[m].a;
+      g.mean /= g.members.length;
+    }
+
+    var real = [];
+    for (var gi = 0; gi < groups.length; gi++) {
+      if (groups[gi].members.length >= SPEED_MIN_MEMBERS) real.push(groups[gi]);
+    }
+    if (!real.length) {
+      // Say so instead of doing nothing quietly. This project's recurring
+      // failure shape is a filter that silently matches nothing.
+      SPEED_SKIPPED.push({ o: -1, v: 0, why: "no group of " + SPEED_MIN_MEMBERS + " ObscuredFloats agreed" });
+      return;
+    }
+
+    var smallest = real[0].mean;
+    for (var s = 0; s < real.length; s++) if (real[s].mean < smallest) smallest = real[s].mean;
+    var floor = smallest * 0.5;
+
+    // Groups without company are recorded, not merely passed over. Skipping
+    // them silently is how the height and step fields ended up multiplied
+    // without anyone noticing - and how the fix could not be verified from a
+    // report.
+    for (var si = 0; si < groups.length; si++) {
+      if (groups[si].members.length >= SPEED_MIN_MEMBERS) continue;
+      for (var ui = 0; ui < groups[si].members.length; ui++) {
+        SPEED_SKIPPED.push({ o: groups[si].members[ui].o, v: groups[si].members[ui].v, why: "singleton" });
+      }
+    }
+
+    for (var r = 0; r < real.length; r++) {
+      var members = real[r].members;
+      for (var mi = 0; mi < members.length; mi++) {
+        var f = members[mi];
+        if (f.a < floor) {
+          SPEED_SKIPPED.push({ o: f.o, v: f.v, why: "below floor " + floor.toFixed(2) });
+          continue;
+        }
+        var key = ptr + ":" + f.o;
+        var st = SPEED_STATE[key];
+        // If the current value is not the one we last wrote, the game changed
+        // it - rebase, or the multiplier compounds into orbit within a second.
+        if (!st || f.v !== st.lastWritten) st = SPEED_STATE[key] = { base: f.v, lastWritten: null };
+        var target = st.base * SPEED.factor;
+        if (writeObfValue(ptr, f.o, "obfF", target)) {
+          st.lastWritten = target;
+          SPEED_TOUCHED++;
+          SPEED_SCALED.push("0x" + f.o.toString(16));
+        }
       }
     }
   }
@@ -1530,7 +1674,17 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
         exportKeys: WASM_EXPORT_KEYS
       },
       diff: DIFF.slice(0, 40),
-      speed: { on: SPEED.on, factor: SPEED.factor, writes: SPEED_TOUCHED },
+      speed: {
+        on: SPEED.on,
+        factor: SPEED.factor,
+        writes: SPEED_TOUCHED,
+        // Which fields are being multiplied, and what was deliberately left
+        // alone. This is the difference between "speed does something" and
+        // knowing exactly what it does - the height/step fields that made the
+        // player tall are listed here with their reason.
+        scaled: SPEED_SCALED.slice(0, 16),
+        skipped: SPEED_SKIPPED.slice(0, 16)
+      },
       esp: recon(),
       uwmkLog: UWMK_LOG.slice(0, 20),
       warnings: []

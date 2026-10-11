@@ -69,11 +69,22 @@ function obfBool(base, real, key) {
   }
   function seedObjects() {
     U8.fill(0);
-    obfFloat(OBJ.FPScontroller + 0x10, 4.25, 0x51);
-    obfFloat(OBJ.FPScontroller + 0x28, 7.5, 0x33);
-    obfFloat(OBJ.FPScontroller + 0x40, 12.5, 0xabcdef);
-    obfFloat(OBJ.FPScontroller + 0x88, 2.5, 0x21);
-    obfFloat(OBJ.FPScontroller + 0x11c, 1.75, 0x77);
+    // FPScontroller here mirrors the real build rather than a convenient one.
+    // Movement speed is REDUNDANT - five walk fields within 0.5% of each other,
+    // three sprint fields likewise - while jump height and the step offsets are
+    // single numbers with nothing agreeing with them. The previous fixture put
+    // one unrelated value in each field, which is why it could not tell a walk
+    // speed from a jump height, and why only a field report revealed that the
+    // multiplier was doubling jump and step ("it made me hella tall").
+    const walk = [[0x10, 4.2117], [0x28, 4.1921], [0x58, 4.1960], [0x88, 4.2019], [0xa0, 4.1960]];
+    const sprint = [[0x40, 16.8154], [0x70, 16.7686], [0x1c0, 16.7568]];
+    // Singletons: eye height, jump height, step offset. Movement speed is the
+    // only thing on this class that has company, and that is the whole
+    // discriminator.
+    const singles = [[0xc4, 1.0529], [0x11c, 1.7529], [0x134, 0.6216]];
+    for (const [o, v] of walk) obfFloat(OBJ.FPScontroller + o, v, 0x51);
+    for (const [o, v] of sprint) obfFloat(OBJ.FPScontroller + o, v, 0x33);
+    for (const [o, v] of singles) obfFloat(OBJ.FPScontroller + o, v, 0x77);
     obfBool(OBJ.FPScontroller + 0xb8, true, 0x19);
     obfInt(OBJ.HealthScript + 0xc0, 100, 0x006c81c);
     obfInt(OBJ.HealthScript + 0xd4, 200, 0x006c81c);
@@ -127,8 +138,18 @@ function makeEl() {
       }
       return null;
     },
-    appendChild(c) { this.children.push(c); return c; },
-    remove() {}, onclick: null, addEventListener() {}
+    // remove() actually detaches. A no-op remove cannot express "this node is gone",
+    // which is the entire subject of the panel-hide cases - and is how the
+    // rebuild-on-next-report bug stayed invisible here.
+    appendChild(c) { this.children.push(c); c._parent = this; return c; },
+    remove() {
+      const p = this._parent;
+      if (!p) return;
+      const i = p.children.indexOf(this);
+      if (i >= 0) p.children.splice(i, 1);
+      this._parent = null;
+    },
+    onclick: null, addEventListener() {}
   };
   return el;
 }
@@ -142,7 +163,7 @@ var BC_HUB = [];
 function sendToPlayer(msg) {
   for (const b of BC_HUB) if (typeof b.onmessage === 'function') b.onmessage({ data: msg });
 }
-function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'resolveGame', scriptDataLate = false, applyFirst = false, resolveButNotApply = false, noInstantiate = false, speed = null, thenOff = false, extraFrames = 0, fireEnemyTwice = null, setup = null, lobby = false, deliverVia = 'bc', preFire = null }) {
+function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'resolveGame', scriptDataLate = false, applyFirst = false, resolveButNotApply = false, noInstantiate = false, speed = null, thenOff = false, extraFrames = 0, fireEnemyTwice = null, setup = null, lobby = false, deliverVia = 'bc', preFire = null, ls = {} }) {
   // Reset the channel hub: payload instances from earlier runs would keep
   // their own SPEED_STATE and keep writing to the same heap, which looks
   // exactly like a compounding bug in the payload.
@@ -224,6 +245,15 @@ function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'r
     }
   };
 
+  // A localStorage the payload can actually use. Without one, every storage
+  // call throws ReferenceError into a catch that answers "nothing remembered",
+  // so a persisted hide state could not be tested at all.
+  const LS = {
+    getItem(k) { return Object.prototype.hasOwnProperty.call(ls, k) ? ls[k] : null; },
+    setItem(k, v) { ls[k] = String(v); },
+    removeItem(k) { delete ls[k]; }
+  };
+
   const doc = {
     readyState: 'complete', body: makeEl(), documentElement: makeEl(), head: makeEl(),
     createElement: makeEl, getElementById: () => null, addEventListener() {},
@@ -277,7 +307,7 @@ class BC {
 
   const body = src.replace(/^\(function\s*\(\)\s*\{/, '(function(){').replace(/\}\)\(\);\s*$/, '})();');
   const fn = new Function('window', 'document', 'location', 'console', 'navigator',
-    'setTimeout', 'WebAssembly', 'BroadcastChannel', body);
+    'setTimeout', 'WebAssembly', 'BroadcastChannel', 'localStorage', body);
 
   doc._els = {};
   // Elements the payload creates must know their document, so an id lookup on a
@@ -285,6 +315,13 @@ class BC {
   doc.createElement = (tag) => { const e = makeEl(); e.ownerDoc = doc; e.tagName = tag; return e; };
   doc.body.ownerDoc = doc;
   doc.documentElement.ownerDoc = doc;
+  // getElementById must reflect the tree. Answering null unconditionally is
+  // what let the panel rebuild itself the instant after X removed it, and a
+  // harness that cannot express "this node is gone" cannot catch that.
+  doc.getElementById = (id) => {
+    const all = [].concat(doc.body.children, doc.head.children, doc.documentElement.children);
+    return all.find(c => c && c.id === id) || null;
+  };
 
   let fatal = null;
   try {
@@ -309,7 +346,7 @@ class BC {
     }
     if (applyFirst) applyPass();     // UWMK got there before we registered
 
-    fn(win, doc, win.location, win.console, win.navigator, win.setTimeout, FakeWasm, BC);
+    fn(win, doc, win.location, win.console, win.navigator, win.setTimeout, FakeWasm, BC, LS);
     // A second UWMK copy loads and replaces the global AFTER we armed ours.
     if (heapVia === 'takeover') {
       win.UnityWebModkit.Runtime = { plugins: [], resolveGame() { return null; } };
@@ -431,18 +468,18 @@ function check(name, cond, detail) {
   check('surveyRows counter is populated', !!(r.report && r.report.surveyRows > 0),
     String(r.report && r.report.surveyRows));
 
-  // Decisive: the decoy at fakeValue is 6.375 (real 4.25 * 1.5). Reporting the
-  // decoy here means the codec never decrypted.
+  // Decisive: the decoy at fakeValue is real * 1.5. Reporting the decoy here
+  // means the codec never decrypted.
   const f10 = rows && rows.find(x => x.o === 0x10);
   check('ObscuredFloat is decrypted, not read as the decoy',
-    !!(f10 && Math.abs(f10.v - 4.25) < 1e-4), `got ${f10 && f10.v}, expected 4.25`);
+    !!(f10 && Math.abs(f10.v - 4.2117) < 1e-4), `got ${f10 && f10.v}, expected 4.2117`);
   check('the ACTk decoy is reported separately',
-    !!(f10 && Math.abs(f10.fake - 6.375) < 1e-4), `fake=${f10 && f10.fake}`);
+    !!(f10 && Math.abs(f10.fake - 6.31755) < 1e-4), `fake=${f10 && f10.fake}`);
   check('fakeValueActive is surfaced (the detector-relevant flag)',
     !!(f10 && f10.act === 1), `act=${f10 && f10.act}`);
   const f28 = rows.find(x => x.o === 0x28);
   check('a second ObscuredFloat with a different key decrypts correctly',
-    !!f28 && Math.abs(f28.v - 7.5) < 1e-4, `got ${f28 && f28.v}, expected 7.5`);
+    !!f28 && Math.abs(f28.v - 4.1921) < 1e-4, `got ${f28 && f28.v}, expected 4.1921`);
 
   const bB8 = rows.find(x => x.o === 0xb8);
   check('ObscuredBool decrypts to true, not the inverted decoy',
@@ -569,7 +606,7 @@ function check(name, cond, detail) {
   check('survey DECODES with no game object anywhere',
     r.report.surveyRows > 0, `rows=${r.report.surveyRows}`);
   check('ObscuredFloat still decrypts from that memory',
-    Math.abs(r.report.survey.FPScontroller.find(x => x.o === 0x10).v - 4.25) < 1e-4,
+    Math.abs(r.report.survey.FPScontroller.find(x => x.o === 0x10).v - 4.2117) < 1e-4,
     `got ${r.report.survey.FPScontroller.find(x => x.o === 0x10).v}`);
   check('no heap warning when the instantiate path succeeded',
     !r.report.warnings.some(w => /HEAPU8 not reachable/.test(w)), JSON.stringify(r.report.warnings));
@@ -752,41 +789,74 @@ function check(name, cond, detail) {
 }
 
 /* ================================================================== *
- * SPEED. No offsets are hardcoded: every inited ObscuredFloat on
- * FPScontroller holding a movement-plausible value gets scaled. The value is
- * re-based whenever the game writes it, so the multiplier cannot compound.
+ * SPEED. No offsets are hardcoded and no magnitude window is used: every inited
+ * ObscuredFloat on FPScontroller is grouped by agreement, and only the groups
+ * with company (>= 2 fields within 3%) get multiplied. That is what keeps the
+ * jump height and the step offsets untouched - the bug the player reported as
+ * "it just made me hella tall".
  * ================================================================== */
 {
   const r0 = runFrame({});
-  const walk = (r0.report.survey.FPScontroller || []).filter(x => x.k === 'obfF' && x.v > 3 && x.v < 10);
-  check('the movement cluster is present in the fixture to act on',
-    walk.length >= 2, `walk-like fields=${walk.length}`);
+  const rows0 = r0.report.survey.FPScontroller || [];
+  const walk = rows0.filter(x => x.k === 'obfF' && x.v > 4 && x.v < 4.4).map(x => x.o);
+  const sprint = rows0.filter(x => x.k === 'obfF' && x.v > 16 && x.v < 17).map(x => x.o);
+  const single = rows0.filter(x => x.k === 'obfF' && x.v < 2).map(x => x.o);
+  check('the fixture has a walk cluster to act on', walk.length >= 2, `walk=${JSON.stringify(walk)}`);
+  check('the fixture has a sprint cluster to act on', sprint.length >= 2, `sprint=${JSON.stringify(sprint)}`);
+  check('the fixture has the singleton height/step fields', single.length >= 2, `single=${JSON.stringify(single)}`);
 
   const r = runFrame({ speed: { on: true, factor: 2 } });
-  const after = (r.report.survey.FPScontroller || []).filter(x => x.k === 'obfF');
-  const scaled = after.filter(x => walk.some(w => Math.abs(w.v * 2 - x.v) < 1e-3));
-  check('speed ON multiplies the movement fields', scaled.length === walk.length,
-    `scaled=${scaled.length} of ${walk.length}`);
+  const after = r.report.survey.FPScontroller || [];
+  const base = {}; for (const x of rows0) if (x.k === 'obfF') base[x.o] = x.v;
+
+  const wantScaled = walk.concat(sprint);
+  const didScale = wantScaled.filter(o => Math.abs(after.find(x => x.o === o).v - base[o] * 2) < 1e-3);
+  check('speed ON multiplies every field in an agreeing cluster',
+    didScale.length === wantScaled.length,
+    `scaled ${didScale.length} of ${wantScaled.length}: ${JSON.stringify(wantScaled)}`);
+
+  // The regression that matters: jump height and step offsets must not move.
+  const movedSingles = single.filter(o => Math.abs(after.find(x => x.o === o).v - base[o]) > 1e-6);
+  check('speed does NOT touch the singleton height/step fields (the "hella tall" bug)',
+    movedSingles.length === 0, `moved ${JSON.stringify(movedSingles.map(o => ({ o, was: base[o], now: after.find(x => x.o === o).v })))}`);
+  check('the report names the fields it is multiplying',
+    r.report.speed.scaled.length === wantScaled.length,
+    JSON.stringify(r.report.speed.scaled));
+  check('the report names the fields it refused, with a reason',
+    r.report.speed.skipped.some(s => s.why === 'singleton'),
+    JSON.stringify(r.report.speed.skipped));
+
   check('speed OFF is the default (nothing written without consent)',
-    r0.report.speed.on === false && r0.report.speed.writes === 0,
-    JSON.stringify(r0.report.speed));
+    r0.report.speed.on === false && r0.report.speed.writes === 0, JSON.stringify(r0.report.speed));
   check('speed state is reported back to the portal',
     r.report.speed.on === true && r.report.speed.factor === 2, JSON.stringify(r.report.speed));
 
   // The compounding guard: run many frames and confirm the value does not run
   // away. This is the failure mode that makes naive speed hacks unusable.
   const many = runFrame({ speed: { on: true, factor: 2 }, extraFrames: 30 });
-  const base = {};
-  for (const x of (r0.report.survey.FPScontroller || [])) if (x.k === 'obfF') base[x.o] = x.v;
   const afterMany = (many.report.survey.FPScontroller || []).filter(x => x.k === 'obfF');
-  const drifted = afterMany.filter(x => Math.abs(base[x.o] * 2 - x.v) > 1e-3);
+  const drifted = afterMany.filter(x => Math.abs(base[x.o] * 2 - x.v) > 1e-3 && wantScaled.includes(x.o));
   check('every movement field is exactly base * factor after 30 frames',
     drifted.length === 0, `drifted=${JSON.stringify(drifted.map(x => ({ o: x.o, v: x.v, want: base[x.o] * 2 })))}`);
-  check('no value ran away',
-    afterMany.every(x => Math.abs(x.v) < 100), JSON.stringify(afterMany.map(x => x.v)));
+  check('no value ran away', afterMany.every(x => Math.abs(x.v) < 100), JSON.stringify(afterMany.map(x => x.v)));
 
   const off = runFrame({ speed: { on: true, factor: 2 }, thenOff: true, extraFrames: 10 });
   check('turning speed OFF stops writes', off.report.speed.on === false, JSON.stringify(off.report.speed));
+}
+
+/* A build with no cluster at all must say so instead of silently doing nothing. */
+{
+  const r = runFrame({
+    speed: { on: true, factor: 2 },
+    setup() {
+      // Same offsets, all mutually distinct: nothing has company.
+      [6.08, 12.15, 25.19, 33.67, 42.39, 51.23, 62.27, 111.87].forEach((v, i) =>
+        obfFloat(OBJ.FPScontroller + [0x10, 0x28, 0x58, 0x88, 0xa0, 0x40, 0x70, 0x1c0][i], v, 0x51));
+    }
+  });
+  check('speed reports that nothing agreed rather than failing quietly',
+    r.report.speed.writes === 0 && r.report.speed.skipped.some(s => /no group/.test(s.why)),
+    JSON.stringify(r.report.speed));
 }
 
 /* ================================================================== *
@@ -809,7 +879,7 @@ function check(name, cond, detail) {
     r.report.speed.writes > 0, `writes=${r.report.speed.writes}`);
   const after = (r.report.survey.FPScontroller || []).filter(x => x.k === 'obfF' && x.o === 0x10);
   check('the write landed on the real field',
-    after.length === 1 && Math.abs(after[0].v - 8.5) < 1e-3, JSON.stringify(after));
+    after.length === 1 && Math.abs(after[0].v - 8.4234) < 1e-3, JSON.stringify(after));
 }
 
 /* The portal side: it must post INTO the iframes, not only broadcast. */
@@ -874,7 +944,7 @@ function check(name, cond, detail) {
     r.report.speed.writes > 0, `writes=${r.report.speed.writes}`);
   const after = (r.report.survey.FPScontroller || []).filter(x => x.k === 'obfF' && x.o === 0x10);
   check('the in-frame write landed on the real field',
-    after.length === 1 && Math.abs(after[0].v - 8.5) < 1e-3, JSON.stringify(after));
+    after.length === 1 && Math.abs(after[0].v - 8.4234) < 1e-3, JSON.stringify(after));
 }
 
 /* The regression that came out of the case above. Turning speed on from off at
@@ -922,6 +992,65 @@ function check(name, cond, detail) {
 }
 
 /* ================================================================== *
+ * THE PANEL GETS IN THE WAY, AND X DOES NOT HIDE IT.
+ *
+ * Two field complaints, two defects. The panel was a fixed 620px / 78vh block
+ * pinned over the game, and X removed the node without recording anything - so
+ * ensureRoot() found no node, built a new one, and the panel was back on the
+ * next report, 1.2 seconds later, forever. Both are invisible to a harness that
+ * answers null to every getElementById and has no localStorage, which is what
+ * this suite used to do.
+ * ================================================================== */
+{
+  const store = {};
+  const r = runFrame({ hostname: 'www.crazygames.com', ls: store });
+  const panelInDom = () => r.doc.body.children.some(c => c && c.id === 'sakura-sw-v2');
+  const rootEl = () => r.doc.body.children.find(c => c && c.id === 'sakura-sw-v2');
+  const tab = () => r.doc.body.children.find(c => c && c.id === 'sakura-sw-v2-tab');
+  const deliver = (msg) => { for (const fn of (r.listeners.message || [])) fn({ data: msg }); };
+  const REPORT = { __sakura: '__sakura_sw_v2', kind: 'report',
+    report: { version: '2.3.0', elapsedMs: 1000, hooksApplied: 5, hooksTotal: 5, instances: {}, survey: {} } };
+
+  check('the panel is built', panelInDom(), 'no #sakura-sw-v2 in the document');
+
+  const bodyEl = r.doc._els['#sw2-body'];
+  check('the panel starts COLLAPSED so it does not cover the game',
+    !!bodyEl && bodyEl.style.display === 'none', `display=${bodyEl && bodyEl.style.display}`);
+  check('the collapsed panel is not stretched across the viewport',
+    rootEl() && rootEl().style.width === 'auto', `width=${rootEl() && rootEl().style.width}`);
+
+  r.doc._els['#sw2-toggle'].onclick();
+  check('the toggle opens it',
+    r.doc._els['#sw2-body'].style.display === '', JSON.stringify(r.doc._els['#sw2-body'].style));
+  check('the toggle button now says close',
+    r.doc._els['#sw2-toggle'].textContent === 'close', r.doc._els['#sw2-toggle'].textContent);
+
+  r.doc._els['#sw2-x'].onclick();
+  check('X removes the panel', !panelInDom(), 'still in the document');
+  check('X REMEMBERS it - this is what it failed to do', store['sakura-sw-panel-hidden'] === '1',
+    JSON.stringify(store));
+  check('X leaves a restore tab behind', !!tab(), 'no #sakura-sw-v2-tab');
+
+  // The exact regression: a report arrives after X. It used to rebuild the panel.
+  deliver(REPORT);
+  check('a report does NOT resurrect a panel the user closed', !panelInDom(), 'panel came back');
+
+  const r2 = runFrame({ hostname: 'www.crazygames.com', ls: store });
+  check('nor does a page reload', !r2.doc.body.children.some(c => c && c.id === 'sakura-sw-v2'),
+    'panel rebuilt on load despite being hidden');
+
+  const tab2 = r2.doc.body.children.find(c => c && c.id === 'sakura-sw-v2-tab');
+  check('the restore tab is there after a reload', !!tab2, 'no tab');
+  if (tab2) {
+    tab2.onclick();
+    check('clicking the tab brings the panel back',
+      r2.doc.body.children.some(c => c && c.id === 'sakura-sw-v2'), 'still missing');
+    check('and the tab retires once the panel is back',
+      !r2.doc.body.children.some(c => c && c.id === 'sakura-sw-v2-tab'), 'tab lingered');
+  }
+}
+
+/* ================================================================== *
  * ACTk KEY WIDTH. The field bug: currentCryptoKey is an INT for
  * ObscuredFloat and ObscuredInt, and reading it as one byte produced
  * plausible-looking nonsense. 444444 & 0xff is 28, and 28 was reported as
@@ -936,10 +1065,14 @@ function check(name, cond, detail) {
 {
   const BIG = 0x006c81c;    // 444444, same shape as the real one
   const KEYV = 0x00abcdef;  // ObscuredFloat key: low byte 0xEF
-  obfInt(OBJ.HealthScript + 0xd4, 200, BIG);
-  obfFloat(OBJ.FPScontroller + 0x40, 12.5, KEYV);
 
-  const r = runFrame({});
+  // Written through setup(), which runs AFTER seedObjects(). Written before the
+  // run they were silently wiped by seedObjects and the case passed only because
+  // the seed happened to use the same numbers - it was testing the seed.
+  const r = runFrame({ setup() {
+    obfInt(OBJ.HealthScript + 0xd4, 200, BIG);
+    obfFloat(OBJ.FPScontroller + 0x40, 12.5, KEYV);
+  } });
   const ints = (r.report.survey.HealthScript || []).filter(x => x.k === 'obfI');
   const floats = (r.report.survey.FPScontroller || []).filter(x => x.k === 'obfF');
 
