@@ -335,7 +335,33 @@
    * empty — an empty array is a silent no-op, not "everything". These are
    * the six non-system images from dump.cs for build 125.
    * ---------------------------------------------------------------- */
-  var ARM = { attempted: false, ok: false, error: null };
+  var ARM = { attempted: false, ok: false, error: null, hooksRegistered: 0 };
+
+  // Declared here, NOT beside their consumers further down. armUwmk() calls
+  // registerHooks() in the same tick, and a `var x = []` further down the file
+  // would still be undefined at that point: declarations hoist, assignments do
+  // not. Silently losing every hook that way would look like a game-side
+  // mystery again.
+  var VW = null, plugin = null;
+  var INSTANCES = {};   // typeName -> { ptr, firstSeen, hits }
+  var HOOKS = [];       // { type, hook, keep }
+  var HOOK_ERRORS = [];
+
+  // Types to capture, and whether the hook stays on once it has fired. The
+  // local player object is rebuilt on respawn, so those hooks stay armed and
+  // simply notice when the pointer changes.
+  //
+  // This lives up here for the same reason as HOOKS: armUwmk() calls
+  // registerHooks(), which iterates CAPTURE. Declared further down it would be
+  // undefined at that moment and registerHooks() would throw on CAPTURE.length
+  // - after which the retry in the poll loop would quietly register the hooks
+  // LATE, i.e. after UWMK's one-shot apply pass, and lose every one of them.
+  var CAPTURE = [
+    { type: "FPScontroller", keep: true },
+    { type: "HealthScript", keep: true },
+    { type: "WeaponManager", keep: false },
+    { type: "GG_GameManager", keep: false }
+  ];
   var ASSEMBLIES = [
     "Assembly-CSharp.dll",
     "Assembly-CSharp-firstpass.dll",
@@ -350,8 +376,24 @@
       var RT = window.UnityWebModkit && window.UnityWebModkit.Runtime;
       if (!RT || typeof RT.createPlugin !== "function") { ARM.error = "Runtime.createPlugin unavailable"; return; }
       ARM.attempted = true;
-      RT.createPlugin({ name: "sakura-skillwarz", version: "2.0.2", referencedAssemblies: ASSEMBLIES.slice() });
+      plugin = RT.createPlugin({ name: "sakura-skillwarz", version: "2.0.3", referencedAssemblies: ASSEMBLIES.slice() });
       ARM.ok = true;
+      // Register the hooks in the SAME TICK, before returning from arming.
+      //
+      // This is the whole ballgame and v2.0.2 got it wrong. UWMK applies hooks
+      // inside handleBuffer while instantiating the WASM, and it snapshots both
+      // loop bounds up front:
+      //     var pluginLen = this.plugins.length;
+      //     while (i < pluginLen) { var hookLen = usePlugin.hooks.length; ... }
+      // Anything registered after that one pass is never looked at again, so
+      // `applied` stays false for the life of the page. v2.0.1/2 registered
+      // from a 2s poll that waited for il2CppContext.scriptData - which only
+      // becomes readable around instantiate - so the poll usually lost the
+      // race. v2.0.1 happened to win it (4/4 applied), v2.0.2 lost (0/4). Same
+      // code, coin flip. Registering names needs no metadata: hook() only
+      // records them, and the method table is resolved during the apply pass.
+      registerHooks();
+      ARM.hooksRegistered = HOOKS.length;
     } catch (err) { ARM.error = String((err && err.message) || err); }
   })();
 
@@ -538,20 +580,10 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
    * IL2CPP instance methods are (this, MethodInfo*) -> void in wasm, which
    * is exactly the signature the working kourstrike hooks use.
    * ---------------------------------------------------------------- */
-  var VW = null, plugin = null;
-  var INSTANCES = {};   // typeName -> { ptr, firstSeen, hits }
-  var HOOKS = [];       // { type, hook, keep }
-  var HOOK_ERRORS = [];
-
   // Types to capture, and whether the hook stays on once it has fired. The
   // local player object is rebuilt on respawn, so those hooks stay armed and
   // simply notice when the pointer changes.
-  var CAPTURE = [
-    { type: "FPScontroller", keep: true },
-    { type: "HealthScript", keep: true },
-    { type: "WeaponManager", keep: false },
-    { type: "GG_GameManager", keep: false }
-  ];
+  // (CAPTURE is declared above, next to HOOKS, because armUwmk() needs it.)
 
   function captureArgs(typeName, enabled) {
     return function (self) {
@@ -570,11 +602,14 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
   }
 
   function registerHooks() {
+    if (HOOKS.length) return true;   // idempotent: arming already did this
     if (!window.UnityWebModkit || !window.UnityWebModkit.Runtime) return false;
     var RT = window.UnityWebModkit.Runtime;
     if (!RT.plugins || !RT.plugins.length) return false;
     VW = window.UnityWebModkit.ValueWrapper;
-    plugin = RT.plugins[RT.plugins.length - 1];
+    // Prefer the plugin createPlugin() handed back, so this cannot latch onto
+    // some other plugin that registered after us.
+    plugin = plugin || RT.plugins[RT.plugins.length - 1];
     if (!plugin || typeof plugin.hookPrefix !== "function") return false;
 
     for (var i = 0; i < CAPTURE.length; i++) {
@@ -589,7 +624,19 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
         HOOK_ERRORS.push(spec.type + ": " + String((e && e.message) || e).slice(0, 160));
       }
     }
-    return true;
+    return HOOKS.length > 0;
+  }
+
+  // UWMK assigns tableIndex during its one-shot apply pass. Hooks that never
+  // received one were registered too late to be seen - a completely different
+  // fault from "registered but the signature did not match", and the two are
+  // indistinguishable from `applied` alone.
+  function hooksResolved() {
+    var n = 0;
+    for (var i = 0; i < HOOKS.length; i++) {
+      if (HOOKS[i].hook && HOOKS[i].hook.tableIndex !== undefined) n++;
+    }
+    return n;
   }
 
   function hooksApplied() {
@@ -739,6 +786,8 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       assemblies: ASSEMBLIES,
       hooksTotal: HOOKS.length,
       hooksApplied: hooksApplied(),
+      hooksResolved: hooksResolved(),
+      hooksRegisteredAtArm: ARM.hooksRegistered || 0,
       hookErrors: HOOK_ERRORS.slice(0, 8),
       instances: instances,
       classNames: classNames,
@@ -763,8 +812,8 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     }
     if (report.globals && !report.globals.heapU8) {
       report.warnings.push(
-        "game.Module.HEAPU8 not reachable via window.unityInstance/unityGame/game. " +
-        "Field reads cannot work until the WASM heap is exposed under one of those names."
+        "Unity instance not resolved yet (source: " + (report.globals.gameSource || "none") + "). " +
+        "Heap reads stay blocked until Runtime.resolveGame() or a window global yields one."
       );
     }
     if (report.globals && !report.globals.valueWrapper || report.globals.valueWrapper === "undefined") {
@@ -774,10 +823,20 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     // The single most likely cause of "hooked but nothing captured": the
     // signature did not match, so Update() was never wrapped.
     if (report.hooksTotal > 0 && report.hooksApplied === 0 && sd) {
-      report.warnings.push(
-        "0 of " + report.hooksTotal + " Update() hooks applied. The signature " +
-        "(this, MethodInfo*) -> void did not match this build, so nothing is hooked."
-      );
+      if (report.hooksResolved === 0) {
+        report.warnings.push(
+          "0 of " + report.hooksTotal + " hooks were even SEEN by UWMK. The apply pass " +
+          "runs once during WebAssembly.instantiate and snapshots plugin.hooks.length, " +
+          "so hooks registered after it are ignored for the life of the page. " +
+          "Registered " + report.hooksRegisteredAtArm + " hook(s) during arming at document-start."
+        );
+      } else {
+        report.warnings.push(
+          "UWMK resolved " + report.hooksResolved + " of " + report.hooksTotal +
+          " hook(s) to a table index but applied none. The signature " +
+          "(this, MethodInfo*) -> void does not match this build."
+        );
+      }
     }
     if (report.hooksApplied > 0 && !report.instances.FPScontroller) {
       report.warnings.push(
@@ -801,7 +860,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     try { return collect(); }
     catch (err) {
       return {
-        version: "2.0.2", when: new Date().toISOString(), elapsedMs: Date.now() - T0,
+        version: "2.0.3", when: new Date().toISOString(), elapsedMs: Date.now() - T0,
         host: HOST, uwmk: !!(window.UnityWebModkit && window.UnityWebModkit.Runtime),
         il2CppContext: false, arm: ARM, hooksTotal: HOOKS.length, hooksApplied: 0,
         instances: {}, survey: {}, collectError: String((err && err.message) || err)
@@ -810,17 +869,21 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
   }
 
   function run() {
-    var registered = false, ticks = 0;
+    // Hooks are registered during arming, at document-start, because UWMK's
+    // apply pass runs exactly once inside WebAssembly.instantiate and ignores
+    // anything registered later. The retry below is only a safety net for the
+    // case where arming ran before the Runtime existed.
+    var ticks = 0;
     emit(safeCollect());
     (function poll() {
-      var RT = (window.UnityWebModkit && window.UnityWebModkit.Runtime) || null;
-      var ready = RT && RT.il2CppContext && RT.il2CppContext.scriptData;
-      if (ready && !registered) { registered = registerHooks(); }
+      if (!HOOKS.length) {
+        try { registerHooks(); } catch (_) {}
+      }
       ticks++;
       // Fast heartbeat once we are live so the value table actually moves;
       // slow heartbeat while UWMK is still downloading metadata.
       emit(safeCollect());
-      if (!registered && ticks < 300) setTimeout(poll, 2000);
+      if (!HOOKS.length && ticks < 300) setTimeout(poll, 2000);
       else if (!Object.keys(INSTANCES).length && ticks < 300) setTimeout(poll, 2000);
       else setTimeout(poll, 1200);
     })();

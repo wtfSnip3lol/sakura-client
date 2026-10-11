@@ -102,8 +102,8 @@ function makeEl() {
 /* ------------------------------------------------------------------ *
  * Harness
  * ------------------------------------------------------------------ */
-function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'resolveGame' }) {
-  const posted = [], pluginCalls = [], hookCalls = [], pending = [], listeners = {};
+function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'resolveGame', scriptDataLate = false, applyFirst = false, resolveButNotApply = false }) {
+  const posted = [], pluginCalls = [], hookCalls = [], pending = [], listeners = [], order = [];
   const fireTypes = fireUpdate ? ['FPScontroller', 'HealthScript', 'WeaponManager', 'GG_GameManager'] : [];
 
   // The real game object. Only UWMK holds a reference to it - which is the
@@ -117,21 +117,35 @@ function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'r
     resolveGame() { return this._game; },
     createPlugin(opts) {
       pluginCalls.push(opts);
+      order.push('createPlugin');
       this.startedInitializing = true;
-      this.plugins.push({
+      const p = {
         name: opts.name, hooks: [],
         hookPrefix(target, cb) {
-          const h = { ...target, callback: cb, applied: hooksApply, enabled: true };
+          const h = { ...target, callback: cb, applied: false, enabled: true };
           this.hooks.push(h);
           hookCalls.push(target);
+          order.push('hookPrefix:' + target.typeName);
           // A real hook cannot be applied without the game: it needs the
           // function table from game.Module.asm. Populate the RUNTIME's cache,
           // not the plugin's - `this` here is the plugin object.
           if (hooksApply && heapVia !== 'none') Runtime._game = gameObj;
           return h;
         }
-      });
+      };
+      this.plugins.push(p);
+      // scriptData only becomes readable around WebAssembly.instantiate, which
+      // is exactly when UWMK's one-shot apply pass runs.
+      if (!scriptDataLate) {
+        this.il2CppContext = { scriptData: { FPScontroller: { Update: 1 }, HealthScript: { Update: 1 } } };
+        order.push('scriptData');
+      }
+      return p;
+    },
+    revealScriptData() {
+      if (this.il2CppContext) return;
       this.il2CppContext = { scriptData: { FPScontroller: { Update: 1 }, HealthScript: { Update: 1 } } };
+      order.push('scriptData');
     }
   };
 
@@ -166,9 +180,29 @@ function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'r
 
   let fatal = null;
   try {
+    // UWMK's apply pass: ONE shot, inside instantiate, iterating whatever hooks
+    // exist at that instant. Hooks added afterwards keep applied=false forever.
+    function applyPass() {
+      order.push('applyPass');
+      for (const pl of Runtime.plugins) {
+        for (const h of pl.hooks) {
+          if (!hooksApply) continue;
+          // UWMK assigns tableIndex during the pass, then flips `applied` from
+          // inside the WASM parse callback. Modelling them separately is what
+          // lets the payload tell "never seen" apart from "signature wrong".
+          h.tableIndex = 4242;
+          h.index = 99;
+          if (!resolveButNotApply) h.applied = true;
+        }
+      }
+    }
+    if (applyFirst) applyPass();     // UWMK got there before we registered
+
     fn(win, doc, win.location, win.console, win.navigator, win.setTimeout, WebAssembly, BC);
     let guard = 0;
     while (pending.length && guard++ < 200) pending.shift()();
+    if (scriptDataLate) Runtime.revealScriptData();
+    if (!applyFirst) applyPass();
     const plugin = Runtime.plugins[0];
     if (plugin) for (const h of plugin.hooks) {
       if (!h.applied || !fireTypes.includes(h.typeName)) continue;
@@ -180,7 +214,7 @@ function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'r
   } catch (e) { fatal = e.message; }
 
   const reports = posted.filter(m => m && m.kind === 'report').map(m => m.report);
-  return { fatal, posted, pluginCalls, hookCalls, reports, report: reports[reports.length - 1] };
+  return { fatal, posted, pluginCalls, hookCalls, reports, order, report: reports[reports.length - 1] };
 }
 
 let failed = 0;
@@ -264,7 +298,64 @@ function check(name, cond, detail) {
 }
 
 /* ================================================================== *
- * 2. THE v2.0.1 BUG. The field report showed unityInstance / unityGame /
+ * 2. THE v2.0.2 BUG: a registration race, not a naming problem.
+ *
+ * UWMK applies hooks inside handleBuffer during WebAssembly.instantiate and
+ * snapshots both loop bounds first, so hooks registered after that single pass
+ * are ignored for the life of the page. The old code registered from a poll
+ * that waited for il2CppContext.scriptData - which only becomes readable
+ * around instantiate. That is a coin flip, and the field got 4/4 then 0/4.
+ *
+ * scriptDataLate withholds scriptData until after the first poll drain, so any
+ * registration that depends on it cannot happen at all. Hooks must still be
+ * registered, at arm time, from names alone.
+ * ================================================================== */
+{
+  const r = runFrame({ scriptDataLate: true });
+  check('hooks register with NO scriptData available at all',
+    r.hookCalls.length === 4, `hooks=${r.hookCalls.length} (names alone must suffice)`);
+  const iHook = r.order.indexOf('hookPrefix:FPScontroller');
+  const iData = r.order.indexOf('scriptData');
+  check('hooks are registered BEFORE scriptData appears',
+    iHook !== -1 && (iData === -1 || iHook < iData),
+    `order=${r.order.join(' -> ')}`);
+  check('registration happens in the same tick as createPlugin',
+    r.order[0] === 'createPlugin' && r.order[1] && r.order[1].startsWith('hookPrefix:'),
+    `order=${r.order.slice(0, 3).join(' -> ')}`);
+  check('reported hooksRegisteredAtArm matches what was registered',
+    r.report.hooksRegisteredAtArm === 4, String(r.report.hooksRegisteredAtArm));
+
+  const dbl = runFrame({});
+  check('registerHooks is idempotent (no duplicate hooks on retry)',
+    dbl.hookCalls.length === 4, `hooks=${dbl.hookCalls.length} - registered twice?`);
+}
+
+/* ================================================================== *
+ * 3. Too-late vs signature-mismatch must be distinguishable. Both look
+ * identical in `applied`, which is why v2.0.2 could only report a coin flip.
+ * ================================================================== */
+{
+  // UWMK's apply pass runs while plugin.hooks is still empty: too late.
+  const late = runFrame({ applyFirst: true });
+  check('registered-too-late is detected and named',
+    late.hookCalls.length === 4 && late.report.hooksApplied === 0,
+    `hooks=${late.hookCalls.length} applied=${late.report.hooksApplied}`);
+  check('too-late: hooksResolved is 0 (UWMK never saw them)',
+    late.report.hooksResolved === 0, `hooksResolved=${late.report.hooksResolved}`);
+  check('too-late: warning says the hooks were never SEEN, not that the signature was wrong',
+    late.report.warnings.some(w => /were even SEEN/.test(w)), JSON.stringify(late.report.warnings));
+
+  const ok = runFrame({});
+  check('a hook UWMK actually saw has a tableIndex',
+    ok.report.hooksResolved > 0, `hooksResolved=${ok.report.hooksResolved}`);
+  check('resolved count is reported alongside applied',
+    typeof ok.report.hooksResolved === 'number', 'missing hooksResolved');
+  check('no "not seen" warning when hooks were resolved',
+    !ok.report.warnings.some(w => /were even SEEN/.test(w)), JSON.stringify(ok.report.warnings));
+}
+
+/* ================================================================== *
+ * 4. THE v2.0.1 BUG. The field report showed unityInstance / unityGame /
  * game ALL "undefined" while 4/4 hooks applied. Reading the heap only via
  * those window names therefore decoded nothing. This scenario is now the
  * default in every case above, so a regression to window-only probing fails
@@ -301,13 +392,18 @@ function check(name, cond, detail) {
  * 3. Diagnostics when the pipeline is broken.
  * ================================================================== */
 {
-  const noHooks = runFrame({ hooksApply: false });
+  const noHooks = runFrame({ resolveButNotApply: true });
   check('warns when no Update() hook applied',
-    noHooks.report.warnings.some(w => /0 of .*hooks applied/.test(w)),
+    noHooks.report.warnings.some(w => /does not match this build/.test(w)),
+    JSON.stringify(noHooks.report.warnings));
+  check('signature-mismatch branch blames the signature, not the timing',
+    !noHooks.report.warnings.some(w => /were even SEEN/.test(w)),
     JSON.stringify(noHooks.report.warnings));
   check('reports hooksApplied=0 rather than claiming success',
     noHooks.report.hooksApplied === 0 && noHooks.report.hooksTotal === 4,
     JSON.stringify([noHooks.report.hooksApplied, noHooks.report.hooksTotal]));
+  check('signature-mismatch branch shows UWMK DID resolve the methods',
+    noHooks.report.hooksResolved === 4, `hooksResolved=${noHooks.report.hooksResolved}`);
 }
 {
   const idle = runFrame({ fireUpdate: false });
