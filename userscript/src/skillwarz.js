@@ -53,7 +53,7 @@
   // It was hand-written in three places once and one drifted, so a field report
   // claimed 2.0.2 while the plugin logged 2.0.3 - which sends everyone chasing
   // a stale build.
-  var VERSION = "2.2.0";
+  var VERSION = "2.2.1";
 
   /* ================================================================== *
    * WRAPPER — relay only. Arming UWMK here achieves nothing: this frame
@@ -692,6 +692,11 @@
         case "u32": return v.getUint32(addr, true);
         case "f32": return v.getFloat32(addr, true);
         case "f64": return v.getFloat64(addr, true);
+        // Vector kinds are INLINE: 2/3/4 consecutive floats starting here.
+        // They must not fall through to the int default - a field report came
+        // back with v3 values like 1100591942, which is an int read of a float
+        // triple, not a coordinate.
+        case "v2": case "v3": case "v4": return v.getFloat32(addr, true);
         default: return v.getInt32(addr, true);
       }
     } catch (e) {
@@ -1091,14 +1096,13 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       var listPtr = rd(gm.ptr + 0x5c, "u32");
       out.camera = camPtr ? "0x" + (camPtr >>> 0).toString(16) : null;
       out.playerList = listPtr ? "0x" + (listPtr >>> 0).toString(16) : null;
-      // Raw words either side of both pointers: if the List<T> header layout is
-      // the usual _items@0x10 / _size@0x18, one of these IS the size, and that
-      // is cheaper to confirm from data than to assume.
-      out.gameManager = {
-        camRaw: camPtr, listRaw: listPtr,
-        nearCam: [0x10, 0x14, 0x18, 0x1c].map(function (o) { return rd(gm.ptr + o, "u32"); }),
-        nearList: [0x10, 0x14, 0x18, 0x1c].map(function (o) { return rd(gm.ptr + o, "u32"); })
-      };
+    } else {
+      // Name the reason. Both recon targets hang off things that only exist
+      // during a match: EnemyBot objects are spawned per enemy, and
+      // GG_GameManager.Update does not tick on the lobby screen. An empty
+      // enemy list from a menu is expected, not a bug to chase.
+      out.note = "EnemyBot and GG_GameManager Update() never fired - no enemies and no " +
+        "GG_GameManager, which is what a lobby looks like. Run the recon INSIDE a live match.";
     }
 
     // Which WASM signatures actually exist. internalWasmTypes is populated
@@ -1139,7 +1143,15 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
         } else {
           var r = rd(rec.ptr + off, kind);
           if (r === undefined) continue;
-          rows.push({ o: off, k: kind, v: r });
+          var row = { o: off, k: kind, v: r };
+          // Vector fields carry all their components; reporting only the first
+          // hides the two that matter for a position.
+          if (kind === "v2" || kind === "v3" || kind === "v4") {
+            var n = kind === "v2" ? 2 : kind === "v3" ? 3 : 4;
+            var xyz = readVec(rec.ptr, off, n);
+            if (xyz) { row.xyz = xyz; row.v = xyz[0]; }
+          }
+          rows.push(row);
         }
       }
       if (rows.length) {
@@ -1377,6 +1389,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
         "against a different Runtime instance than the global now exposes."
       );
     }
+    if (report.esp && report.esp.note) report.warnings.push("ESP: " + report.esp.note);
     if (report.globals && !report.globals.heapU8) {
       var extra = "";
       if (report.hookFireProof) {

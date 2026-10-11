@@ -119,7 +119,7 @@ var BC_HUB = [];
 function sendToPlayer(msg) {
   for (const b of BC_HUB) if (typeof b.onmessage === 'function') b.onmessage({ data: msg });
 }
-function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'resolveGame', scriptDataLate = false, applyFirst = false, resolveButNotApply = false, noInstantiate = false, speed = null, thenOff = false, extraFrames = 0, fireEnemyTwice = null, setup = null }) {
+function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'resolveGame', scriptDataLate = false, applyFirst = false, resolveButNotApply = false, noInstantiate = false, speed = null, thenOff = false, extraFrames = 0, fireEnemyTwice = null, setup = null, lobby = false }) {
   // Reset the channel hub: payload instances from earlier runs would keep
   // their own SPEED_STATE and keep writing to the same heap, which looks
   // exactly like a compounding bug in the payload.
@@ -293,6 +293,8 @@ class BC {
     const plugin = Runtime.plugins[0];
     if (plugin) for (const h of plugin.hooks) {
       if (!h.applied || !fireTypes.includes(h.typeName)) continue;
+      // A lobby: EnemyBot and GG_GameManager simply do not tick.
+      if (lobby && (h.typeName === 'EnemyBot' || h.typeName === 'GG_GameManager')) continue;
       const rec = OBJ[h.typeName];
       if (rec === undefined) continue;
       const fire = (ptr) => {
@@ -662,6 +664,36 @@ function check(name, cond, detail) {
     esp.wasmTypes && typeof esp.wasmTypes === 'object', JSON.stringify(esp.wasmTypes).slice(0, 120));
   check('EnemyBot position is read from 0x24, not a misclassified pointer field',
     esp.enemies.every(x => x.posAt === '0x24'), JSON.stringify(esp.enemies.map(x => x.posAt)));
+}
+
+/* The recon must SAY why it is empty. An empty enemy list from a lobby is
+ * expected, and reporting it as a bare [] sends the next person hunting a
+ * non-existent bug. */
+{
+  const r = runFrame({ lobby: true });
+  const esp = r.report.esp || {};
+  check('an empty recon explains itself instead of returning a bare empty list',
+    !!(esp.note && /match/i.test(esp.note)), JSON.stringify(esp.note));
+  check('the explanation is surfaced as a warning',
+    r.report.warnings.some(w => /^ESP: /.test(w)), JSON.stringify(r.report.warnings));
+}
+
+/* Vector fields are inline floats. rd() silently fell through to an int read
+ * for them, which is how a field report came back with v3 = 1100591942. */
+{
+  const r = runFrame({
+    setup() {
+      wF32(OBJ.FPScontroller + 0xe0, 12.25);
+      wF32(OBJ.FPScontroller + 0xe4, -3.5);
+      wF32(OBJ.FPScontroller + 0xe8, 99.75);
+    }
+  });
+  const row = (r.report.survey.FPScontroller || []).find(x => x.o === 0xe0 && x.k === 'v3');
+  check('a Vector3 field reports a float, not an int',
+    !!row && Math.abs(row.v - 12.25) < 1e-4, `got ${row && row.v}, expected 12.25`);
+  check('a Vector3 field reports all three components',
+    !!row && row.xyz && Math.abs(row.xyz[1] + 3.5) < 1e-4 && Math.abs(row.xyz[2] - 99.75) < 1e-4,
+    JSON.stringify(row && row.xyz));
 }
 
 /* ================================================================== *
