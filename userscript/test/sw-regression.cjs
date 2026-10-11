@@ -110,6 +110,11 @@ function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'r
   // whole point of heapVia='resolveGame'.
   const gameObj = { Module: { HEAPU8: U8 } };
 
+  // A stand-in for "the Runtime the plugin was built with", which is not the
+  // object exported as window.UnityWebModkit.Runtime in the 'pluginRuntime'
+  // scenario.
+  const pluginRuntime = { _game: null, resolveGame() { return this._game; } };
+
   const Runtime = {
     plugins: [], startedInitializing: false, internalWasmTypes: [], il2CppContext: undefined,
     _game: null,
@@ -121,6 +126,8 @@ function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'r
       this.startedInitializing = true;
       const p = {
         name: opts.name, hooks: [],
+        // ModkitPlugin stores the Runtime it was constructed with.
+        _runtime: heapVia === 'pluginRuntime' ? pluginRuntime : Runtime,
         hookPrefix(target, cb) {
           const h = { ...target, callback: cb, applied: false, enabled: true };
           this.hooks.push(h);
@@ -129,7 +136,13 @@ function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'r
           // A real hook cannot be applied without the game: it needs the
           // function table from game.Module.asm. Populate the RUNTIME's cache,
           // not the plugin's - `this` here is the plugin object.
-          if (hooksApply && heapVia !== 'none') Runtime._game = gameObj;
+          if (hooksApply && heapVia !== 'none') {
+            // 'pluginRuntime' models the field report: the EXPORTED Runtime's
+            // resolveGame() returns null while the plugin's own _runtime - a
+            // different object that still holds the game - can resolve it.
+            if (heapVia === 'pluginRuntime') pluginRuntime._game = gameObj;
+            else Runtime._game = gameObj;
+          }
           return h;
         }
       };
@@ -192,6 +205,9 @@ function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'r
           // lets the payload tell "never seen" apart from "signature wrong".
           h.tableIndex = 4242;
           h.index = 99;
+          // resolveOriginal() caches the real function on the hook once it has
+          // the game. That cached function is what lets the callback run at all.
+          h.originalFunc = function () {};
           if (!resolveButNotApply) h.applied = true;
         }
       }
@@ -214,7 +230,11 @@ function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'r
   } catch (e) { fatal = e.message; }
 
   const reports = posted.filter(m => m && m.kind === 'report').map(m => m.report);
-  return { fatal, posted, pluginCalls, hookCalls, reports, order, report: reports[reports.length - 1] };
+  return {
+    fatal, posted, pluginCalls, hookCalls, reports, order,
+    pluginVersion: pluginCalls[0] && pluginCalls[0].version,
+    report: reports[reports.length - 1]
+  };
 }
 
 let failed = 0;
@@ -252,9 +272,9 @@ function check(name, cond, detail) {
 
   check('heap is detected as reachable', !!(r.report && r.report.globals && r.report.globals.heapU8 === true),
     JSON.stringify(r.report && r.report.globals));
-  check('game object found via Runtime.resolveGame() with NO window global',
-    !!(r.report && r.report.globals.gameSource === 'Runtime.resolveGame()'),
-    JSON.stringify(r.report && r.report.globals));
+  check('game object found via a Runtime reference with NO window global',
+    /resolveGame\(\)$/.test(String(r.report.globals.gameSource || '')),
+    JSON.stringify(r.report.globals));
   check('every window global really is undefined in this scenario',
     ['unityInstance', 'unityGame', 'game'].every(k => r.report.globals[k] === 'undefined'),
     JSON.stringify(r.report.globals));
@@ -354,8 +374,30 @@ function check(name, cond, detail) {
     !ok.report.warnings.some(w => /were even SEEN/.test(w)), JSON.stringify(ok.report.warnings));
 }
 
+{
+  // The exact field condition: exported Runtime.resolveGame() -> null, every
+  // window global undefined, hooks firing and capturing live objects, and the
+  // game reachable only through the plugin's own _runtime reference.
+  const r = runFrame({ heapVia: 'pluginRuntime' });
+  check('exported Runtime reports no game in this scenario',
+    r.report.globals.heapU8 === true, JSON.stringify(r.report.globals));
+  check('game recovered via plugin._runtime when the exported Runtime is empty',
+    /^plugin\._runtime\./.test(String(r.report.globals.gameSource || '')),
+    `gameSource=${r.report.globals.gameSource}`);
+  check('survey decodes in this scenario too', r.report.surveyRows > 0, `rows=${r.report.surveyRows}`);
+  check('hookFireProof records that the hook really resolved a function',
+    !!(r.report.hookFireProof && r.report.hookFireProof.originalFunc === true),
+    JSON.stringify(r.report.hookFireProof));
+  check('hookFireProof records the game as resolved at fire time',
+    !!(r.report.hookFireProof && r.report.hookFireProof.resolveGameAtFire === true),
+    JSON.stringify(r.report.hookFireProof));
+  check('report version comes from the payload, not a stale literal',
+    /^2\.0\.\d+$/.test(r.report.version) && r.report.version === r.pluginVersion,
+    `report=${r.report.version} plugin=${r.pluginVersion}`);
+}
+
 /* ================================================================== *
- * 4. THE v2.0.1 BUG. The field report showed unityInstance / unityGame /
+ * 5. THE v2.0.1 BUG. The field report showed unityInstance / unityGame /
  * game ALL "undefined" while 4/4 hooks applied. Reading the heap only via
  * those window names therefore decoded nothing. This scenario is now the
  * default in every case above, so a regression to window-only probing fails

@@ -337,6 +337,11 @@
    * ---------------------------------------------------------------- */
   var ARM = { attempted: false, ok: false, error: null, hooksRegistered: 0 };
 
+  // Single source of truth. A field report came back saying version 2.0.2 while
+  // the plugin logged 2.0.3, because the string was hand-written in three
+  // places and one of them was missed. Derived fields must not be retyped.
+  var VERSION = "2.0.4";
+
   // Declared here, NOT beside their consumers further down. armUwmk() calls
   // registerHooks() in the same tick, and a `var x = []` further down the file
   // would still be undefined at that point: declarations hoist, assignments do
@@ -376,7 +381,7 @@
       var RT = window.UnityWebModkit && window.UnityWebModkit.Runtime;
       if (!RT || typeof RT.createPlugin !== "function") { ARM.error = "Runtime.createPlugin unavailable"; return; }
       ARM.attempted = true;
-      plugin = RT.createPlugin({ name: "sakura-skillwarz", version: "2.0.3", referencedAssemblies: ASSEMBLIES.slice() });
+      plugin = RT.createPlugin({ name: "sakura-skillwarz", version: VERSION, referencedAssemblies: ASSEMBLIES.slice() });
       ARM.ok = true;
       // Register the hooks in the SAME TICK, before returning from arming.
       //
@@ -429,24 +434,54 @@
   var READS = { ok: 0, failed: 0, lastError: null, source: null };
 
   function unityGame() {
-    // 1. UWMK's memoised reference - proven to work, it is what hook() used.
+    // 1. The plugin's OWN runtime reference. ModkitPlugin stores the Runtime it
+    //    was constructed with as _runtime, so this is provably the same object
+    //    handleBuffer() ran on - no name guessing, no singleton assumptions.
+    //    Field report showed window.unityInstance / unityGame / game all
+    //    "undefined" and Runtime.resolveGame() returning null WHILE hooks had
+    //    already fired and captured live objects, so the reference we were
+    //    asking existed somewhere other than the globals we probed.
+    try {
+      if (plugin && plugin._runtime) {
+        var pr = plugin._runtime;
+        if (typeof pr.resolveGame === "function") {
+          var g0 = pr.resolveGame();
+          if (g0) { READS.source = "plugin._runtime.resolveGame()"; return g0; }
+        }
+        if (pr._game) { READS.source = "plugin._runtime._game"; return pr._game; }
+      }
+    } catch (_) {}
+    // 2. The public accessor on the exported Runtime.
     try {
       var RT = window.UnityWebModkit && window.UnityWebModkit.Runtime;
       if (RT && typeof RT.resolveGame === "function") {
         var g = RT.resolveGame();
         if (g) { READS.source = "Runtime.resolveGame()"; return g; }
       }
+      if (RT && RT._game) { READS.source = "Runtime._game"; return RT; }
     } catch (_) {}
-    // 2. The conventional globals.
+    // 3. The conventional globals.
     try {
       var g2 = window.unityInstance || window.unityGame || window.game;
       if (g2) { READS.source = "window global"; return g2; }
     } catch (_) {}
-    // 3. A bare `game` reference. A top-level let/const is a global LEXICAL
+    // 4. A bare `game` reference. A top-level let/const is a global LEXICAL
     //    binding: invisible as window.game, but still resolvable from other
     //    classic scripts, so a loader may well declare it that way.
     try {
       if (typeof game !== "undefined" && game) { READS.source = "bare game binding"; return game; }
+    } catch (_) {}
+    // 5. Last resort: a bounded sweep of window for anything shaped like an
+    //    Emscripten module. Cheap, bounded, and it names the holder when it hits.
+    try {
+      var keys = Object.keys(window);
+      for (var i = 0; i < keys.length && i < 600; i++) {
+        var v = window[keys[i]];
+        if (v && typeof v === "object" && v.Module && v.Module.HEAPU8 && v.Module.HEAPU8.buffer) {
+          READS.source = "window." + keys[i] + ".Module";
+          return v;
+        }
+      }
     } catch (_) {}
     READS.source = null;
     return null;
@@ -591,7 +626,24 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
         var p = self && self.val ? self.val() : 0;
         if (!p) return;
         var rec = INSTANCES[typeName];
-        if (!rec || rec.ptr !== p) INSTANCES[typeName] = { ptr: p, firstSeen: Date.now(), hits: 0, replaced: !!rec };
+        if (!rec || rec.ptr !== p) {
+          INSTANCES[typeName] = { ptr: p, firstSeen: Date.now(), hits: 0, replaced: !!rec };
+          // This callback only ever runs on the HOT path, i.e. after UWMK's
+          // resolveOriginal() succeeded and cached the real function. That
+          // means the game object DID resolve at that moment - so if the heap
+          // is unreadable later, the reference moved rather than never having
+          // existed. Worth recording once, because it is the only in-band proof.
+          try {
+            var h = HOOKS.filter(function (x) { return x.type === typeName; })[0];
+            FIRE_PROOF = {
+              type: typeName,
+              atMs: Date.now() - T0,
+              originalFunc: !!(h && h.hook && typeof h.hook.originalFunc === "function"),
+              resolveGameAtFire: !!(unityGame()),
+              gameSourceAtFire: READS.source
+            };
+          } catch (_) {}
+        }
         INSTANCES[typeName].hits++;
         if (!enabled) {
           var h = HOOKS.filter(function (x) { return x.type === typeName; })[0];
@@ -652,6 +704,9 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
    * ---------------------------------------------------------------- */
   var SNAPSHOT = null;
   var DIFF = [];
+  // First time a hook callback actually fires, with proof of what was true
+  // then. See captureArgs().
+  var FIRE_PROOF = null;
 
   // className() proves a captured pointer really is the IL2CPP object we think
   // it is. If it returns null the pointer is stale or not an object header, and
@@ -773,7 +828,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     try { sv = survey(); } catch (e) { surveyError = String((e && e.message) || e); }
 
     var report = {
-      version: "2.0.2",
+      version: VERSION,
       when: new Date().toISOString(),
       elapsedMs: Date.now() - T0,
       frame: location.href.slice(0, 120),
@@ -792,6 +847,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       instances: instances,
       classNames: classNames,
       instancesReplaced: replaced,
+      hookFireProof: FIRE_PROOF,
       survey: sv,
       surveyRows: Object.keys(sv).reduce(function (n, k) { return n + sv[k].length; }, 0),
       reads: { ok: READS.ok, failed: READS.failed, lastError: READS.lastError, source: READS.source },
@@ -811,9 +867,17 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       );
     }
     if (report.globals && !report.globals.heapU8) {
+      var extra = "";
+      if (report.hookFireProof) {
+        extra = " A hook fired at " + report.hookFireProof.atMs + "ms with originalFunc=" +
+          report.hookFireProof.originalFunc + " and game resolved=" +
+          report.hookFireProof.resolveGameAtFire +
+          " (source: " + (report.hookFireProof.gameSourceAtFire || "none") +
+          "), so the reference existed then and is not reachable now.";
+      }
       report.warnings.push(
         "Unity instance not resolved yet (source: " + (report.globals.gameSource || "none") + "). " +
-        "Heap reads stay blocked until Runtime.resolveGame() or a window global yields one."
+        "Heap reads stay blocked until a game object with Module.HEAPU8 is reachable." + extra
       );
     }
     if (report.globals && !report.globals.valueWrapper || report.globals.valueWrapper === "undefined") {
@@ -860,7 +924,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     try { return collect(); }
     catch (err) {
       return {
-        version: "2.0.3", when: new Date().toISOString(), elapsedMs: Date.now() - T0,
+        version: VERSION, when: new Date().toISOString(), elapsedMs: Date.now() - T0,
         host: HOST, uwmk: !!(window.UnityWebModkit && window.UnityWebModkit.Runtime),
         il2CppContext: false, arm: ARM, hooksTotal: HOOKS.length, hooksApplied: 0,
         instances: {}, survey: {}, collectError: String((err && err.message) || err)
