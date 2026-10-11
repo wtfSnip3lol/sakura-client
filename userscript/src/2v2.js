@@ -77,15 +77,143 @@
     return { x: worldX, y: worldY, w: worldW, h: worldH };
   }
 
-  // ── Entity scanner placeholder - override for 2v2.io ──
+  // ── Entity scanner for 2v2.io ──
+  // 2v2.io is a canvas-based 2v2 shooter. Player entities are accessible
+  // through global JavaScript objects rather than IL2CPP memory. This scanner
+  // tries common patterns found in canvas multiplayer games.
   function scanEntities() {
     entities = [];
-    // TODO: Implement 2v2.io-specific entity scanning
-    // Examples:
-    // - Phaser: scene.children.list with bodies
-    // - Three.js: scene.traverse with meshes
-    // - Unity: hook into game objects via UWMK
-    // - Custom: game.Players or similar global
+
+    // Helper: project world coords (identity for canvas games — world coords
+    // are already screen coords, origin at top-left of the game canvas).
+    function project(x, y, w, h) { return { x, y, w, h }; }
+
+    // Collect candidate entity arrays from globals.
+    var candidates = [];
+
+    // Pattern 1: window.players or similar
+    if (Array.isArray(window.players)) candidates.push({ name: "window.players", arr: window.players });
+    if (Array.isArray(window.entities)) candidates.push({ name: "window.entities", arr: window.entities });
+    if (Array.isArray(window.gameState?.players)) candidates.push({ name: "window.gameState.players", arr: window.gameState.players });
+    if (Array.isArray(window.enemies)) candidates.push({ name: "window.enemies", arr: window.enemies });
+    if (Array.isArray(window.characters)) candidates.push({ name: "window.characters", arr: window.characters });
+    if (Array.isArray(window.actors)) candidates.push({ name: "window.actors", arr: window.actors });
+    if (Array.isArray(window.units)) candidates.push({ name: "window.units", arr: window.units });
+
+    // Pattern 2: game object with entity list
+    if (window.game && window.game.entities) {
+      if (Array.isArray(window.game.entities)) candidates.push({ name: "window.game.entities", arr: window.game.entities });
+      if (Array.isArray(window.game.players)) candidates.push({ name: "window.game.players", arr: window.game.players });
+    }
+    if (window.Phaser && window.Phaser.Game && window.Phaser.Game.prototype) {
+      // Phaser 3 scene children
+      var scene = window.Phaser?.Game?.current?.scene;
+      if (scene && scene.children) {
+        candidates.push({ name: "phaser.scene.children", arr: scene.children });
+      }
+    }
+    if (window.PIXI && window.PIXI.interactiveSprite) {
+      // PIXI particle containers, etc.
+    }
+
+    // Pattern 3: canvas context might have reference data
+    var canvases = document.querySelectorAll("canvas");
+    for (var cc = 0; cc < canvases.length; cc++) {
+      var c = canvases[cc];
+      try {
+        var ctx = c.getContext("2d");
+        if (ctx && ctx.__sakuraEntityList) {
+          candidates.push({ name: "canvas.__sakuraEntityList", arr: ctx.__sakuraEntityList });
+        }
+      } catch (_) {}
+    }
+
+    // Deduplicate by array reference
+    var seen = new Set();
+    var uniqueCandidates = [];
+    for (var i = 0; i < candidates.length; i++) {
+      var key = candidates[i].arr.toString();
+      if (!seen.has(key)) {
+        seen.add(key);
+        uniqueCandidates.push(candidates[i]);
+      }
+    }
+
+    // Extract entity data from each candidate array
+    for (var cidx = 0; cidx < uniqueCandidates.length; cidx++) {
+      var cand = uniqueCandidates[cidx];
+      var arr = cand.arr;
+      var tag = cand.name;
+
+      if (!arr || arr.length === 0) continue;
+
+      for (var ei = 0; ei < arr.length; ei++) {
+        var ent = arr[ei];
+        if (!ent || typeof ent !== "object") continue;
+
+        // Try to extract fields commonly found in 2v2.io player objects
+        var x = ent.x !== undefined ? Number(ent.x) : null;
+        var y = ent.y !== undefined ? Number(ent.y) : null;
+        var health = ent.health !== undefined ? Number(ent.health) : null;
+        var team = ent.team !== undefined ? Number(ent.team) : null;
+        var name = ent.name !== undefined ? String(ent.name) : null;
+        var hp = ent.hp !== undefined ? Number(ent.hp) : null;
+
+        // Skip if we can't even locate position
+        if (x === null || y === null) continue;
+
+        // Skip candidates that are clearly not players (e.g. x=y=0 for everything)
+        if (x === 0 && y === 0) {
+          // Allow if there's some other distinguishing feature
+          var hasDistinctive = health !== null || team !== null || name !== null;
+          if (!hasDistinctive) continue;
+        }
+
+        // Determine screen rect using identity projection (world = screen for canvas)
+        var s = project(x, y, 32, 32); // assume 32x32 player sprite
+
+        // Accumulate; we'll consolidate duplicates later
+        var found = entities.find(function (e) {
+          return e.x === s.x && e.y === s.y && e.team === team;
+        });
+        if (found) {
+          // Merge: keep existing health if we have it, otherwise take new
+          if (typeof found.health === "number" && typeof health === "number") {
+            // average the two health values
+            found.health = (found.health + health) / 2;
+          } else if (typeof health === "number") {
+            found.health = health;
+          }
+          if (typeof found.team !== "number" && typeof team === "number") {
+            found.team = team;
+          }
+          if (found.name === null && name !== null) {
+            found.name = name;
+          }
+        } else {
+          entities.push({
+            x: s.x, y: s.y, w: s.w, h: s.h,
+            name: name || ("player_" + ei),
+            health: health,
+            team: team,
+            screenX: s.x,
+            screenY: s.y,
+            screenW: s.w,
+            screenH: s.h
+          });
+        }
+      }
+    }
+
+    // Sort: local player first (lowest y = nearest ground in 2D), then by distance from center
+    entities.sort(function (a, b) {
+      // Local player (team 0 or lowest team value) comes first
+      if (a.team !== b.team) return (a.team || 0) - (b.team || 0);
+      // Then by distance from screen center
+      var da = Math.hypot(a.x - 0.5, a.y - 0.5);
+      var db = Math.hypot(b.x - 0.5, b.y - 0.5);
+      return da - db;
+    });
   }
 
   // ── Draw ESP ──
