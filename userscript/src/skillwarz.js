@@ -2041,11 +2041,26 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
    * is the only honest way to fit a number nobody can read.
    */
   var FOV_KEY = "sakura-sw-fov";
+  var OFF_KEY = "sakura-sw-view-off";
   var VIEW = { pitch: null, yaw: null, pitchOff: 0, yawOff: 0, fov: 90, known: false };
 
   try { var _f = localStorage.getItem(FOV_KEY); if (_f) VIEW.fov = Math.min(140, Math.max(30, parseFloat(_f) || 90)); } catch (_) {}
+  try {
+    var _o = localStorage.getItem(OFF_KEY);
+    if (_o) {
+      var _p = JSON.parse(_o);
+      if (typeof _p.y === "number" && isFinite(_p.y)) VIEW.yawOff = _p.y;
+      if (typeof _p.p === "number" && isFinite(_p.p)) VIEW.pitchOff = _p.p;
+    }
+  } catch (_) {}
 
   function saveFov() { try { localStorage.setItem(FOV_KEY, String(VIEW.fov)); } catch (_) {} }
+  // The offsets used to exist but could only ever be cleared, never set - a
+  // correction knob with no handle on it. They persist so a dialled-in
+  // correction survives a reload.
+  function saveOff() {
+    try { localStorage.setItem(OFF_KEY, JSON.stringify({ y: VIEW.yawOff, p: VIEW.pitchOff })); } catch (_) {}
+  }
 
   /* Which two of MouseLook's floats are pitch and yaw is still an open question
    * - see viewState(). Until a deliberate turn names them this reads the pair
@@ -2062,26 +2077,60 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
    * pair is either angle-shaped or it is not, and "not" draws no boxes and says
    * why. A silent wrong answer is how this project has failed most often.
    */
+  /* YAW IS +0x28. THE DIFF ANSWERED IT WITHOUT ANOTHER TURN.
+   *
+   * Comparing two live reports, offset by offset:
+   *
+   *   0x14  -360      -360     static     yaw clamp
+   *   0x18   360       360     static     yaw clamp - and this is what the old
+   *                                        code read as PITCH
+   *   0x1C     0         0     static
+   *   0x28  188.50    45.49     MOVED     the only float that moves at all
+   *   0x30  1.1382    1.1382     static    mouse sensitivity, byte-identical
+   *
+   * and the 2.9.6 snapshot diff caught +0x28 travelling 179.782 -> 358.713, a
+   * change of 178.93 degrees. A turn, in degrees, on the one field that is not
+   * a constant. That is the yaw.
+   *
+   * So +0x18 is a clamp limit and reading it as a pitch is what put every box
+   * at pitch 360 with forward pinned to (0,0,1).
+   *
+   * PITCH IS NOT IN THIS STRUCT, and that is a finding rather than a gap left
+   * to chance: nothing else moves, not even while looking up and down. Unity
+   * keeps pitch on the camera Transform, which exposes no IL2CPP fields and
+   * cannot be reached. +0x1C is read as pitch because it is the only bounded
+   * candidate left, it reads a sane 0, and it is declared UNVERIFIED here -
+   * the consequence being that boxes are right horizontally and ignore vertical
+   * look. On a flat map where everyone stands on the same plane that is a small
+   * and bounded error, and it is stated rather than hidden. The offset sliders
+   * exist so a constant error can be dialled out without another round-trip.
+   */
+  var YAW_OFF = 0x28;
+  var PITCH_OFF = 0x1c;
+
   var ANGLE = { pitch: null, yaw: null, identified: false, why: "no MouseLook yet" };
 
   function viewAngles() {
     var v = viewState();
     if (!v || !v.mouseLook) { ANGLE.identified = false; ANGLE.why = "no MouseLook yet"; return null; }
     var ml = parseInt(v.mouseLook, 16);
-    var p = rd(ml + 0x18, "f32");
-    var y = rd(ml + 0x1c, "f32");
-    if (typeof p !== "number" || typeof y !== "number" ||
-        !isFinite(p) || !isFinite(y)) {
+    var y = rd(ml + YAW_OFF, "f32");
+    var p = rd(ml + PITCH_OFF, "f32");
+    ANGLE.rawYaw = y; ANGLE.rawPitch = p;
+    if (typeof y !== "number" || !isFinite(y) || typeof p !== "number" || !isFinite(p)) {
       ANGLE.identified = false; ANGLE.why = "MouseLook floats unreadable";
       return null;
     }
-    // Both candidates are reported so a turn can be matched against them even
-    // while the pair is being rejected - the diff is what identifies them.
-    ANGLE.pitch = p; ANGLE.yaw = y;
-    var bad = [];
-    if (p < -90 || p > 90) bad.push("0x18=" + Math.round(p) + " is not a pitch");
-    ANGLE.why = bad.length ? bad.join("; ") : "";
-    if (bad.length) { ANGLE.identified = false; return null; }
+    // Yaw is a heading: any finite value is one after normalising. Only the
+    // pitch range is a real constraint, and it is checked so that a future build
+    // where +0x1C stops being pitch withholds the boxes instead of projecting
+    // with them.
+    if (p < -90 || p > 90) {
+      ANGLE.identified = false;
+      ANGLE.why = "0x1C=" + Math.round(p) + " is not a pitch";
+      return null;
+    }
+    ANGLE.why = "";
     ANGLE.identified = true;
     ANGLE.pitch = p + VIEW.pitchOff;
     ANGLE.yaw = y + VIEW.yawOff;
@@ -2384,7 +2433,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       var rr5 = row("Reset view", "fov back to 75, offsets clear");
       var resetBtn = el("button", "sk-btn", "Reset");
       resetBtn.addEventListener("click", function () {
-        VIEW.fov = 75; VIEW.pitchOff = 0; VIEW.yawOff = 0; saveFov();
+        VIEW.fov = 75; VIEW.pitchOff = 0; VIEW.yawOff = 0; saveFov(); saveOff();
         // showCat, not just refreshMenu: the card's own text says whether the
         // projection is usable, and only a rebuild re-renders it.
         showCat(MENU.cat);
@@ -2392,13 +2441,34 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       rr5.appendChild(resetBtn);
       v2.body.appendChild(rr4);
       v2.body.appendChild(rr5);
+
+      // Yaw comes from MouseLook+0x28, which the diff pinned. Pitch does not
+      // come from this struct at all - nothing on MouseLook moves when you look
+      // up or down, because Unity keeps pitch on the camera Transform, and a
+      // Transform exposes no IL2CPP fields. So vertical look is not tracked and
+      // these two sliders are how a constant error gets dialled out without
+      // waiting on another report.
+      var yo = mkRange(-180, 180, 1, function () { return VIEW.yawOff; },
+        function (v) { VIEW.yawOff = v; saveOff(); paintEspBtn(); });
+      yo.input.dataset.unit = "°";
+      var rr6 = row("Yaw correction", "0 if boxes line up");
+      rr6.appendChild(yo);
+      v2.body.appendChild(rr6);
+      var po = mkRange(-90, 90, 1, function () { return VIEW.pitchOff; },
+        function (v) { VIEW.pitchOff = v; saveOff(); paintEspBtn(); });
+      po.input.dataset.unit = "°";
+      var rr7 = row("Pitch correction", "pitch is unverified");
+      rr7.appendChild(po);
+      v2.body.appendChild(rr7);
       var n = rep && rep.view;
       v2.body.appendChild(el("div", "sk-note",
         "view: " + (n ? (n.mouseLook ? "MouseLook " + n.mouseLook + (n.camera ? "  camera " + n.camera : "") : "no MouseLook yet")
                       : "no MouseLook yet") +
-        (ang ? "\nreading 0x18=" + (ang.rawPitch === null ? "-" : Math.round(ang.rawPitch)) +
-               "  0x1C=" + (ang.rawYaw === null ? "-" : Math.round(ang.rawYaw)) +
-               (ang.identified ? "  (accepted as pitch/yaw)" : "  (rejected)") : "") +
+        (ang ? "\nreading " + (ang.yawAt || "0x28") + "=" + (ang.rawYaw === null || ang.rawYaw === undefined ? "-" : Math.round(ang.rawYaw)) +
+               (ang.yawOff ? " " + (ang.yawOff > 0 ? "+" : "") + Math.round(ang.yawOff) : "") +
+               "  (yaw, confirmed)\n" + (ang.pitchAt || "0x1c") + "=" + (ang.rawPitch === null || ang.rawPitch === undefined ? "-" : Math.round(ang.rawPitch)) +
+               (ang.pitchOff ? " " + (ang.pitchOff > 0 ? "+" : "") + Math.round(ang.pitchOff) : "") +
+               "  (pitch, unverified)" : "") +
         (VIEW.pitchOff || VIEW.yawOff ? "\npitch " + Math.round(VIEW.pitchOff) + "  yaw " + Math.round(VIEW.yawOff) : "")));
       out.push(v2);
     }
@@ -3228,7 +3298,15 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
             if (pr) { cx = pr.x / 1000; cy = pr.y / 1000; }
           }
           return { identified: ANGLE.identified, why: ANGLE.why,
-                   rawPitch: ANGLE.pitch, rawYaw: ANGLE.yaw, fov: VIEW.fov,
+                   // Which offsets the reading came from, raw and applied. A
+                   // projection that is wrong by a constant rotation is one
+                   // slider away from right, and only if the offset that is
+                   // wrong is a number in the report.
+                   yawAt: "0x" + YAW_OFF.toString(16), pitchAt: "0x" + PITCH_OFF.toString(16),
+                   rawPitch: ANGLE.rawPitch, rawYaw: ANGLE.rawYaw,
+                   pitch: ANGLE.pitch, yaw: ANGLE.yaw,
+                   pitchOff: VIEW.pitchOff, yawOff: VIEW.yawOff,
+                   fov: VIEW.fov,
                    fovSane: VIEW.fov >= 60 && VIEW.fov <= 110,
                    centreX: cx, centreY: cy };
         })(),

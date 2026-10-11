@@ -847,8 +847,8 @@ function check(name, cond, detail) {
       setup() {
         wF32(OBJ.FPScontroller + 0x2e4, -40); wF32(OBJ.FPScontroller + 0x2e8, 5); wF32(OBJ.FPScontroller + 0x2ec, 12);
         wI32(s1 + 0x30, ml);
-        // the live field reading: 360 is not a pitch
-        wF32(ml + 0x14, -360); wF32(ml + 0x18, 360); wF32(ml + 0x1c, 0);
+        wF32(ml + 0x18, 360); wF32(ml + 0x1c, 400);   // +0x1C out of range: unusable
+        wF32(ml + 0x28, 45);
         wF32(s1 + 0x6c, -30); wF32(s1 + 0x70, 5.2); wF32(s1 + 0x74, 9);
         wI32(s1 + 0x7c, 10);
       },
@@ -873,8 +873,8 @@ function check(name, cond, detail) {
     setup() {
       wF32(OBJ.FPScontroller + 0x2e4, -40); wF32(OBJ.FPScontroller + 0x2e8, 5); wF32(OBJ.FPScontroller + 0x2ec, 12);
       wI32(s1 + 0x30, ml);
-      wF32(ml + 0x18, 12); wF32(ml + 0x1c, 0);      // a plausible pair
-      wF32(s1 + 0x6c, -30); wF32(s1 + 0x70, 5.2); wF32(s1 + 0x74, 9);
+      wF32(ml + 0x18, 360); wF32(ml + 0x1c, 0); wF32(ml + 0x28, 45);
+        wF32(s1 + 0x6c, -30); wF32(s1 + 0x70, 5.2); wF32(s1 + 0x74, 9);
       wI32(s1 + 0x7c, 10);
     },
     post(send, c) { c.hudEl('esp').onclick(); send('snapshot'); }
@@ -981,15 +981,16 @@ function check(name, cond, detail) {
     `local=${JSON.stringify(l)}`);
 }
 
-/* ================================================================== *
- * THE BOXES WERE ANCHORED TO NOTHING.
+/* YAW IS +0x28, AND +0x18 IS A CLAMP.
  *
- * Field report: MouseLook+0x18 read 360 and +0x1C read 0. viewAngles() took
- * 0x18 as pitch, and cos(360) is 1 while sin(360) is 0 - so forward collapsed
- * to (0,0,1) and the vertical axis flattened entirely. Boxes were projected from
- * one fixed world orientation regardless of where the player was looking. They
- * drew cleanly, on nothing. A pitch outside +/-90 is not a pitch, so the pair
- * is now rejected outright and nothing is drawn.
+ * Two live reports, offset by offset: everything on MouseLook is static except
+ * +0x28 (188.50 then 45.49), and the snapshot diff caught +0x28 travelling
+ * 179.782 -> 358.713 - a change of 178.93 degrees. A turn, in degrees.
+ *
+ * The old code read +0x18 as PITCH. It never moves, it reads 360, and cos(360)
+ * is 1 while sin(360) is 0 - so forward collapsed to (0,0,1) and every box was
+ * projected from one fixed world orientation regardless of where the player was
+ * looking. They drew cleanly, on nothing.
  */
 {
   const ml = 0x2c000;
@@ -998,21 +999,50 @@ function check(name, cond, detail) {
     fireMany: { PhotonNetworkSync: [s1] },
     setup() {
       wI32(s1 + 0x30, ml);
+      // exactly the field shape: clamps static, one live heading
       wF32(ml + 0x14, -360); wF32(ml + 0x18, 360); wF32(ml + 0x1c, 0);
+      wF32(ml + 0x28, 45); wF32(ml + 0x30, 1.1382339000701904);
       wF32(OBJ.FPScontroller + 0x2e4, -40); wF32(OBJ.FPScontroller + 0x2e8, 5); wF32(OBJ.FPScontroller + 0x2ec, 12);
       wF32(s1 + 0x6c, -30); wF32(s1 + 0x70, 5.2); wF32(s1 + 0x74, 9);
       wI32(s1 + 0x7c, 10);
     }
   });
   const a = r.report.angles;
-  check('a pitch of 360 is rejected, not projected with',
+  check('yaw comes from +0x28, the only float that moves',
+    a && a.yawAt === '0x28' && Math.abs(a.rawYaw - 45) < 1e-3,
+    JSON.stringify(a));
+  check('+0x18 is not read as pitch, so a static 360 cannot flatten the view',
+    a && a.pitchAt === '0x1c' && a.rawPitch === 0,
+    JSON.stringify(a));
+  check('and the projection is usable', a && a.identified === true, JSON.stringify(a));
+}
+
+/* The gate still has a job: +0x1C is the only bounded candidate left for pitch
+ * and it is UNVERIFIED, so if a future build makes it something else the boxes
+ * must be withheld rather than projected with a nonsense angle. */
+{
+  const ml = 0x2c000;
+  const s1 = 0x40000;
+  const r = runFrame({
+    fireMany: { PhotonNetworkSync: [s1] },
+    setup() {
+      wI32(s1 + 0x30, ml);
+      wF32(ml + 0x18, 360); wF32(ml + 0x1c, 400);   // +0x1C no longer a pitch
+      wF32(ml + 0x28, 45);
+      wF32(OBJ.FPScontroller + 0x2e4, -40); wF32(OBJ.FPScontroller + 0x2e8, 5); wF32(OBJ.FPScontroller + 0x2ec, 12);
+      wF32(s1 + 0x6c, -30); wF32(s1 + 0x70, 5.2); wF32(s1 + 0x74, 9);
+      wI32(s1 + 0x7c, 10);
+    }
+  });
+  const a = r.report.angles;
+  check('an out-of-range pitch is rejected rather than projected with',
     a && a.identified === false,
     JSON.stringify(a));
-  check('and the report says which read is not a pitch',
-    a && /not a pitch/.test(a.why || ''),
+  check('and the report names the read that failed',
+    a && /0x1C/.test(a.why || ''),
     JSON.stringify(a));
-  check('the raw values are still reported so a turn can be matched against them',
-    a && a.rawPitch === 360 && a.rawYaw === 0,
+  check('the yaw is still published, because it is a confirmed offset',
+    a && Math.abs(a.rawYaw - 45) < 1e-3,
     JSON.stringify(a));
 }
 
@@ -1183,6 +1213,45 @@ function check(name, cond, detail) {
   check('package.json is the single source of that version',
     typeof pkg.version === 'string' && /^2\.\d+\.\d+$/.test(pkg.version),
     `pkg.version=${pkg.version}`);
+}
+
+/* The correction knob has to correct.
+ *
+ * Yaw now comes from a confirmed offset, but a constant error is still possible
+ * - a different Unity handedness, a different zero point, a different FOV
+ * convention. The offsets used to exist in the struct with no handle on them at
+ * all: settable by nothing, clearable by the Reset button. These pin that a
+ * stored yaw correction actually rotates the projection, and that it survives a
+ * reload.
+ */
+{
+  const ml = 0x2c000;
+  const s1 = 0x40000;
+  // we at (-40, 5, 12) looking at yaw 45; an enemy dead ahead on world +Z
+  const fixture = () => {
+    wI32(s1 + 0x30, ml);
+    wF32(ml + 0x18, 360); wF32(ml + 0x1c, 0); wF32(ml + 0x28, 45);
+    wF32(OBJ.FPScontroller + 0x2e4, -40); wF32(OBJ.FPScontroller + 0x2e8, 5); wF32(OBJ.FPScontroller + 0x2ec, 12);
+    wF32(s1 + 0x6c, -40); wF32(s1 + 0x70, 5.2); wF32(s1 + 0x74, 52);   // 40m straight ahead of us
+    wI32(s1 + 0x7c, 10);
+  };
+  const base = runFrame({ ls: {}, fireMany: { PhotonNetworkSync: [s1] }, setup: fixture });
+  const corrected = runFrame({
+    ls: { 'sakura-sw-view-off': JSON.stringify({ y: -45, p: 0 }) },
+    fireMany: { PhotonNetworkSync: [s1] }, setup: fixture
+  });
+  check('the raw yaw is read and reported untouched',
+    base.report.angles && Math.abs(base.report.angles.rawYaw - 45) < 1e-3,
+    JSON.stringify(base.report.angles));
+  check('a yaw of 45 puts a target straight ahead off to the side',
+    base.report.angles && Math.abs(base.report.angles.centreX - 0.5) > 0.05,
+    `centreX=${base.report.angles && base.report.angles.centreX}`);
+  check('a stored correction is applied on load',
+    corrected.report.angles && Math.abs(corrected.report.angles.yawOff) === 45,
+    JSON.stringify(corrected.report.angles));
+  check('and it brings the projection back to centre, which is what a correction is for',
+    corrected.report.angles && Math.abs(corrected.report.angles.centreX - 0.5) < 1e-3,
+    `centreX=${corrected.report.angles && corrected.report.angles.centreX}`);
 }
 
 /* The menu opens bottom-right, which is where this game keeps the weapon and
