@@ -114,6 +114,8 @@ function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'r
   // object exported as window.UnityWebModkit.Runtime in the 'pluginRuntime'
   // scenario.
   const pluginRuntime = { _game: null, resolveGame() { return this._game; } };
+  // Stands in for a second UWMK copy that loaded later and owns the global.
+  const orphanRuntime = { _game: null, resolveGame() { return this._game; } };
 
   const Runtime = {
     plugins: [], startedInitializing: false, internalWasmTypes: [], il2CppContext: undefined,
@@ -123,11 +125,15 @@ function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'r
     createPlugin(opts) {
       pluginCalls.push(opts);
       order.push('createPlugin');
+      // Real UWMK output, so the log tap has genuine lines to keep.
+      if (win.console && typeof win.console.log === 'function') {
+        win.console.log('[UnityWebModkit] [MESSAGE] Chainloader initialized');
+      }
       this.startedInitializing = true;
       const p = {
         name: opts.name, hooks: [],
         // ModkitPlugin stores the Runtime it was constructed with.
-        _runtime: heapVia === 'pluginRuntime' ? pluginRuntime : Runtime,
+        _runtime: heapVia === 'pluginRuntime' ? pluginRuntime : (heapVia === 'takeover' ? orphanRuntime : Runtime),
         hookPrefix(target, cb) {
           const h = { ...target, callback: cb, applied: false, enabled: true };
           this.hooks.push(h);
@@ -142,6 +148,11 @@ function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'r
             // different object that still holds the game - can resolve it.
             if (heapVia === 'pluginRuntime') pluginRuntime._game = gameObj;
             else Runtime._game = gameObj;
+          }
+          if (heapVia === 'takeover') {
+            // A second UWMK copy loaded and overwrote the global. Our tag is
+            // gone; the orphaned Runtime still holds the game.
+            orphanRuntime._game = gameObj;
           }
           return h;
         }
@@ -215,6 +226,10 @@ function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'r
     if (applyFirst) applyPass();     // UWMK got there before we registered
 
     fn(win, doc, win.location, win.console, win.navigator, win.setTimeout, WebAssembly, BC);
+    // A second UWMK copy loads and replaces the global AFTER we armed ours.
+    if (heapVia === 'takeover') {
+      win.UnityWebModkit.Runtime = { plugins: [], resolveGame() { return null; } };
+    }
     let guard = 0;
     while (pending.length && guard++ < 200) pending.shift()();
     if (scriptDataLate) Runtime.revealScriptData();
@@ -397,7 +412,48 @@ function check(name, cond, detail) {
 }
 
 /* ================================================================== *
- * 5. THE v2.0.1 BUG. The field report showed unityInstance / unityGame /
+ * 5. The log tap must not eat its own tail.
+ *
+ * The report embeds uwmkLog, whose entries contain the string
+ * "UnityWebModkit", so a naive filter matched our OWN reports. They were then
+ * embedded in the next report, recursively, filling the 60-entry budget and
+ * evicting UWMK's real output - including the hook-timeout line that would
+ * explain the whole thread.
+ * ================================================================== */
+{
+  const r = runFrame({});
+  const echoed = (r.report.uwmkLog || []).filter(l => l.includes('SAKURA-SKILLWARZ-BEGIN'));
+  check('uwmkLog contains none of our own report echoes', echoed.length === 0,
+    `${echoed.length} self-captured entries`);
+  check('uwmkLog entries are deduplicated',
+    new Set(r.report.uwmkLog || []).size === (r.report.uwmkLog || []).length, 'duplicate entries');
+}
+
+/* ================================================================== *
+ * 6. Two UWMK copies in one page: the global is replaced by a second Runtime
+ * while the first - the one holding the game - is orphaned.
+ * ================================================================== */
+{
+  const r = runFrame({ heapVia: 'takeover' });
+  check('takeover: identity probe shows the Runtime we armed is gone',
+    r.report.identity.tagMatches === false, JSON.stringify(r.report.identity));
+  check('takeover: warns that another UWMK copy took over',
+    r.report.warnings.some(w => /ANOTHER UWMK COPY TOOK OVER/.test(w)),
+    JSON.stringify(r.report.warnings));
+  check('takeover: warning tells the user what to do about it',
+    r.report.warnings.some(w => /Tampermonkey/.test(w)), JSON.stringify(r.report.warnings));
+
+  const ok = runFrame({});
+  check('healthy: Runtime identity is stable',
+    ok.report.identity.tagMatches === true, JSON.stringify(ok.report.identity));
+  check('healthy: plugin._runtime IS the exported Runtime',
+    ok.report.identity.pluginRuntimeIsExported === true, JSON.stringify(ok.report.identity));
+  check('healthy: no takeover warning',
+    !ok.report.warnings.some(w => /ANOTHER UWMK COPY/.test(w)), JSON.stringify(ok.report.warnings));
+}
+
+/* ================================================================== *
+ * 7. THE v2.0.1 BUG. The field report showed unityInstance / unityGame /
  * game ALL "undefined" while 4/4 hooks applied. Reading the heap only via
  * those window names therefore decoded nothing. This scenario is now the
  * default in every case above, so a regression to window-only probing fails

@@ -320,7 +320,18 @@
               if (typeof v === "string") flat += v;
               else if (v && v.message) flat += v.message;
             }
-            if (flat.indexOf("UnityWebModkit") !== -1 && UWMK_LOG.length < 60) UWMK_LOG.push(flat.slice(0, 300));
+            // Never capture our own output. Our report embeds uwmkLog, whose
+            // entries contain the string "UnityWebModkit", so the naive filter
+            // matched our own reports - which were then embedded in the next
+            // report, and so on. That self-feeding loop filled the 60-entry
+            // budget with our own noise and evicted UWMK's real diagnostics,
+            // including the "Hook timed out waiting for Unity to initialize"
+            // line that would have explained this whole thread.
+            if (flat.indexOf(MARK0) !== -1) return orig.apply(console, arguments);
+            if (flat.indexOf("UnityWebModkit") !== -1) {
+              var line = flat.slice(0, 300);
+              if (UWMK_LOG.indexOf(line) === -1 && UWMK_LOG.length < 60) UWMK_LOG.push(line);
+            }
           } catch (_) {}
           return orig.apply(console, arguments);
         };
@@ -336,11 +347,12 @@
    * the six non-system images from dump.cs for build 125.
    * ---------------------------------------------------------------- */
   var ARM = { attempted: false, ok: false, error: null, hooksRegistered: 0 };
+  var ARM_TAG = null;
 
   // Single source of truth. A field report came back saying version 2.0.2 while
   // the plugin logged 2.0.3, because the string was hand-written in three
   // places and one of them was missed. Derived fields must not be retyped.
-  var VERSION = "2.0.4";
+  var VERSION = "2.0.5";
 
   // Declared here, NOT beside their consumers further down. armUwmk() calls
   // registerHooks() in the same tick, and a `var x = []` further down the file
@@ -383,6 +395,17 @@
       ARM.attempted = true;
       plugin = RT.createPlugin({ name: "sakura-skillwarz", version: VERSION, referencedAssemblies: ASSEMBLIES.slice() });
       ARM.ok = true;
+      // Identity probe. Two UWMK copies in one page means two Runtime
+      // singletons: whichever loaded last owns window.UnityWebModkit, and the
+      // other one - the one that actually instantiated the WASM and holds the
+      // game - is orphaned. Every symptom fits: hooks applied on one copy,
+      // resolveGame() null on the other. Tagging the Runtime we arm means we can
+      // detect the takeover instead of inferring it.
+      try {
+        var RT0 = window.UnityWebModkit.Runtime;
+        RT0.__sakuraTag = VERSION + ":" + Math.random().toString(36).slice(2, 10);
+        ARM_TAG = RT0.__sakuraTag;
+      } catch (_) {}
       // Register the hooks in the SAME TICK, before returning from arming.
       //
       // This is the whole ballgame and v2.0.2 got it wrong. UWMK applies hooks
@@ -752,6 +775,21 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     return out;
   }
 
+  function identity() {
+    var o = {};
+    try {
+      var RT = window.UnityWebModkit && window.UnityWebModkit.Runtime;
+      o.tag = (RT && RT.__sakuraTag) || null;
+      o.tagMatches = !!(RT && ARM_TAG && RT.__sakuraTag === ARM_TAG);
+      o.runtimeGame = RT && RT._game ? typeof RT._game : "none";
+      // If these differ, window.UnityWebModkit.Runtime is not the Runtime our
+      // plugin was built with - i.e. something else owns the global.
+      o.pluginRuntimeIsExported = !!(plugin && plugin._runtime && plugin._runtime === RT);
+      o.pluginRuntimeGame = (plugin && plugin._runtime && plugin._runtime._game) ? typeof plugin._runtime._game : "none";
+    } catch (_) { o.error = String((_ && _.message) || _); }
+    return o;
+  }
+
   function globals() {
     var want = ["unityInstance", "unityGame", "game", "unityInstanceWrapper"];
     var o = {};
@@ -851,6 +889,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       survey: sv,
       surveyRows: Object.keys(sv).reduce(function (n, k) { return n + sv[k].length; }, 0),
       reads: { ok: READS.ok, failed: READS.failed, lastError: READS.lastError, source: READS.source },
+      identity: identity(),
       globals: globals(),
       diff: DIFF.slice(0, 40),
       uwmkLog: UWMK_LOG.slice(0, 20),
@@ -864,6 +903,20 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       report.warnings.push(
         "captured " + Object.keys(report.instances).length + " object(s) but read 0 fields. " +
         (READS.lastError ? "Reason: " + READS.lastError : "No read failed, so every offset was skipped by type.")
+      );
+    }
+    if (report.identity && report.identity.tagMatches === false) {
+      report.warnings.push(
+        "ANOTHER UWMK COPY TOOK OVER window.UnityWebModkit. The Runtime we armed was " +
+        "replaced by a different instance, so we are asking the wrong object for " +
+        "the game while the one holding it is orphaned. Disable every other " +
+        "Sakura/UWMK script in Tampermonkey and hard-reload."
+      );
+    }
+    if (report.identity && report.identity.pluginRuntimeIsExported === false) {
+      report.warnings.push(
+        "plugin._runtime is not window.UnityWebModkit.Runtime - the plugin was built " +
+        "against a different Runtime instance than the global now exposes."
       );
     }
     if (report.globals && !report.globals.heapU8) {
