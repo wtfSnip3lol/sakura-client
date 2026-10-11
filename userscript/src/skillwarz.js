@@ -53,7 +53,7 @@
   // It was hand-written in three places once and one drifted, so a field report
   // claimed 2.0.2 while the plugin logged 2.0.3 - which sends everyone chasing
   // a stale build.
-  var VERSION = "2.9.2";
+  var VERSION = "2.9.3";
 
   /* ================================================================== *
    * WRAPPER — relay only. Arming UWMK here achieves nothing: this frame
@@ -2027,7 +2027,8 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
    * of the earlier complaint: a panel that is always on screen, on top of the
    * game, is a panel nobody can play past. This one is a corner petal.
    * ---------------------------------------------------------------- */
-  var MENU = { open: false, cat: "combat", built: false, root: null, cols: null, head: null, sub: null, syncs: [] };
+  var MENU = { open: false, cat: "combat", built: false, root: null, cols: null, head: null, sub: null, syncs: [], pos: null };
+  var POS_KEY = "sakura-sw-menu-pos";
   // The last emitted report. The menu reads values from here rather than
   // re-decoding the heap, because the report is already the thing everything
   // else in this file trusts.
@@ -2356,6 +2357,89 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     if (MENU.open) setMenu(true);
   }
 
+  // The menu opens bottom-right, which is where this game keeps the weapon and
+  // ammo readout - so opening it hides the thing you open it to change while
+  // playing. Drag it. People put menus in different corners for different
+  // games, and the position is remembered.
+  function loadMenuPos() {
+    try {
+      var raw = localStorage.getItem(POS_KEY);
+      if (!raw) return;
+      var p = JSON.parse(raw);
+      if (p && typeof p.x === "number" && typeof p.y === "number") MENU.pos = p;
+    } catch (_) {}
+  }
+  function saveMenuPos() {
+    try { localStorage.setItem(POS_KEY, JSON.stringify(MENU.pos)); } catch (_) {}
+  }
+
+  function applyMenuPos() {
+    var p = MENU.root;
+    if (!p || !p.style) return;
+    if (MENU.pos) {
+      p.style.left = MENU.pos.x + "px";
+      p.style.top = MENU.pos.y + "px";
+      p.style.right = "auto";
+      p.style.bottom = "auto";
+    } else {
+      p.style.left = "auto";
+      p.style.top = "auto";
+      p.style.right = "24px";
+      p.style.bottom = "24px";
+    }
+  }
+
+  function makeDraggable(panel, handle) {
+    try {
+      var dragging = false, dx = 0, dy = 0;
+      handle.style.cursor = "grab";
+      handle.style.touchAction = "none";
+      var down = function (e) {
+        dragging = true;
+        handle.style.cursor = "grabbing";
+        // Recompute rather than trusting the current left/top: the panel may
+        // still be sitting at its default bottom-right position, which is
+        // expressed as right/bottom rather than left/top.
+        var rect = { left: parseFloat(panel.style.left) || 0, top: parseFloat(panel.style.top) || 0 };
+        if (!panel.style.left || panel.style.left === "auto") {
+          rect.left = (window.innerWidth || 0) - (panel.offsetWidth || 620) - 24;
+        }
+        if (!panel.style.top || panel.style.top === "auto") {
+          rect.top = (window.innerHeight || 0) - (panel.offsetHeight || 400) - 24;
+        }
+        dx = (e.clientX || 0) - rect.left;
+        dy = (e.clientY || 0) - rect.top;
+        try { e.preventDefault(); } catch (_) {}
+      };
+      var move = function (e) {
+        if (!dragging) return;
+        var w = panel.offsetWidth || 620, h = panel.offsetHeight || 400;
+        var x = (e.clientX || 0) - dx, y = (e.clientY || 0) - dy;
+        // Keep at least a corner on screen. A menu dragged off the edge is a
+        // menu the user cannot get back without reloading.
+        x = Math.max(8, Math.min((window.innerWidth || 0) - w - 8, x));
+        y = Math.max(8, Math.min((window.innerHeight || 0) - h - 8, y));
+        panel.style.left = x + "px";
+        panel.style.top = y + "px";
+        panel.style.right = "auto";
+        panel.style.bottom = "auto";
+        MENU.pos = { x: x, y: y };
+      };
+      var up = function () {
+        if (!dragging) return;
+        dragging = false;
+        handle.style.cursor = "grab";
+        saveMenuPos();
+      };
+      handle.addEventListener("mousedown", down);
+      window.addEventListener("mousemove", move);
+      window.addEventListener("mouseup", up);
+      handle.addEventListener("touchstart", down, { passive: false });
+      window.addEventListener("touchmove", move, { passive: false });
+      window.addEventListener("touchend", up);
+    } catch (_) {}
+  }
+
   function buildMenu() {
     if (MENU.built) return MENU.root;
     try {
@@ -2398,6 +2482,11 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       MENU.cols = cols;
       MENU.head = head;
       MENU.sub = sub;
+      loadMenuPos();
+      applyMenuPos();
+      // Drag by the header only: the switches and the slider inside the cards
+      // must keep their own clicks.
+      makeDraggable(panel, top);
       var buttons = {};
       for (var c = 0; c < MENU_CATS.length; c++) {
         var cat = MENU_CATS[c];

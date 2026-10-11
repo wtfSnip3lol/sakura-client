@@ -816,7 +816,32 @@ function check(name, cond, detail) {
   check('a second click turns it off entirely', step(2) && step(2).on === false, JSON.stringify(step(2)));
 }
 
-/* THE MENU RENDERED WITH NO CSS AT ALL.
+/* The menu opens bottom-right, which is where this game keeps the weapon and
+ * ammo readout, so opening it hides the thing you opened it to change. It is
+ * draggable, the position is remembered, and a menu dragged off the edge is
+ * still reachable - a panel you can lose behind the tab strip is worse than
+ * one in the wrong corner.
+ */
+{
+  const r = runFrame({ preFire(c) { for (const fn of (c.listeners.keydown || [])) fn({ code: 'Insert', preventDefault() {} }); } });
+  const panel = r.doc.getElementById('sakura-menu-root');
+  check('the menu defaults to a corner rather than floating loose',
+    !!panel && (panel.style.bottom === '24px' || !!panel.style.left),
+    `style=${JSON.stringify(panel && panel.style)}`);
+
+  const stored = { 'sakura-sw-menu-pos': JSON.stringify({ x: 120, y: 90 }) };
+  const r2 = runFrame({ ls: stored });
+  const p2 = r2.doc.getElementById('sakura-menu-root');
+  check('a remembered position is restored',
+    p2 && p2.style.left === '120px' && p2.style.top === '90px',
+    `style=${JSON.stringify(p2 && p2.style)}`);
+  check('and bottom-right is released so the two do not fight',
+    p2 && p2.style.bottom === 'auto' && p2.style.right === 'auto',
+    `style=${JSON.stringify(p2 && p2.style)}`);
+}
+
+/* ================================================================== *
+ * THE MENU RENDERED WITH NO CSS AT ALL.
  *
  * Field screenshot: the menu's cards spilled out over the game as unstyled
  * text. Cause: `#sakura-menu-root{all:initial}` is an ID selector, so at
