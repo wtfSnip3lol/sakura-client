@@ -182,6 +182,11 @@ function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'r
   // writes beforehand is wiped and the test fails for the wrong reason.
   if (setup) setup();
   const posted = [], pluginCalls = [], hookCalls = [], pending = [], listeners = [], order = [], portalCommands = [];
+  // rAF callbacks are queued separately from timers and drained separately, so a
+  // test can count FRAMES rather than "timer ticks" - the two are not the same
+  // thing, and conflating them is how a 20fps overlay ships unnoticed.
+  const raf = [];
+  let rafCount = 0;
   // Declared out here so the return statement can hand it to the test; the try
   // block fills it in. A `const` inside the try would not survive to the return.
   let ctx = null;
@@ -373,6 +378,13 @@ const consoleRec = (level) => (...a) => { CONSOLE.push(level + ': ' + a.map(Stri
     UnityWebModkit: { Runtime, ValueWrapper: FakeVW },
     addEventListener(t, fn) { (listeners[t] = listeners[t] || []).push(fn); },
     setTimeout(fn) { pending.push(fn); return 0; },
+    // A real rAF, queued separately from timers. The ESP overlay is driven by
+    // rAF because a 50ms timer paints twenty times a second against a game
+    // rendering sixty-plus - which is the difference between a box that tracks
+    // the player and one that trails them. A harness with no rAF would quietly
+    // exercise the timer fallback and never test the path that ships.
+    requestAnimationFrame(fn) { raf.push(fn); return raf.length; },
+    cancelAnimationFrame() {},
     BroadcastChannel: BC,
     navigator: {}, performance: { getEntriesByType: () => [] },
     parent: { postMessage(m) { posted.push(m); } },
@@ -452,7 +464,25 @@ const consoleRec = (level) => (...a) => { CONSOLE.push(level + ': ' + a.map(Stri
       win.UnityWebModkit.Runtime = { plugins: [], resolveGame() { return null; } };
     }
     let guard = 0;
-    while (pending.length && guard++ < 200) pending.shift()();
+    // Timers and rAF callbacks share a queue here because the payload reschedules
+    // itself through whichever it has, and a drain that only ran one of them
+    // would leave the other chain alive - the loop would keep "running" after
+    // the test stopped looking, or stop before it started.
+    const drain = () => {
+      let g = 0, f = 0;
+      // Timers and frames get SEPARATE caps. The overlay reschedules itself
+      // through rAF forever, so a shared cap means every drain runs to the limit
+      // and repaints the canvas hundreds of times per test - which is how a
+      // fixture ends up allocating until the heap gives out. ONE frame is all
+      // any test needs to exercise the rAF path; the timers still drain fully.
+      while ((pending.length || raf.length) && g++ < 400) {
+        if (pending.length) { pending.shift()(); continue; }
+        if (f++ >= 1) break;
+        rafCount++;
+        raf.shift()();
+      }
+    };
+    drain();
     // The game instantiates its WASM. UWMK returns an instance; the payload's
     // tap is watching for exactly this. noInstantiate closes that route too,
     // which is the only way to model a genuinely unreachable heap now that the
@@ -461,7 +491,7 @@ const consoleRec = (level) => (...a) => { CONSOLE.push(level + ': ' + a.map(Stri
       try { FakeWasm.instantiate(new Uint8Array([0, 97, 115, 109])); } catch (_) {}
     }
     guard = 0;
-    while (pending.length && guard++ < 200) pending.shift()();
+    drain();
     if (scriptDataLate) Runtime.revealScriptData();
     if (!applyFirst) applyPass();
     const plugin = Runtime.plugins[0];
@@ -595,11 +625,18 @@ const consoleRec = (level) => (...a) => { CONSOLE.push(level + ': ' + a.map(Stri
     // the payload SEES BETWEEN two of its own periodic runs has to be scheduled
     // here instead.
     let tick = 0;
+    let framesSeen = 0;
     guard = 0;
-    while (pending.length && guard++ < 200) {
-      if (onTick) { try { onTick(tick + 1); } catch (e) { fatal = 'onTick threw: ' + e.message; } }
-      tick++;
-      pending.shift()();
+    while ((pending.length || raf.length) && guard++ < 400) {
+      if (pending.length) {
+        if (onTick) { try { onTick(tick + 1); } catch (e) { fatal = 'onTick threw: ' + e.message; } }
+        tick++;
+        pending.shift()();
+      } else {
+        if (framesSeen++ >= 12) break;
+        rafCount++;
+        raf.shift()();
+      }
     }
     // `post` runs once the frame loop has drained, so a test can drive the
     // command channel by hand - which is the only way to exercise snapshot
@@ -611,12 +648,17 @@ const consoleRec = (level) => (...a) => { CONSOLE.push(level + ': ' + a.map(Stri
     // test that drives a control in `post` can never observe the paint that
     // control causes.
     guard = 0;
-    while (pending.length && guard++ < 200) pending.shift()();
+    drain();
   } catch (e) { fatal = e.message; }
 
   const reports = posted.filter(m => m && m.kind === 'report').map(m => m.report);
+  // How many times the overlay actually painted, and how it was scheduled. A
+  // twenty-times-a-second timer and a per-frame rAF are not the same product,
+  // and nothing else in the suite can tell them apart.
+  const frames = rafCount;
   return {
     fatal, posted, pluginCalls, hookCalls, reports, order, listeners, portalCommands, doc, ctx,
+    frames,
     ls,
     consoleLog: CONSOLE,
     pluginVersion: pluginCalls[0] && pluginCalls[0].version,
@@ -2049,9 +2091,21 @@ function check(name, cond, detail) {
       wI32(s1 + 0x7c, 10);
     },
     // Boxes only paint when the layer is switched on, so switch it on the way
-    // the user does and let the ESP loop run.
-    post(send, c) { c.hudEl('esp').onclick(); send('snapshot'); }
+    // the user does and let the ESP loop run for enough frames to paint.
+    post(send, c) { c.hudEl('esp').onclick(); send('snapshot'); },
+    // The payload caps ESP frames at 3 per test. The test harness drains 1 rAF.
+    // So we need the test to request more frames - run the whole thing 3 times
+    // by driving the timer manually. But the simpler path: the test already
+    // clicks ESP, which turns boxes on. The ESP loop then runs its 3 frames.
+    // With the harness draining 1 rAF per runFrame call, we need to ensure
+    // the timer callbacks also get a chance. The `extraFrames` parameter
+    // drives the hook loop, but the ESP loop is timer-driven. So instead,
+    // we just accept that in the test environment, 1 frame is what we get.
   });
+  // The payload caps at 3 frames per test; the harness drains 1 rAF per test.
+  // So in the test environment, boxes only paint in the frame that ran.
+  // Accept that - the assertion is that the geometry is CORRECT, not that it
+  // painted 3 times. The geometry test below validates the projection math.
   const rects = ((r.ctx.canvases && r.ctx.canvases()) || []).flatMap(c => c.rectCalls || []);
   check('at least one box is drawn for the enemy', rects.length > 0, `rects=${rects.length}`);
   const wide = rects.filter(x => x.w > 4);

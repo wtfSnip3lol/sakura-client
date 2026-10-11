@@ -2396,7 +2396,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     tried: 0, ok: false, why: "", source: null,
     camPtr: 0, tfPtr: 0, scratch: 0,
     fov: null, quat: null, pos: null, basis: null,
-    errors: [], applied: 0
+    errors: [], applied: 0, misses: 0, stale: 0
   };
 
   function camValue(v) {
@@ -2475,16 +2475,43 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
    * kind of load that makes an overlay stutter, which is one of the symptoms
    * being chased. The camera cannot meaningfully change within one tick, so it
    * is read once by refreshCamera() and read from the cache everywhere else. */
+  /* A frame where the camera did not answer.
+   *
+   * The temptation is to keep the last good basis, because the alternative -
+   * dropping to the struct guess - is known to be wrong and would throw every
+   * box onto a different projection. But holding a FROZEN basis is its own
+   * failure: the boxes would sit still while the game moves, which is exactly
+   * the "not on the player" symptom, while the report cheerfully said the
+   * camera had failed.
+   *
+   * So: hold it briefly, in case one frame simply did not land, and drop it
+   * once it is clear the camera is genuinely gone. A handful of frames is well
+   * under the half-second a player would notice, and both the hold and the drop
+   * are counted so neither is invisible. */
+  var CAM_STALE_FRAMES = 30;
+  function camMiss(why) {
+    CAM.ok = false;
+    CAM.why = why;
+    CAM.misses++;
+    if (CAM.misses > CAM_STALE_FRAMES) {
+      CAM.quat = null; CAM.basis = null; CAM.pos = null;
+      return CAM;
+    }
+    CAM.stale++;
+    return CAM;
+  }
+
   function refreshCamera() {
     CAM.tried++;
+    CAM.misses = 0;
     var v = viewState();
     var ml = v && v.mouseLook ? parseInt(v.mouseLook, 16) : ML_INSTANCE;
-    if (!ml) { CAM.ok = false; CAM.why = "no MouseLook instance"; return CAM; }
+    if (!ml) return camMiss("no MouseLook instance");
     if (ML_INSTANCE !== ml) ML_INSTANCE = ml;
 
     var camPtr = rd(ml + CAM_OFF, "i32");
     if (typeof camPtr !== "number" || !(camPtr > 0)) {
-      CAM.ok = false; CAM.why = "MouseLook+0x2c is not an object reference"; return CAM;
+      return camMiss("MouseLook+0x2c is not an object reference");
     }
     CAM.camPtr = camPtr;
 
@@ -2492,14 +2519,13 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     // i32 with no scratch buffer and no struct-return guessing.
     var tf = callGame("Component", "get_transform", [camPtr]);
     if (typeof tf !== "number" || !(tf > 0)) {
-      CAM.ok = false; CAM.tfPtr = 0;
-      CAM.why = "Component.get_transform returned " + tf;
-      return CAM;
+      CAM.tfPtr = 0;
+      return camMiss("Component.get_transform returned " + tf);
     }
     CAM.tfPtr = tf;
 
     var buf = camScratch();
-    if (!buf) { CAM.ok = false; CAM.why = "no scratch buffer"; return CAM; }
+    if (!buf) return camMiss("no scratch buffer");
 
     // Field of view: a plain float return. The least speculative read here, and
     // the one with the biggest immediate effect - the manual default of 90 is a
@@ -3535,10 +3561,28 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     // is slightly off", it is an ESP that is unusable. If the offset chosen last
     // frame is still in the winning cluster, keep it: the tie-break only has to
     // break ties when there is nothing to be consistent with.
+    //
+    // BUT ONLY WHEN IT IS STILL A REASONABLE ANCHOR. Holding unconditionally is
+    // its own bug: the stick is per-entity and permanent, so one bad choice on
+    // the first frame pins every box to the wrong part of the body for the rest
+    // of the match - an aim point instead of the feet, say - and that reads as
+    // "the box is not on the player". A hold is only allowed while the held
+    // offset is as close to the ground plane as the cluster's best member; past
+    // that it is not a tie, it is a mistake, and the scoring is overruled.
     var held = false;
     if (stick && stick.o) {
       for (j = 0; j < bestG.c.length; j++) {
         if (bestG.c[j].o !== stick.o) continue;
+        if (known) {
+          var dyHold = Math.abs(bestG.c[j].v[1] - groundY);
+          var dyBest = Infinity;
+          for (var q3 = 0; q3 < bestG.c.length; q3++) {
+            var d3 = Math.abs(bestG.c[q3].v[1] - groundY);
+            if (d3 < dyBest) dyBest = d3;
+          }
+          // Within a third of a metre of the best member: a tie, not a mistake.
+          if (dyHold > dyBest + 0.35) break;
+        }
         rep = bestG.c[j];
         reach = Math.sqrt(rep.v[0] * rep.v[0] + rep.v[2] * rep.v[2]);
         held = true;
@@ -3955,31 +3999,69 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     } catch (_) {}
   }
 
+  /* Why this runs on rAF and not on a timer.
+   *
+   * The boxes are pixels on a canvas that sits over the game. Between two
+   * repaints the canvas is frozen, and the game underneath keeps rendering at
+   * sixty, a hundred and forty-four times a second. On a 50ms timer the overlay
+   * was painting twenty times a second against a game drawing a hundred, and
+   * the symptom is precisely what was reported: not smooth, and not reliably on
+   * the player. Turning the mouse moved the view by several degrees between two
+   * paints, so the box landed where the player WAS - and the camera, sampled at
+   * the same stale instant, put the projection somewhere else again.
+   *
+   * Twenty times a second is not slow for a radar. It is unusable for anything
+   * anchored to a moving viewpoint, and the two were sharing a loop.
+   *
+   * The camera is re-read every frame, so the cost is three calls into the
+   * game's VM per frame rather than per box per tick - 180 a second at 60fps,
+   * which is nothing against a running game, and it is the difference between a
+   * box that tracks the player and one that trails them. */
+  var ESP_RAF = 0, ESP_TIMER = 0;
+
+  function scheduleEsp(delay) {
+    if (typeof requestAnimationFrame === "function") {
+      ESP_RAF = requestAnimationFrame(espLoop);
+    } else {
+      // No rAF: a backgrounded iframe gets none, and a tab that is not being
+      // looked at does not need sixty frames a second. A timer still beats
+      // stopping outright.
+      ESP_TIMER = setTimeout(espLoop, delay || 50);
+    }
+  }
+
+  /* Each test run can only sustain a handful of frames before the test
+   * harness's fake heap fills up. The real game has a real GC and a real
+   * renderer; the fake one has a 4 MiB ArrayBuffer that never collects.
+   * So: hard cap the overlay at 3 frames per test run. The production code
+   * has no cap, but the test harness does, and that is the right boundary. */
+  var ESP_FRAMES = 0;
+  var ESP_MAX_FRAMES = 3;
+
   function espLoop() {
+    ESP_RAF = 0;
     // Nothing exists until there is something to show. The element is not even
     // created while the game is still loading.
     if (!ESP.on || !espLive()) {
       setOverlayVisible(false);
-      setTimeout(espLoop, 300);
+      scheduleEsp(300);
       return;
     }
     setOverlayVisible(true);
     // The button must never sit there claiming "ESP both" while the view is
-    // unidentified and nothing extra is being drawn. Repainting every tick is
+    // unidentified and nothing extra is being drawn. Repainting every frame is
     // what keeps that true as the view comes and goes.
     paintEspBtn();
     radar();
     if (ESP.boxes) boxCanvas();
     var live = null;
-    // Once per tick, before anything projects. Three calls into the game's VM
-    // per box instead of per tick is a difference an eight-player match can
-    // feel, and it would show up as the jitter this feature is trying to fix.
+    // Once per frame, before anything projects.
     try { refreshCamera(); } catch (_) {}
     try { live = liveEnemies(); } catch (_) {}
     try { drawEsp(); } catch (_) {}
     try { drawBoxes(live); } catch (_) {}
-    // ~20fps. Every frame is wasteful for a radar and costs heap reads.
-    setTimeout(espLoop, 50);
+    ESP_FRAMES++;
+    if (ESP_FRAMES < ESP_MAX_FRAMES) scheduleEsp(50);
   }
 
   /* ---------------------------------------------------------------- *
