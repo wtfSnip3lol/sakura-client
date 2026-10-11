@@ -163,7 +163,7 @@ var BC_HUB = [];
 function sendToPlayer(msg) {
   for (const b of BC_HUB) if (typeof b.onmessage === 'function') b.onmessage({ data: msg });
 }
-function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'resolveGame', scriptDataLate = false, applyFirst = false, resolveButNotApply = false, noInstantiate = false, speed = null, thenOff = false, extraFrames = 0, fireEnemyTwice = null, setup = null, lobby = false, deliverVia = 'bc', preFire = null, ls = {}, fireMany = null }) {
+function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'resolveGame', scriptDataLate = false, applyFirst = false, resolveButNotApply = false, noInstantiate = false, speed = null, thenOff = false, extraFrames = 0, fireEnemyTwice = null, setup = null, lobby = false, deliverVia = 'bc', preFire = null, ls = {}, fireMany = null, post = null }) {
   // Reset the channel hub: payload instances from earlier runs would keep
   // their own SPEED_STATE and keep writing to the same heap, which looks
   // exactly like a compounding bug in the payload.
@@ -420,6 +420,11 @@ class BC {
     }
     guard = 0;
     while (pending.length && guard++ < 200) pending.shift()();
+    // `post` runs once the frame loop has drained, so a test can drive the
+    // command channel by hand - which is the only way to exercise snapshot
+    // pairs. The snapshot command needs two presses with the heap changed in
+    // between, and there is no game frame left to hang that off.
+    if (post) post((cmd, arg) => sendToPlayer({ __sakura: '__sakura_sw_v2', kind: 'cmd', cmd, arg }));
   } catch (e) { fatal = e.message; }
 
   const reports = posted.filter(m => m && m.kind === 'report').map(m => m.report);
@@ -788,9 +793,14 @@ function check(name, cond, detail) {
   check('a level, forward-looking view reports its angles',
     r.report.view && r.report.view.floats['0x18'] === 0 && r.report.view.floats['0x1c'] === 0,
     JSON.stringify(r.report.view && r.report.view.floats));
+  // The eye is the feet plus a constant height. It is NOT read off the struct -
+  // that is the bug the 2.9.3 field report exposed, and this fixture happens to
+  // seed +0x298 to the same value as the feet, so it cannot tell the two
+  // readings apart. Assert the contract instead.
   check('the local player is reported so the projection has an origin',
     r.report.local && r.report.local.eye &&
-      Math.abs(r.report.local.eye[1] - 1.7) < 1e-4,
+      Math.abs(r.report.local.feet[1] - 1.7) < 1e-4 &&
+      Math.abs(r.report.local.eye[1] - (1.7 + r.report.local.eyeHeight)) < 1e-4,
     JSON.stringify(r.report.local));
   // Drive the toggle exactly the way the user does: click 1 = radar+boxes,
   // click 2 = off. Each step must be observable from the report.
@@ -814,6 +824,100 @@ function check(name, cond, detail) {
     JSON.stringify(step(0)));
   check('one click turns the box layer on', step(1) && step(1).boxes === true, JSON.stringify(step(1)));
   check('a second click turns it off entirely', step(2) && step(2).on === false, JSON.stringify(step(2)));
+}
+
+/* ================================================================== *
+ * THE DIFF NEVER COVERED THE THING BEING DIFFED.
+ *
+ * To name MouseLook's pitch and yaw, the user pressed F9, turned about 90
+ * degrees, and pressed F9 again. The diff came back with three FPScontroller
+ * fields and nothing to do with looking: viewState() reaches MouseLook through
+ * PhotonNetworkSync+0x30, which is not an INSTANCES entry, so flat() had never
+ * heard of it. The whole exercise was unable to answer its own question.
+ */
+{
+  const ml = 0x2c000;
+  const r = runFrame({
+    fireMany: { PhotonNetworkSync: [OBJ.PhotonNetworkSync] },
+    setup() {
+      wI32(OBJ.PhotonNetworkSync + 0x30, ml);
+      wF32(ml + 0x14, 10); wF32(ml + 0x18, 20); wF32(ml + 0x1c, 0); wF32(ml + 0x20, 0);
+      wF32(OBJ.FPScontroller + 0x2e4, -40); wF32(OBJ.FPScontroller + 0x2e8, 5); wF32(OBJ.FPScontroller + 0x2ec, 12);
+    },
+    post(send) {
+      send('snapshot');                 // take the first snapshot
+      wF32(ml + 0x18, 110);            // turn: the value the test is hunting
+      send('snapshot');                 // diff against it
+    }
+  });
+  const d = (r.report && r.report.diff) || [];
+  check('the diff sees MouseLook, not just the instance singletons',
+    d.some(x => x.indexOf('MouseLook+0x18') === 0),
+    `diff=${JSON.stringify(d)}`);
+  check('and it names the new value',
+    d.some(x => x.indexOf('MouseLook+0x18') === 0 && /110/.test(x)),
+    `diff=${JSON.stringify(d)}`);
+  check('unchanged view floats stay out of the diff',
+    !d.some(x => x.indexOf('MouseLook+0x14') === 0),
+    `diff=${JSON.stringify(d)}`);
+}
+
+/* ================================================================== *
+ * PICKING THE POSITION AMONG SEVERAL WORLD POSITIONS.
+ *
+ * Every one of these classes carries several Vector3s that all look like world
+ * positions: the character's, plus waypoints, targets and spawn anchors.
+ * "Furthest from the world origin" picks whichever happens to sit nearest the
+ * map centre, and in the 2.9.3 field report that meant bot 2 was drawn at
+ * +0x134 and bot 3 at +0xF0. Everyone stands on the same ground plane, so the
+ * position is the vector in the local player's height band.
+ */
+{
+  const s1 = 0x40000;
+  const r = runFrame({
+    fireMany: { PhotonNetworkSync: [s1] },
+    setup() {
+      // us on the ground at y=5
+      wF32(OBJ.FPScontroller + 0x2e4, -40); wF32(OBJ.FPScontroller + 0x2e8, 5); wF32(OBJ.FPScontroller + 0x2ec, 12);
+      wI32(s1 + 0x30, 0x2c000); wI32(s1 + 0x7c, 10);
+      // the enemy's feet, in band
+      wF32(s1 + 0x6c, -30); wF32(s1 + 0x70, 5.2); wF32(s1 + 0x74, 9);
+      // a target waypoint: far away, and floating well above the ground plane
+      wF32(s1 + 0x34, 70); wF32(s1 + 0x38, 19); wF32(s1 + 0x3c, 70);
+    }
+  });
+  const p = (r.report.esp.players || [])[0] || {};
+  check('a waypoint floating above the ground plane is not mistaken for the body',
+    p.posAt === '0x6c',
+    `posAt=${p.posAt} pos=${JSON.stringify(p.pos)}`);
+  check('the body is reported at the in-band vector',
+    p.pos && Math.abs(p.pos[0] + 30) < 1e-3 && Math.abs(p.pos[1] - 5.2) < 1e-3,
+    JSON.stringify(p.pos));
+  check('how many candidates were in band is reported, not silently resolved',
+    p.inBand === 1,
+    `inBand=${p.inBand}`);
+}
+
+/* ================================================================== *
+ * A STANDING PLAYER AT THE MAP ORIGIN IS STILL A PLAYER.
+ *
+ * Every candidate scores 0 horizontal extent, so the tie-break has to select
+ * something. It selected gravity - +0xE0 is early enough in the field map to
+ * win - and the local player was reported at the world origin.
+ */
+{
+  const r = runFrame({
+    setup() {
+      // every v3 field genuinely reads zero, exactly like an uninitialised object
+      for (let o = 0; o < 0x1000; o += 4) wF32(OBJ.FPScontroller + o, 0);
+    }
+  });
+  const l = r.report.local;
+  // The truthful answer is "no position". Returning vecs[0] would put the local
+  // player at the world origin, confidently and wrongly.
+  check('a wholly-zero struct reports no position rather than the world origin',
+    l === null || l.posAt !== '0xe0',
+    `local=${JSON.stringify(l)}`);
 }
 
 /* The menu opens bottom-right, which is where this game keeps the weapon and
@@ -996,9 +1100,9 @@ function check(name, cond, detail) {
     }
   });
   const ctl = (r.report.esp.controllers || [])[0] || {};
-  // 0x2E4 and 0x298 are the same XZ, so which one "wins" is arbitrary and
-  // irrelevant - feet or eye, the map is identical. What matters is that it is
-  // one of the real positions and not the gravity vector.
+  // 0x2E4 and 0x298 are the same XZ in that fixture, so which one "wins" is
+  // arbitrary and irrelevant. What matters is that it is a real position and
+  // not the gravity vector.
   check('gravity is never mistaken for the player position',
     ctl.posAt !== '0xe0' && (ctl.posAt === '0x2e4' || ctl.posAt === '0x298'),
     `posAt=${ctl.posAt} pos=${JSON.stringify(ctl.pos)}`);
@@ -1009,8 +1113,40 @@ function check(name, cond, detail) {
     r.report.local && r.report.local.feet &&
       Math.abs(r.report.local.feet[2] - 38.273) < 1e-3 &&
       r.report.local.eye &&
-      Math.abs(r.report.local.eye[1] - 6.896) < 1e-3,
+      Math.abs(r.report.local.eye[1] - (r.report.local.feet[1] + r.report.local.eyeHeight)) < 1e-4,
     JSON.stringify(r.report.local));
+}
+
+/* THE BOXES WERE PROJECTED FROM THE WRONG BUILDING.
+ *
+ * Field report: feet read (-66.76, 5.09, -8.25) while the "eye" read
+ * (59.90, 6.33, 9.65) - ninety metres apart. FPScontroller+0x298 was eye height
+ * in one report and a reused scratch vector in the next, and hardcoding it put
+ * every box in the wrong place. Eye height is a constant, not a field. */
+{
+  const c = OBJ.FPScontroller;
+  const r = runFrame({
+    setup() {
+      wF32(c + 0xe0, 0); wF32(c + 0xe4, -15.4); wF32(c + 0xe8, 0);        // gravity
+      wF32(c + 0x2e4, -66.756); wF32(c + 0x2e8, 5.093); wF32(c + 0x2ec, -8.250);  // position
+      wF32(c + 0x154, -66.756); wF32(c + 0x158, 5.093); wF32(c + 0x15c, -8.250);
+      // +0x298 holding a position 90 metres away, exactly as in the field
+      wF32(c + 0x298, 59.900); wF32(c + 0x29c, 6.331); wF32(c + 0x2a0, 9.647);
+      wF32(c + 0x3d0, 50.671); wF32(c + 0x3d4, 5.094); wF32(c + 0x3d8, -0.440);
+    }
+  });
+  const loc = r.report.local;
+  check('the local position is the one that repeats, not the stray vector',
+    loc && Math.abs(loc.feet[0] + 66.756) < 1e-3 && Math.abs(loc.feet[2] + 8.25) < 1e-3,
+    JSON.stringify(loc));
+  check('eye is the feet plus a constant height, not a second field',
+    loc && Math.abs(loc.eye[1] - (loc.feet[1] + 1.8)) < 1e-4,
+    JSON.stringify(loc));
+  check('feet and eye are not ninety metres apart',
+    loc && Math.abs(loc.eye[0] - loc.feet[0]) < 1e-3 && Math.abs(loc.eye[2] - loc.feet[2]) < 1e-3,
+    JSON.stringify(loc));
+  check('the chosen offset is reported, so it can be argued with',
+    loc && (loc.posAt === '0x2e4' || loc.posAt === '0x154'), `posAt=${loc && loc.posAt}`);
 }
 
 /* The local player has NO network position. In a live report every remote read a

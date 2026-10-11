@@ -1358,13 +1358,17 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     // (0, -4.16, 0) in the air - and "first non-zero" picked it as the player
     // position in a live report. Gravity is vertical and short; a world position
     // has real XZ reach. Same class of mistake as trusting the first vector found.
+    // Pick the vector with the greatest HORIZONTAL extent, not the first
+    // non-zero one. FPScontroller+0xE0 is gravity - (0, -3.85, 0) on the ground,
+    // (0, -4.16, 0) in the air - and "first non-zero" picked it as the player
+    // position in a live report. See pickPos() for the full rule.
     var best = 0;
-    for (var q = 0; q < row.allVecs.length; q++) {
-      var vv = row.allVecs[q].v;
-      var h = vv[0] * vv[0] + vv[2] * vv[2];
-      if (h > best) { best = h; row.pos = vv; row.posAt = row.allVecs[q].o; }
-    }
-    row.reach = Math.sqrt(best);
+    var pick = pickPos(row.allVecs, groundY());
+    row.pos = pick.pos;
+    row.posAt = pick.posAt;
+    row.inBand = pick.inBand;
+    row.reach = pick.reach;
+    void best;
     var spec = REFS[typeName];
     var sspec = SCALARS[typeName];
     if (sspec) {
@@ -1673,6 +1677,21 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     return o;
   }
 
+  // MouseLook has to be in the snapshot, not just the report. The view floats
+  // live behind PhotonNetworkSync+0x30, which is not an INSTANCES entry, so flat()
+  // never saw them - and the diff the user produced to identify the angles came
+  // back with three FPScontroller fields and nothing that had anything to do with
+  // looking. The diff has to cover the thing being diffed.
+  function flatView() {
+    var m = {};
+    var v = viewState();
+    if (!v) return m;
+    m["MouseLook@ptr"] = v.mouseLook;
+    for (var k in v.floats) m["MouseLook+" + k] = v.floats[k];
+    if (v.camera) m["MouseLook+camera"] = v.camera;
+    return m;
+  }
+
   function flat(sv) {
     var m = {};
     for (var typeName in sv) {
@@ -1697,6 +1716,8 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     if (cmd !== "snapshot") return;
     var sv = survey();
     var now = flat(sv);
+    var fv = flatView();
+    for (var fk in fv) now[fk] = fv[fk];
     if (!SNAPSHOT) {
       SNAPSHOT = now;
       DIFF = [];
@@ -2303,9 +2324,15 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
 
       var c3 = mkCard("Player", false);
       var lv = [
-        ["Position", "FPScontroller+0x2E4", rep && rep.local && rep.local.feet
+        // The offset shown is the one actually chosen, not a constant. Which Vector3
+        // is the body is picked per entity (see pickPos), so printing a fixed
+        // +0x2E4 is printing a claim the code does not make. Eye is feet plus a
+        // constant - it was once read off +0x298, which one report put 90 metres
+        // from the feet.
+        ["Position", rep && rep.local && rep.local.posAt
+          ? "FPScontroller+" + rep.local.posAt : "FPScontroller", rep && rep.local && rep.local.feet
           ? rep.local.feet.map(function (n) { return Math.round(n * 100) / 100; }).join("  ") : "-"],
-        ["Eye", "+0x298", rep && rep.local && rep.local.eye
+        ["Eye", "+" + EYE_H + "m", rep && rep.local && rep.local.eye
           ? rep.local.eye.map(function (n) { return Math.round(n * 100) / 100; }).join("  ") : "-"],
         ["Walk speed", "0x10", valLine(rep, "FPScontroller", 0x10)],
         ["Sprint speed", "0x40", valLine(rep, "FPScontroller", 0x40)],
@@ -2614,17 +2641,103 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     } catch (_) {}
   }
 
+  // The local player's ground height, used to pick which of several world
+  // positions on another object is actually that character. Null until we know
+  // where we are standing.
+  function groundY() {
+    try {
+      var c = INSTANCES.FPScontroller;
+      if (!c || !c.ptr) return null;
+      // The three copies at +0x154, +0x160 and +0x2E4 agree with each other in
+      // every report so far, so this is stable ground truth rather than a guess.
+      var v = readVec(c.ptr, 0x2e4, 3);
+      return v ? v[1] : null;
+    } catch (_) { return null; }
+  }
+
+  /* Pick the position Vector3.
+   *
+   * These classes hold SEVERAL world positions - the character's, plus
+   * waypoints, targets and spawn anchors - and "furthest from the world origin"
+   * just picks whichever happens to sit nearest the map centre. That is silently
+   * wrong for some entities on every run: bot 2 in the 2.9.3 report picked
+   * +0x134 and bot 3 picked +0xF0, because those two happened to be further out.
+   *
+   * Everyone on this map stands on the same ground plane, so the position is
+   * the vector in the LOCAL player's height band with the largest horizontal
+   * extent. And how many were in band is reported, because a tie that gets
+   * resolved silently is a tie that is wrong silently.
+   */
+  var GROUND_TOL = 2.5;
+  // Standing eye height above the feet. A constant because it is one, and
+  // because reading it off the struct meant reading a reused scratch field.
+  var EYE_H = 1.8;
+  function pickPos(vecs, groundY) {
+    var best = null, bestReach = 0, inBand = 0;
+    var known = (groundY !== null && groundY !== undefined && isFinite(groundY));
+    for (var i = 0; i < vecs.length; i++) {
+      var v = vecs[i].v;
+      if (!v) continue;
+      // An all-zero Vector3 is never anybody's position - on an uninitialised
+      // object it is what every v3 field reads as, and gravity at +0xE0 is
+      // early enough in the field map to win the tie-break outright. Without
+      // this the local player gets reported as standing at (0,0,0).
+      if (v[0] === 0 && v[1] === 0 && v[2] === 0) continue;
+      var h = v[0] * v[0] + v[2] * v[2];
+      if (known && Math.abs(v[1] - groundY) > GROUND_TOL) continue;
+      if (known) inBand++;
+      // `!best ||` still matters: standing exactly on the map origin gives every
+      // real candidate h == 0, and a bare `h > bestReach` then selects nothing
+      // at all - local player reported as null, radar with no origin.
+      if (!best || h > bestReach) { bestReach = h; best = vecs[i]; }
+    }
+    if (!best) {
+      // Nothing in band - the local player is not known yet, or this entity is
+      // somewhere the band does not cover. Fall back rather than report nothing.
+      inBand = 0;
+      for (var j = 0; j < vecs.length; j++) {
+        var v2 = vecs[j].v;
+        if (!v2) continue;
+        if (v2[0] === 0 && v2[1] === 0 && v2[2] === 0) continue;
+        var h2 = v2[0] * v2[0] + v2[2] * v2[2];
+        if (!best || h2 > bestReach) { bestReach = h2; best = vecs[j]; }
+      }
+      // No fallback to vecs[0] on purpose. A struct where every Vector3 reads
+      // exactly zero carries no position at all, and returning one anyway
+      // means drawing the local player at the world origin - confidently and
+      // wrongly. Nothing is a truthful answer; espLive() gates on it.
+    }
+    return { pos: best ? best.v : null, posAt: best ? best.o : null,
+             inBand: inBand, reach: Math.sqrt(bestReach) };
+  }
+
   function localSpot() {
     var c = INSTANCES.FPScontroller;
     if (!c || !c.ptr) return null;
-    var feet = readVec(c.ptr, 0x2e4, 3);
-    var eye = readVec(c.ptr, 0x298, 3);
-    if (!feet) return null;
+    // NOT a hardcoded offset. The 2.9.3 report is the reason: feet read
+    // (-66.76, 5.09, -8.25) while +0x298 read (59.90, 6.33, 9.65) - the two are
+    // NINETY METRES APART, and every box was being projected from the wrong
+    // building. +0x298 was eye height in an earlier report and a scratch vector
+    // in this one; it is a reused field, not an eye.
+    var fields = SK_FIELDS.FPScontroller || [];
+    var vecs = [];
+    for (var i = 0; i < fields.length; i++) {
+      if (fields[i][1] !== "v3") continue;
+      var v = readVec(c.ptr, fields[i][0], 3);
+      if (v) vecs.push({ o: "0x" + fields[i][0].toString(16), v: v });
+    }
+    var pick = pickPos(vecs, null);
+    if (!pick.pos) return null;
+    // Eye height is a constant, not a field. It is reported so it can be
+    // checked against a screenshot rather than taken on faith.
+    var feet = pick.pos;
     return {
       ptr: c.ptr,
       feet: feet,
-      eye: eye,
-      reach: Math.sqrt(feet[0] * feet[0] + feet[2] * feet[2]),
+      posAt: pick.posAt,
+      inBand: pick.inBand,
+      eye: [feet[0], feet[1] + EYE_H, feet[2]],
+      reach: pick.reach,
       pitch: rd(c.ptr + 0x16c, "f32"),
       yaw: rd(c.ptr + 0x170, "f32")
     };
@@ -2928,8 +3041,10 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       },
       esp: recon(),
         // The local player has NO network position - PhotonNetworkSync+0x34 reads
-        // zero for the local instance - so where we are comes from FPScontroller.
-        // +0x2E4 is the body position, +0x298 the same point raised by eye height.
+        // zero for the local instance - so where we are comes from FPScontroller,
+        // and WHICH of its several Vector3s that is, is chosen per frame. The
+        // chosen offset and the in-band candidate count are both reported: a
+        // tie resolved silently is a tie that is wrong silently.
         view: viewState(),
         fov: VIEW.fov,
         // ESP state is reported, not just drawn. A toggle whose result cannot be
@@ -2939,8 +3054,8 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
         local: (function () {
           var m = localSpot();
           if (!m) return null;
-          return { ptr: "0x" + m.ptr.toString(16), feet: m.feet, eye: m.eye,
-                   pitch: m.pitch, yaw: m.yaw, reach: m.reach };
+          return { ptr: "0x" + m.ptr.toString(16), feet: m.feet, eye: m.eye, posAt: m.posAt,
+                   eyeHeight: EYE_H, pitch: m.pitch, yaw: m.yaw, reach: m.reach };
         })(),
       uwmkLog: UWMK_LOG.slice(0, 20),
       warnings: []
