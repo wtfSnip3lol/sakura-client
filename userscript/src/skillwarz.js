@@ -53,7 +53,7 @@
   // It was hand-written in three places once and one drifted, so a field report
   // claimed 2.0.2 while the plugin logged 2.0.3 - which sends everyone chasing
   // a stale build.
-  var VERSION = "2.9.0";
+  var VERSION = "2.9.1";
 
   /* ================================================================== *
    * WRAPPER — relay only. Arming UWMK here achieves nothing: this frame
@@ -1839,7 +1839,15 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
   function paintHud(rep) {
     var h = hud();
     if (!h || !h.st) return;
+    // The status strip follows the overlays: while the game is still loading
+    // there is nothing worth saying, and the loading screen is not the place
+    // to say it. The petal is the readiness signal instead.
     try {
+      if (!espLive() && !LAST) {
+        if (h.el) h.el.style.display = "none";
+        return;
+      }
+      if (h.el) h.el.style.display = "";
       var objs = Object.keys((rep && rep.instances) || {}).length;
       var esp = (rep && rep.esp) || null;
       var foes = esp ? (esp.enemyCount || 0) : 0;
@@ -2332,12 +2340,10 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
   }
 
   function applyVis() {
-    try {
-      var rr = radar();
-      if (rr && rr.el) rr.el.style.display = ESP.on ? "" : "none";
-      var bb = BOXES;
-      if (bb && bb.cv) bb.cv.style.display = (ESP.on && ESP.boxes) ? "" : "none";
-    } catch (_) {}
+    // Visibility belongs to espLoop, which knows whether there is a round at
+    // all. Setting display here would put the radar back over the loading
+    // screen the moment somebody flipped a switch.
+    if (MENU.open) setMenu(true);
   }
 
   function buildMenu() {
@@ -2405,6 +2411,21 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       document.body.appendChild(petal);
       MENU.petal = petal;
 
+      // The petal is the only thing allowed on screen before a round loads, so
+      // it carries the readiness signal: dim until there is a local player and
+      // a player list, then bright. One corner glyph instead of an overlay
+      // announcing itself over the loading screen.
+      setInterval(function () {
+        try {
+          if (!MENU.petal) return;
+          var liveNow = espLive();
+          MENU.petal.style.opacity = MENU.open ? "1" : (liveNow ? ".8" : ".28");
+          MENU.petal.title = liveNow
+            ? "Sakura SkillWarz (Insert)"
+            : "Sakura SkillWarz - waiting for the game (Insert)";
+        } catch (_) {}
+      }, 700);
+
       MENU.built = true;
       showCat(MENU.cat);
       return panel;
@@ -2441,13 +2462,12 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     if (MENU.petal) MENU.petal.style.opacity = MENU.open ? "1" : ".5";
     if (MENU.open) {
       showCat(MENU.cat);
-      // Menu is anchored bottom-right and the radar is top-right; if the window
-      // is too short for both they would sit on top of each other, so the radar
-      // yields rather than stacking.
+      // Menu is anchored bottom-right and the radar sits under the petal at the
+      // other end. If the window is too short for both they would sit on top of
+      // each other, so the radar yields rather than stacking.
       try {
         var h = window.innerHeight || 800;
-        var rr = radar();
-        if (rr && rr.el) rr.el.style.display = h < 620 ? "none" : (ESP.on ? "" : "none");
+        if (h < 620) setOverlayVisible(false);
       } catch (_) {}
     }
   }
@@ -2551,7 +2571,11 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
         // same 30 pixels is a control you eventually click by accident.
         "position:fixed;right:12px;top:46px;z-index:2147483646;pointer-events:none;" +
         "background:rgba(21,12,29,.72);border:1px solid rgba(255,143,177,.4);border-radius:10px;" +
-        "padding:4px;font:10px/1.3 ui-monospace,Consolas,monospace;color:#bda9c9;";
+        "padding:4px;font:10px/1.3 ui-monospace,Consolas,monospace;color:#bda9c9;" +
+        // Without this the radar caption is draggable text: a triple-click while
+        // playing leaves a blue selection sitting over the game, and dragging
+        // across it selects instead of aiming.
+        "user-select:none;-webkit-user-select:none;";
       el.innerHTML = '<canvas id="sakura-esp-cv" width="160" height="160" style="display:block"></canvas>' +
                      '<div id="sakura-esp-lg" style="text-align:center"></div>';
       // Canvas elements need a real 2d context; the test DOM has none, so guard
@@ -2650,7 +2674,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       }
       ctx2.beginPath(); ctx2.moveTo(4, C); ctx2.lineTo(S - 4, C);
       ctx2.moveTo(C, 4); ctx2.lineTo(C, S - 4); ctx2.stroke();
-      if (!me) { if (r.lg) r.lg.textContent = "no local player yet"; return; }
+      if (!me) { if (r.lg) r.lg.textContent = ""; return; }
 
       var k = (C - 6) / ESP.span;      // pixels per world unit
       var myTeam = null;
@@ -2692,9 +2716,38 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     } catch (_) {}
   }
 
+  /* Is there a round to draw? Everything visual is gated on this.
+   *
+   * Without the gate the radar painted itself over the game's own loading
+   * screen - "DOWNLOADING CONTENT" with a compass rose and a caption on top of
+   * it, over the game's matchmaking text, before a single object existed. That
+   * is not a small cosmetic thing: it is the client announcing itself on the
+   * one screen everyone can see, over the thing they are trying to read.
+   */
+  function espLive() {
+    var sync = SEEN.PhotonNetworkSync || {};
+    if (!Object.keys(sync).length) return false;
+    return !!localSpot();
+  }
+
+  function setOverlayVisible(on) {
+    try {
+      var r = RADAR;
+      if (r && r.el) r.el.style.display = on ? "" : "none";
+      var b = BOXES;
+      if (b && b.cv) b.cv.style.display = on ? "" : "none";
+    } catch (_) {}
+  }
+
   function espLoop() {
-    if (!ESP.on) { setTimeout(espLoop, 500); return; }
-    // The radar needs one canvas; the boxes need a full-screen one.
+    // Nothing exists until there is something to show. The element is not even
+    // created while the game is still loading.
+    if (!ESP.on || !espLive()) {
+      setOverlayVisible(false);
+      setTimeout(espLoop, 300);
+      return;
+    }
+    setOverlayVisible(true);
     radar();
     if (ESP.boxes) boxCanvas();
     var live = null;

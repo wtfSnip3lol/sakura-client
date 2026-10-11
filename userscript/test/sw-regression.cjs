@@ -816,6 +816,69 @@ function check(name, cond, detail) {
   check('a second click turns it off entirely', step(2) && step(2).on === false, JSON.stringify(step(2)));
 }
 
+/* NOTHING MAY BE DRAWN OVER THE GAME UNTIL THERE IS A ROUND.
+ *
+ * Field evidence: a screenshot of the game's own loading screen -
+ * "DOWNLOADING CONTENT (18.63 MB)" - with the radar's compass rose and caption
+ * painted over it, on top of the game's matchmaking text, before a single
+ * object existed. Not a cosmetic bug: it is the client announcing itself on the
+ * one screen everyone can see, over the thing they are trying to read.
+ *
+ * The radar's caption was also selectable text, so a triple-click mid-game left
+ * a blue selection sitting over the aim.
+ */
+{
+  // lobby:true is the loading case - the round-scoped hooks simply do not tick,
+// so no PhotonNetworkSync exists and there is nothing to draw.
+  const empty = runFrame({ lobby: true });
+  check('with no players and no round, nothing is live',
+    empty.report.esp.playerCount === 0,
+    `players=${empty.report.esp.playerCount} local=${!!empty.report.local}`);
+
+  // The radar must not even exist yet. espLoop gates on espLive(), and the
+  // element is created lazily inside it.
+  check('the radar element is not created while the game is loading',
+    !empty.doc.getElementById('sakura-esp'),
+    'a #sakura-esp exists before any round is live');
+  check('the boxes canvas is not created either',
+    !empty.doc.getElementById('sakura-boxes'),
+    'a #sakura-boxes exists before any round is live');
+
+  // With a round running, both exist. That is the other half: gating must not
+  // have quietly turned the ESP off for good.
+  const live = runFrame({
+    fireMany: { PhotonNetworkSync: [OBJ.PhotonNetworkSync], FPScontroller: [OBJ.FPScontroller] },
+    setup() {
+      wI32(OBJ.PhotonNetworkSync + 0x28, OBJ.FPScontroller);
+      wI32(OBJ.PhotonNetworkSync + 0x30, 0x2c000);
+      wF32(0x2c000 + 0x18, 0); wF32(0x2c000 + 0x1c, 0);
+      wF32(OBJ.PhotonNetworkSync + 0x34, 12); wF32(OBJ.PhotonNetworkSync + 0x38, 1);
+      wF32(OBJ.PhotonNetworkSync + 0x3c, 7);
+      wF32(OBJ.FPScontroller + 0x2e4, 0); wF32(OBJ.FPScontroller + 0x2e8, 1.7);
+      wF32(OBJ.FPScontroller + 0x2ec, 0);
+    }
+  });
+  check('but it does appear once a round is live',
+    live.report.local && live.report.esp.playerCount >= 1,
+    `local=${!!live.report.local} players=${live.report.esp.playerCount}`);
+  check('and the local player is recognised so the radar has an origin',
+    live.report.esp.players.some(p => p.isLocal),
+    JSON.stringify(live.report.esp.players.map(p => ({ p: p.ptr, l: p.isLocal }))));
+}
+
+/* Overlay text must not be selectable. A drag that starts on the radar ends up
+ * selecting its caption instead of aiming, and the selection stays painted over
+ * the game. The style is the only thing that prevents it. */
+{
+  const src = require('fs').readFileSync(target, 'utf8');
+  // Source-only, like the identifier checks: the obfuscator rewrites the CSS
+  // strings and a literal count measures the obfuscator, not the client.
+  const isObf = /\b_0x[0-9a-f]{4,}\b/.test(src);
+  check('overlay text opts out of selection',
+    isObf || (src.match(/user-select:none/g) || []).length >= 3,
+    `found ${(src.match(/user-select:none/g) || []).length} user-select:none declarations`);
+}
+
 /* ================================================================== *
  * THE SAKURA MENU.
  *
