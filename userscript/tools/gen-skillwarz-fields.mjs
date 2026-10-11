@@ -26,6 +26,12 @@ function typeInfo(t) {
   if (s === 'ObscuredFloat') return { kind: 'obfF', size: 0x18, rw: 'f32' };
   if (s === 'ObscuredInt') return { kind: 'obfI', size: 0x14, rw: 'i32' };
   if (s === 'ObscuredBool') return { kind: 'obfB', size: 0x0c, rw: 'u8' };
+  // Value types laid out inline. Without these they fall through to `ref` and
+  // get dropped from the report - which is how EnemyBot's world-position
+  // Vector3 at 0x24 went missing: it was classified as a pointer and skipped.
+  if (s === 'Vector3') return { kind: 'v3', size: 12, rw: 'f32' };
+  if (s === 'Vector2') return { kind: 'v2', size: 8, rw: 'f32' };
+  if (s === 'Quaternion') return { kind: 'v4', size: 16, rw: 'f32' };
   if (s === 'float') return { kind: 'f32', size: 4, rw: 'f32' };
   if (s === 'int') return { kind: 'i32', size: 4, rw: 'i32' };
   if (s === 'uint') return { kind: 'u32', size: 4, rw: 'u32' };
@@ -106,7 +112,7 @@ console.log(`wrote ${outPath}`);
 const slim = {};
 for (const [typeName, def] of Object.entries(result)) {
   slim[typeName] = def.fields
-    .filter(f => f.k.indexOf('obf') === 0 || ['f32', 'i32', 'u8'].includes(f.k))
+    .filter(f => f.k.indexOf('obf') === 0 || ['f32', 'i32', 'u8', 'v3', 'v2', 'v4'].includes(f.k))
     .map(f => [f.o, f.k]);
 }
 

@@ -53,7 +53,7 @@
   // It was hand-written in three places once and one drifted, so a field report
   // claimed 2.0.2 while the plugin logged 2.0.3 - which sends everyone chasing
   // a stale build.
-  var VERSION = "2.1.0";
+  var VERSION = "2.2.0";
 
   /* ================================================================== *
    * WRAPPER — relay only. Arming UWMK here achieves nothing: this frame
@@ -505,7 +505,9 @@
     { type: "FPScontroller", keep: true },
     { type: "HealthScript", keep: true },
     { type: "WeaponManager", keep: false },
-    { type: "GG_GameManager", keep: false }
+    { type: "GG_GameManager", keep: true },
+    // Enemies: many instances, so this one is a LIST not a single pointer.
+    { type: "EnemyBot", keep: true, many: true }
   ];
   var ASSEMBLIES = [
     "Assembly-CSharp.dll",
@@ -886,7 +888,7 @@
    * offset is the only stable identity worth reporting.
    * ---------------------------------------------------------------- */
   /*__SKILLWARZ_FIELDS_START__*/
-var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"],[112,"obfF"],[136,"obfF"],[160,"obfF"],[184,"obfB"],[196,"obfF"],[220,"i32"],[236,"u8"],[240,"obfF"],[264,"i32"],[268,"u8"],[272,"i32"],[276,"u8"],[277,"u8"],[284,"obfF"],[308,"obfF"],[332,"f32"],[336,"f32"],[364,"f32"],[368,"f32"],[392,"u8"],[396,"f32"],[420,"u8"],[436,"f32"],[440,"f32"],[444,"u8"],[445,"u8"],[448,"obfF"],[472,"f32"],[476,"u8"],[480,"obfF"],[520,"obfB"],[536,"f32"],[540,"f32"],[588,"f32"],[592,"f32"],[596,"f32"],[600,"f32"],[604,"u8"],[605,"u8"],[606,"u8"],[608,"f32"],[612,"u8"],[613,"u8"],[616,"f32"],[620,"f32"],[624,"f32"],[628,"f32"],[632,"f32"],[636,"f32"],[640,"f32"],[660,"u8"],[676,"f32"],[696,"f32"],[700,"f32"],[704,"f32"],[708,"u8"],[709,"u8"],[712,"f32"],[732,"f32"],[764,"f32"],[768,"f32"],[772,"f32"],[776,"f32"],[792,"u8"],[808,"i32"],[812,"f32"],[816,"f32"],[820,"f32"],[828,"f32"],[832,"u8"],[833,"u8"],[844,"u8"],[845,"u8"],[846,"u8"],[848,"f32"],[852,"f32"],[856,"f32"],[860,"f32"],[864,"f32"],[868,"u8"],[872,"f32"],[876,"f32"],[880,"u8"],[924,"f32"],[928,"f32"],[932,"f32"],[948,"i32"],[952,"u8"],[956,"i32"],[960,"f32"],[964,"f32"],[968,"f32"],[972,"f32"],[988,"i32"],[992,"u8"],[993,"u8"],[994,"u8"],[996,"f32"],[1000,"i32"]],"HealthScript":[[88,"u8"],[92,"i32"],[128,"f32"],[132,"f32"],[136,"f32"],[140,"f32"],[144,"f32"],[148,"f32"],[160,"i32"],[164,"i32"],[168,"u8"],[169,"u8"],[170,"u8"],[171,"u8"],[192,"obfI"],[212,"obfI"],[232,"obfI"],[252,"obfI"],[272,"obfI"],[292,"obfB"],[304,"obfF"],[328,"f32"],[332,"f32"],[336,"f32"],[340,"f32"],[348,"f32"],[368,"f32"],[376,"f32"],[384,"u8"],[396,"u8"],[400,"i32"]],"PlayerConfig":[],"WeaponManager":[[24,"i32"],[28,"i32"],[32,"u8"],[36,"i32"],[100,"obfF"],[124,"f32"],[132,"i32"],[136,"u8"],[137,"u8"],[140,"i32"],[144,"f32"],[152,"f32"],[172,"i32"],[188,"u8"],[220,"obfI"],[240,"obfI"],[260,"f32"],[264,"f32"],[268,"f32"],[280,"f32"],[288,"f32"],[296,"u8"],[300,"obfI"],[320,"obfI"],[340,"obfI"],[360,"obfB"],[372,"obfB"],[384,"obfB"],[396,"obfB"],[420,"obfB"],[432,"obfI"],[460,"i32"],[464,"u8"],[468,"i32"],[472,"i32"],[512,"i32"],[532,"u8"],[540,"u8"],[541,"u8"],[542,"u8"],[543,"u8"],[592,"i32"],[600,"u8"]],"GG_GameManager":[[36,"u8"],[44,"f32"],[68,"u8"],[69,"u8"],[72,"f32"],[76,"f32"],[80,"i32"],[84,"i32"],[88,"u8"],[116,"u8"],[120,"f32"],[124,"f32"],[144,"i32"],[148,"u8"],[180,"i32"],[188,"i32"],[192,"i32"],[232,"obfI"],[252,"obfI"],[272,"obfI"],[300,"u8"],[304,"i32"],[356,"u8"],[368,"f32"],[384,"u8"],[392,"u8"],[420,"u8"],[424,"i32"],[428,"f32"],[432,"u8"],[433,"u8"],[440,"i32"],[444,"i32"],[448,"f32"],[452,"i32"],[456,"f32"],[460,"i32"],[464,"i32"]]};
+var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"],[112,"obfF"],[136,"obfF"],[160,"obfF"],[184,"obfB"],[196,"obfF"],[220,"i32"],[224,"v3"],[236,"u8"],[240,"obfF"],[264,"i32"],[268,"u8"],[272,"i32"],[276,"u8"],[277,"u8"],[284,"obfF"],[308,"obfF"],[332,"f32"],[336,"f32"],[340,"v3"],[352,"v3"],[364,"f32"],[368,"f32"],[392,"u8"],[396,"f32"],[408,"v3"],[420,"u8"],[436,"f32"],[440,"f32"],[444,"u8"],[445,"u8"],[448,"obfF"],[472,"f32"],[476,"u8"],[480,"obfF"],[504,"v3"],[520,"obfB"],[536,"f32"],[540,"f32"],[588,"f32"],[592,"f32"],[596,"f32"],[600,"f32"],[604,"u8"],[605,"u8"],[606,"u8"],[608,"f32"],[612,"u8"],[613,"u8"],[616,"f32"],[620,"f32"],[624,"f32"],[628,"f32"],[632,"f32"],[636,"f32"],[640,"f32"],[644,"v3"],[660,"u8"],[664,"v3"],[676,"f32"],[684,"v3"],[696,"f32"],[700,"f32"],[704,"f32"],[708,"u8"],[709,"u8"],[712,"f32"],[732,"f32"],[740,"v3"],[752,"v3"],[764,"f32"],[768,"f32"],[772,"f32"],[776,"f32"],[780,"v3"],[792,"u8"],[796,"v3"],[808,"i32"],[812,"f32"],[816,"f32"],[820,"f32"],[828,"f32"],[832,"u8"],[833,"u8"],[844,"u8"],[845,"u8"],[846,"u8"],[848,"f32"],[852,"f32"],[856,"f32"],[860,"f32"],[864,"f32"],[868,"u8"],[872,"f32"],[876,"f32"],[880,"u8"],[888,"v3"],[900,"v3"],[912,"v3"],[924,"f32"],[928,"f32"],[932,"f32"],[936,"v3"],[948,"i32"],[952,"u8"],[956,"i32"],[960,"f32"],[964,"f32"],[968,"f32"],[972,"f32"],[976,"v3"],[988,"i32"],[992,"u8"],[993,"u8"],[994,"u8"],[996,"f32"],[1000,"i32"]],"HealthScript":[[88,"u8"],[92,"i32"],[128,"f32"],[132,"f32"],[136,"f32"],[140,"f32"],[144,"f32"],[148,"f32"],[160,"i32"],[164,"i32"],[168,"u8"],[169,"u8"],[170,"u8"],[171,"u8"],[192,"obfI"],[212,"obfI"],[232,"obfI"],[252,"obfI"],[272,"obfI"],[292,"obfB"],[304,"obfF"],[328,"f32"],[332,"f32"],[336,"f32"],[340,"f32"],[348,"f32"],[352,"v3"],[368,"f32"],[376,"f32"],[384,"u8"],[396,"u8"],[400,"i32"]],"PlayerConfig":[],"WeaponManager":[[24,"i32"],[28,"i32"],[32,"u8"],[36,"i32"],[100,"obfF"],[124,"f32"],[132,"i32"],[136,"u8"],[137,"u8"],[140,"i32"],[144,"f32"],[152,"f32"],[172,"i32"],[188,"u8"],[220,"obfI"],[240,"obfI"],[260,"f32"],[264,"f32"],[268,"f32"],[280,"f32"],[288,"f32"],[296,"u8"],[300,"obfI"],[320,"obfI"],[340,"obfI"],[360,"obfB"],[372,"obfB"],[384,"obfB"],[396,"obfB"],[420,"obfB"],[432,"obfI"],[460,"i32"],[464,"u8"],[468,"i32"],[472,"i32"],[512,"i32"],[532,"u8"],[540,"u8"],[541,"u8"],[542,"u8"],[543,"u8"],[592,"i32"],[600,"u8"]],"GG_GameManager":[[36,"u8"],[44,"f32"],[68,"u8"],[69,"u8"],[72,"f32"],[76,"f32"],[80,"i32"],[84,"i32"],[88,"u8"],[116,"u8"],[120,"f32"],[124,"f32"],[144,"i32"],[148,"u8"],[180,"i32"],[188,"i32"],[192,"i32"],[232,"obfI"],[252,"obfI"],[272,"obfI"],[300,"u8"],[304,"i32"],[356,"u8"],[368,"f32"],[384,"u8"],[392,"u8"],[420,"u8"],[424,"i32"],[428,"f32"],[432,"u8"],[433,"u8"],[440,"i32"],[444,"i32"],[448,"f32"],[452,"i32"],[456,"f32"],[460,"i32"],[464,"i32"]],"EnemyBot":[[32,"f32"],[36,"v3"],[48,"u8"],[52,"f32"],[56,"f32"],[60,"u8"],[68,"f32"],[72,"f32"],[76,"u8"],[77,"u8"]]};
 /*__SKILLWARZ_FIELDS_END__*/
 
   /* ---------------------------------------------------------------- *
@@ -902,11 +904,26 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
   // simply notice when the pointer changes.
   // (CAPTURE is declared above, next to HOOKS, because armUwmk() needs it.)
 
-  function captureArgs(typeName, enabled) {
+  // Enemy entities are many, not one. ESP needs all of them, so types flagged
+  // `many` accumulate into a list keyed by pointer.
+  //
+  // Declared HERE, next to the code that uses it. It was referenced from
+  // captureArgs before being declared, and under "use strict" that is a
+  // ReferenceError - which the callback's own try/catch swallowed, so every
+  // capture silently stopped and the survey came back empty for no visible
+  // reason. Same shape of bug as CAPTURE vs armUwmk earlier in this thread.
+  var ENEMIES = {};
+
+  function captureArgs(typeName, enabled, many) {
     return function (self) {
       try {
         var p = self && self.val ? self.val() : 0;
         if (!p) return;
+        if (many) {
+          // Enemy entities are many, not one. ESP needs every one of them.
+          if (!ENEMIES[p]) ENEMIES[p] = { ptr: p, firstSeen: Date.now(), hits: 0 };
+          ENEMIES[p].hits++;
+        } else {
         var rec = INSTANCES[typeName];
         if (!rec || rec.ptr !== p) {
           INSTANCES[typeName] = { ptr: p, firstSeen: Date.now(), hits: 0, replaced: !!rec };
@@ -926,7 +943,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
             };
           } catch (_) {}
         }
-        INSTANCES[typeName].hits++;
+        } // end !many
         // Movement ticks here, once per frame, on the local player - the one
         // place where a speed write is guaranteed to be read back by the game
         // this frame rather than some frame later.
@@ -957,7 +974,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       try {
         var h = plugin.hookPrefix(
           { typeName: spec.type, methodName: "Update", params: ["i32", "i32"], returnType: undefined },
-          captureArgs(spec.type, spec.keep)
+          captureArgs(spec.type, spec.keep, spec.many)
         );
         HOOKS.push({ type: spec.type, hook: h, keep: spec.keep });
       } catch (e) {
@@ -1009,6 +1026,95 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       var n = new VW(ptr).getClassName();
       return n === undefined ? null : n;
     } catch (_) { return null; }
+  }
+
+  /* ---- ESP / aimbot reconnaissance -----------------------------------
+ * Everything needed to draw ESP is in this build; the one thing that is not
+ * is a world-to-screen projection, and that is the only remaining blocker.
+ *
+ * Found by reading the dump:
+ *   EnemyBot : MonoBehaviour with Update() preserved  -> hookable, many
+ *              +0x14 Transform ref, +0x24 inline Vector3 (world position)
+ *   GG_GameManager (already captured)
+ *              +0x14 Camera, +0x5C List<Player>
+ *
+ * The projection gap: Transform exposes no IL2CPP fields - Unity keeps the
+ * position natively - and Plugin.call() is permanently dead here because it
+ * starts with resolveGame(), which this loader never satisfies. So the camera
+ * pointer is reachable but its transform is not, without either a hooked call
+ * or a guessed FOV.
+ *
+ * A guessed signature is not an option: registering a hook whose params do not
+ * match a real WASM type gets type index -1, which fails module validation and
+ * stops the game booting. So instead of guessing, read internalWasmTypes after
+ * instantiate and report which shapes actually exist. That makes the next
+ * hook a decision instead of a gamble.
+ */
+  function readVec(ptr, off, n) {
+    var v = heapView();
+    if (!v) return null;
+    if (off < 0 || off + n * 4 > v.byteLength) return null;
+    var a = [];
+    for (var i = 0; i < n; i++) a.push(v.getFloat32(ptr + off + i * 4, true));
+    READS.ok += n;
+    return a;
+  }
+
+  function recon() {
+    var out = { enemies: [], camera: null, playerList: null, wasmTypes: null };
+
+    var eKeys = Object.keys(ENEMIES);
+    for (var i = 0; i < eKeys.length && i < 24; i++) {
+      var rec = ENEMIES[eKeys[i]];
+      var fields = SK_FIELDS.EnemyBot || [];
+      var row = { ptr: "0x" + rec.ptr.toString(16), hits: rec.hits, pos: null };
+      for (var f = 0; f < fields.length; f++) {
+        if (fields[f][1] !== "v3") continue;
+        row.pos = readVec(rec.ptr, fields[f][0], 3);
+        row.posAt = "0x" + fields[f][0].toString(16);
+        break;
+      }
+      row.scalars = fields
+        .filter(function (x) { return x[1] === "f32"; })
+        .map(function (x) { return { o: x[0], v: rd(rec.ptr + x[0], "f32") }; })
+        .filter(function (x) { return x.v !== undefined && isFinite(x.v); })
+        .slice(0, 6);
+      out.enemies.push(row);
+    }
+    out.enemyCount = eKeys.length;
+
+    // The camera and the player list hang off GG_GameManager, which we already
+    // capture every frame.
+    var gm = INSTANCES.GG_GameManager;
+    if (gm && gm.ptr) {
+      var camPtr = rd(gm.ptr + 0x14, "u32");
+      var listPtr = rd(gm.ptr + 0x5c, "u32");
+      out.camera = camPtr ? "0x" + (camPtr >>> 0).toString(16) : null;
+      out.playerList = listPtr ? "0x" + (listPtr >>> 0).toString(16) : null;
+      // Raw words either side of both pointers: if the List<T> header layout is
+      // the usual _items@0x10 / _size@0x18, one of these IS the size, and that
+      // is cheaper to confirm from data than to assume.
+      out.gameManager = {
+        camRaw: camPtr, listRaw: listPtr,
+        nearCam: [0x10, 0x14, 0x18, 0x1c].map(function (o) { return rd(gm.ptr + o, "u32"); }),
+        nearList: [0x10, 0x14, 0x18, 0x1c].map(function (o) { return rd(gm.ptr + o, "u32"); })
+      };
+    }
+
+    // Which WASM signatures actually exist. internalWasmTypes is populated
+    // during metadata parse, which happens before instantiate - readable now,
+    // after the fact, and worthless at arm time.
+    try {
+      var RT = window.UnityWebModkit && window.UnityWebModkit.Runtime;
+      var types = (RT && RT.internalWasmTypes) || [];
+      var shapes = {};
+      for (var t = 0; t < types.length && t < 4000; t++) {
+        var sig = types[t].params.join(",") + " -> " + (types[t].returnType || "void");
+        shapes[sig] = (shapes[sig] || 0) + 1;
+      }
+      out.wasmTypes = shapes;
+    } catch (_) {}
+    return out;
   }
 
   function survey() {
@@ -1243,6 +1349,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       },
       diff: DIFF.slice(0, 40),
       speed: { on: SPEED.on, factor: SPEED.factor, writes: SPEED_TOUCHED },
+      esp: recon(),
       uwmkLog: UWMK_LOG.slice(0, 20),
       warnings: []
     };

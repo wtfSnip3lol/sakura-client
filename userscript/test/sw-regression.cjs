@@ -63,7 +63,7 @@ function obfBool(base, real, key) {
   // look exactly like a compounding bug.
   const OBJ = {};
   let base = 0x20000;
-  for (const t of ['FPScontroller', 'HealthScript', 'WeaponManager', 'GG_GameManager']) {
+  for (const t of ['FPScontroller', 'HealthScript', 'WeaponManager', 'GG_GameManager', 'EnemyBot']) {
     OBJ[t] = base;
     base += 0x1000;
   }
@@ -119,14 +119,17 @@ var BC_HUB = [];
 function sendToPlayer(msg) {
   for (const b of BC_HUB) if (typeof b.onmessage === 'function') b.onmessage({ data: msg });
 }
-function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'resolveGame', scriptDataLate = false, applyFirst = false, resolveButNotApply = false, noInstantiate = false, speed = null, thenOff = false, extraFrames = 0 }) {
+function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'resolveGame', scriptDataLate = false, applyFirst = false, resolveButNotApply = false, noInstantiate = false, speed = null, thenOff = false, extraFrames = 0, fireEnemyTwice = null, setup = null }) {
   // Reset the channel hub: payload instances from earlier runs would keep
   // their own SPEED_STATE and keep writing to the same heap, which looks
   // exactly like a compounding bug in the payload.
   BC_HUB.length = 0;
   seedObjects();
+  // Setup runs AFTER seeding: seedObjects() zeroes the heap, so anything a case
+  // writes beforehand is wiped and the test fails for the wrong reason.
+  if (setup) setup();
   const posted = [], pluginCalls = [], hookCalls = [], pending = [], listeners = [], order = [];
-  const fireTypes = fireUpdate ? ['FPScontroller', 'HealthScript', 'WeaponManager', 'GG_GameManager'] : [];
+  const fireTypes = fireUpdate ? ['FPScontroller', 'HealthScript', 'WeaponManager', 'GG_GameManager', 'EnemyBot'] : [];
 
   // The real game object. Only UWMK holds a reference to it - which is the
   // whole point of heapVia='resolveGame'.
@@ -292,10 +295,12 @@ class BC {
       if (!h.applied || !fireTypes.includes(h.typeName)) continue;
       const rec = OBJ[h.typeName];
       if (rec === undefined) continue;
-      const fire = () => {
-        try { h.callback(new FakeVW(rec)); }
+      const fire = (ptr) => {
+        try { h.callback(new FakeVW(ptr === undefined ? rec : ptr)); }
         catch (e) { fatal = 'hook threw: ' + e.message; }
       };
+      // An enemy hook fires once per EnemyBot instance in a real match.
+      if (fireEnemyTwice && h.typeName === 'EnemyBot') { for (const ep of fireEnemyTwice) fire(ep); continue; }
       // Command must land BEFORE the frame it should affect, exactly as the
       // portal sends it while the game is already running.
       if (speed && h.typeName === 'FPScontroller') {
@@ -339,7 +344,7 @@ function check(name, cond, detail) {
     !!(r.pluginCalls[0].referencedAssemblies || []).includes('Assembly-CSharp.dll'), 'game types live here');
   check('a report is posted to the portal', !!r.report, 'no report');
 
-  check('Update() hooks are registered on the player types', r.hookCalls.length === 4, `hooks=${r.hookCalls.length}`);
+  check('Update() hooks are registered on the player types', r.hookCalls.length === 5, `hooks=${r.hookCalls.length}`);
   check('hooks use the IL2CPP (this, MethodInfo*) -> void signature',
     r.hookCalls.every(h => h.methodName === 'Update' && Array.isArray(h.params)
       && h.params.length === 2 && h.params[0] === 'i32' && h.returnType === undefined),
@@ -415,7 +420,7 @@ function check(name, cond, detail) {
 {
   const r = runFrame({ scriptDataLate: true });
   check('hooks register with NO scriptData available at all',
-    r.hookCalls.length === 4, `hooks=${r.hookCalls.length} (names alone must suffice)`);
+    r.hookCalls.length === 5, `hooks=${r.hookCalls.length} (names alone must suffice)`);
   const iHook = r.order.indexOf('hookPrefix:FPScontroller');
   const iData = r.order.indexOf('scriptData');
   check('hooks are registered BEFORE scriptData appears',
@@ -425,11 +430,11 @@ function check(name, cond, detail) {
     r.order[0] === 'createPlugin' && r.order[1] && r.order[1].startsWith('hookPrefix:'),
     `order=${r.order.slice(0, 3).join(' -> ')}`);
   check('reported hooksRegisteredAtArm matches what was registered',
-    r.report.hooksRegisteredAtArm === 4, String(r.report.hooksRegisteredAtArm));
+    r.report.hooksRegisteredAtArm === 5, String(r.report.hooksRegisteredAtArm));
 
   const dbl = runFrame({});
   check('registerHooks is idempotent (no duplicate hooks on retry)',
-    dbl.hookCalls.length === 4, `hooks=${dbl.hookCalls.length} - registered twice?`);
+    dbl.hookCalls.length === 5, `hooks=${dbl.hookCalls.length} - registered twice?`);
 }
 
 /* ================================================================== *
@@ -440,7 +445,7 @@ function check(name, cond, detail) {
   // UWMK's apply pass runs while plugin.hooks is still empty: too late.
   const late = runFrame({ applyFirst: true });
   check('registered-too-late is detected and named',
-    late.hookCalls.length === 4 && late.report.hooksApplied === 0,
+    late.hookCalls.length === 5 && late.report.hooksApplied === 0,
     `hooks=${late.hookCalls.length} applied=${late.report.hooksApplied}`);
   check('too-late: hooksResolved is 0 (UWMK never saw them)',
     late.report.hooksResolved === 0, `hooksResolved=${late.report.hooksResolved}`);
@@ -602,10 +607,10 @@ function check(name, cond, detail) {
     !noHooks.report.warnings.some(w => /were even SEEN/.test(w)),
     JSON.stringify(noHooks.report.warnings));
   check('reports hooksApplied=0 rather than claiming success',
-    noHooks.report.hooksApplied === 0 && noHooks.report.hooksTotal === 4,
+    noHooks.report.hooksApplied === 0 && noHooks.report.hooksTotal === 5,
     JSON.stringify([noHooks.report.hooksApplied, noHooks.report.hooksTotal]));
   check('signature-mismatch branch shows UWMK DID resolve the methods',
-    noHooks.report.hooksResolved === 4, `hooksResolved=${noHooks.report.hooksResolved}`);
+    noHooks.report.hooksResolved === 5, `hooksResolved=${noHooks.report.hooksResolved}`);
 }
 {
   const idle = runFrame({ fireUpdate: false });
@@ -614,6 +619,49 @@ function check(name, cond, detail) {
   check('still heartbeats with no instances', idle.reports.length > 3, `reports=${idle.reports.length}`);
   check('an empty survey with NO instances does not cry wolf',
     !idle.report.warnings.some(w => /read 0 fields/.test(w)), JSON.stringify(idle.report.warnings));
+}
+
+/* ================================================================== *
+ * ESP RECON. Everything ESP needs exists in this build; the one thing that
+ * does not is a world-to-screen projection.
+ *   EnemyBot+0x24 inline Vector3 = cached world position
+ *   GG_GameManager+0x14 Camera, +0x5C List<Player>
+ * Transform exposes no IL2CPP fields and Plugin.call() is dead here, so the
+ * projection has to come from a hooked call - and a guessed signature fails
+ * module validation and stops the game booting. So report which WASM shapes
+ * actually exist instead of gambling on one.
+ * ================================================================== */
+{
+  // Two enemies at distinct positions.
+  const e1 = OBJ.EnemyBot, e2 = OBJ.EnemyBot + 0x800;
+  const r = runFrame({
+    fireEnemyTwice: [e1, e2],
+    setup() {
+      wF32(e1 + 0x24, 10.5); wF32(e1 + 0x28, 1.25); wF32(e1 + 0x2c, -3.0);
+      wF32(e2 + 0x24, -4.5); wF32(e2 + 0x28, 0.5);  wF32(e2 + 0x2c, 7.75);
+      wI32(OBJ.GG_GameManager + 0x14, 0x7000000);   // Camera ref (a value)
+      wI32(OBJ.GG_GameManager + 0x5c, 0x300000);    // List<Player> ref
+      wI32(0x300000 + 0x10, 0x301000);              // List._items
+      wI32(0x300000 + 0x18, 7);                     // List._size
+    }
+  });
+  const esp = r.report.esp || {};
+  check('two enemy instances are tracked separately',
+    esp.enemyCount === 2, `enemyCount=${esp.enemyCount}`);
+  check('enemy world position is read from the inline Vector3',
+    esp.enemies.some(x => x.pos && Math.abs(x.pos[0] - 10.5) < 1e-4 && Math.abs(x.pos[2] + 3) < 1e-4),
+    JSON.stringify(esp.enemies));
+  check('the second enemy is distinct, not overwritten',
+    esp.enemies.some(x => x.pos && Math.abs(x.pos[0] + 4.5) < 1e-4 && Math.abs(x.pos[1] - 0.5) < 1e-4),
+    JSON.stringify(esp.enemies.map(x => x.pos)));
+  check('camera pointer is read off GG_GameManager+0x14',
+    esp.camera === '0x7000000', `camera=${esp.camera}`);
+  check('player list pointer is read off GG_GameManager+0x5c',
+    esp.playerList === '0x300000', `playerList=${esp.playerList}`);
+  check('actual WASM signatures are reported for safe hook selection',
+    esp.wasmTypes && typeof esp.wasmTypes === 'object', JSON.stringify(esp.wasmTypes).slice(0, 120));
+  check('EnemyBot position is read from 0x24, not a misclassified pointer field',
+    esp.enemies.every(x => x.posAt === '0x24'), JSON.stringify(esp.enemies.map(x => x.posAt)));
 }
 
 /* ================================================================== *
