@@ -53,7 +53,7 @@
   // It was hand-written in three places once and one drifted, so a field report
   // claimed 2.0.2 while the plugin logged 2.0.3 - which sends everyone chasing
   // a stale build.
-  var VERSION = "2.6.0";
+  var VERSION = "2.7.0";
 
   /* ================================================================== *
    * WRAPPER — relay only. Arming UWMK here achieves nothing: this frame
@@ -1327,6 +1327,17 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     EnemyBot:             [["0x14", "transform"]]
   };
 
+  /* Plain (non-pointer) scalars that carry meaning, read straight through.
+     PhotonNetworkSync+0x58 read 2 or 3 across eight players and split them 4/4
+     with the local player in the 2-group - which is what a 4v4 Team Deathmatch
+     roster looks like. +0x7C read 10 for every remote and 5 for the local one,
+     which is a second, independent way to spot ourselves.
+     Both are reported as observations with the evidence attached, not asserted
+     as fact: an integer that partitions cleanly is evidence, not proof. */
+  var SCALARS = {
+    PhotonNetworkSync: [["0x58", "team"], ["0x7c", "localFlag"], ["0x5c", "id"]]
+  };
+
   function describe(typeName, ptr) {
     var fields = SK_FIELDS[typeName] || [];
     var row = { kind: typeName, ptr: "0x" + ptr.toString(16), pos: null, posAt: null, allVecs: [], scalars: [], refs: {} };
@@ -1338,12 +1349,28 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       var v = readVec(ptr, fields[f][0], 3);
       if (!v) continue;
       row.allVecs.push({ o: "0x" + fields[f][0].toString(16), v: v });
-      if (row.pos === null && (v[0] !== 0 || v[1] !== 0 || v[2] !== 0)) {
-        row.pos = v;
-        row.posAt = "0x" + fields[f][0].toString(16);
+    }
+    // Pick the vector with the greatest HORIZONTAL extent, not the first
+    // non-zero one. FPScontroller+0xE0 is gravity - (0, -3.85, 0) on the ground,
+    // (0, -4.16, 0) in the air - and "first non-zero" picked it as the player
+    // position in a live report. Gravity is vertical and short; a world position
+    // has real XZ reach. Same class of mistake as trusting the first vector found.
+    var best = 0;
+    for (var q = 0; q < row.allVecs.length; q++) {
+      var vv = row.allVecs[q].v;
+      var h = vv[0] * vv[0] + vv[2] * vv[2];
+      if (h > best) { best = h; row.pos = vv; row.posAt = row.allVecs[q].o; }
+    }
+    row.reach = Math.sqrt(best);
+    var spec = REFS[typeName];
+    var sspec = SCALARS[typeName];
+    if (sspec) {
+      row.tag = {};
+      for (var si = 0; si < sspec.length; si++) {
+        var sv2 = rd(ptr + parseInt(sspec[si][0], 16), "i32");
+        if (sv2 !== undefined) row.tag[sspec[si][1]] = sv2;
       }
     }
-    var spec = REFS[typeName];
     if (spec) {
       for (var r = 0; r < spec.length; r++) {
         var val = rd(ptr + parseInt(spec[r][0], 16), "u32");
@@ -1718,12 +1745,16 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
         "box-shadow:0 10px 30px -12px #000;user-select:none;-webkit-user-select:none;";
 
       var bar =
+        '<div data-a="st2" style="color:#8d7a99;max-width:290px;"></div>';
+      el.innerHTML =
         '<div data-a="bar" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;max-width:290px;">' +
         '<b style="color:' + ACCENT + '">sakura</b>' +
         '<button data-a="sp" style="background:transparent;border:1px solid rgba(255,143,177,.45);' +
         'color:#f7eef5;border-radius:6px;padding:2px 8px;cursor:pointer;font:inherit;">Speed off</button>' +
         '<input data-a="fx" type="range" min="1" max="5" step="0.5" value="2" style="width:92px;accent-color:' + ACCENT + ';">' +
         '<span data-a="fv" style="color:#bda9c9;min-width:30px;">2.0x</span>' +
+        '<button data-a="esp" style="background:transparent;border:1px solid rgba(255,143,177,.45);' +
+        'color:#f7eef5;border-radius:6px;padding:2px 7px;cursor:pointer;font:inherit;">ESP on</button>' +
         '<button data-a="snap" style="background:transparent;border:1px solid rgba(255,143,177,.45);' +
         'color:#f7eef5;border-radius:6px;padding:2px 7px;cursor:pointer;font:inherit;">Snap</button>' +
         '<button data-a="fold" style="margin-left:auto;background:transparent;border:1px solid rgba(255,143,177,.45);' +
@@ -1744,6 +1775,17 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       if (spBtn) spBtn.onclick = function () { setSpeed(!SPEED.on, SPEED.factor); };
       if (fx) fx.oninput = function () { setSpeed(SPEED.on, parseFloat(fx.value) || 1); };
       if (q("snap")) q("snap").onclick = function () { onCommand("snapshot"); };
+      var espBtn = q("esp");
+      if (espBtn) espBtn.onclick = function () {
+        ESP.on = !ESP.on;
+        espBtn.textContent = ESP.on ? "ESP on" : "ESP off";
+        espBtn.style.background = ESP.on ? ACCENT : "transparent";
+        espBtn.style.color = ESP.on ? "#2a0f1b" : "#f7eef5";
+        try {
+          var rr = radar();
+          if (rr && rr.el) rr.el.style.display = ESP.on ? "" : "none";
+        } catch (_) {}
+      };
       if (q("fold")) q("fold").onclick = function () {
         if (!barRow) return;
         var folded = barRow.style.display === "none";
@@ -1831,6 +1873,168 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
   }, true);
 
   /* ---------------------------------------------------------------- *
+ * LIVE ESP.
+ *
+ * A world-space minimap, not screen-space boxes, and that is a deliberate
+ * choice rather than a compromise.
+ *
+ * Boxes need a projection: enemy world position, camera position, camera
+ * rotation and field of view. The first three are available - enemy positions
+ * off PhotonNetworkSync+0x34, our own off FPScontroller+0x2E4, and two floats
+ * that behave like pitch and yaw - but the FOV is not. The Camera object
+ * resolves (TDM_GameManager+0x2C) and UnityEngine.Camera exposes no IL2CPP
+ * fields whatsoever, so there is nothing to read a field of view off, and
+ * UnityEngine.CoreModule is not in referencedAssemblies, so WorldToScreenPoint
+ * cannot be hooked either. A guessed FOV produces boxes that look broken, and
+ * this project has shipped enough things that looked broken.
+ *
+ * A minimap in world space needs only positions, and those are now measured
+ * rather than inferred. It is drawn from the same pointers the report proves,
+ * so when it is right, it is right for a reason. Boxes follow once the angles
+ * are pinned down by a deliberate turn-and-diff, which is one keypress away.
+ * ---------------------------------------------------------------- */
+  var ESP = { on: true, span: 80 };   // span = world units across the radar
+
+  // The local player has no network position of its own: PhotonNetworkSync+0x34
+  // reads zero for the local instance in a live report while every remote has a
+  // real one, because local position is authoritative here and never comes back
+  // over the wire. So "where am I" comes from FPScontroller instead.
+  function localSpot() {
+    var c = INSTANCES.FPScontroller;
+    if (!c || !c.ptr) return null;
+    var feet = readVec(c.ptr, 0x2e4, 3);
+    var eye = readVec(c.ptr, 0x298, 3);
+    if (!feet) return null;
+    return {
+      ptr: c.ptr,
+      feet: feet,
+      eye: eye,
+      reach: Math.sqrt(feet[0] * feet[0] + feet[2] * feet[2]),
+      pitch: rd(c.ptr + 0x16c, "f32"),
+      yaw: rd(c.ptr + 0x170, "f32")
+    };
+  }
+
+  /* Everyone except us, read live. One Vector3 read per player per frame is
+   * cheap; decoding every remote's health every frame is not, so that is left
+   * to the 1.2s report where it belongs. */
+  function liveEnemies() {
+    var me = localSpot();
+    var out = [];
+    var sync = SEEN.PhotonNetworkSync || {};
+    var keys = Object.keys(sync);
+    for (var i = 0; i < keys.length && i < 32; i++) {
+      var rec = sync[keys[i]];
+      var p = readVec(rec.ptr, 0x34, 3);
+      // The local instance reads zero; skip it rather than plotting the origin.
+      if (!p || (p[0] === 0 && p[1] === 0 && p[2] === 0)) continue;
+      var row = {
+        ptr: rec.ptr, x: p[0], y: p[1], z: p[2],
+        team: rd(rec.ptr + 0x58, "i32"),
+        localFlag: rd(rec.ptr + 0x7c, "i32")
+      };
+      if (me) {
+        var dx = p[0] - me.feet[0], dz = p[2] - me.feet[2];
+        row.d = Math.sqrt(dx * dx + dz * dz);
+        row.bearing = Math.atan2(dx, dz) * 180 / Math.PI;
+      }
+      out.push(row);
+    }
+    return { me: me, list: out };
+  }
+
+  var RADAR = null;
+  function radar() {
+    if (RADAR) return RADAR;
+    try {
+      if (!document.body || !document.body.appendChild) return null;
+      var el = document.createElement("div");
+      el.id = "sakura-esp";
+      el.style.cssText =
+        "position:fixed;right:8px;top:8px;z-index:2147483646;pointer-events:none;" +
+        "background:rgba(21,12,29,.72);border:1px solid rgba(255,143,177,.4);border-radius:10px;" +
+        "padding:4px;font:10px/1.3 ui-monospace,Consolas,monospace;color:#bda9c9;";
+      el.innerHTML = '<canvas id="sakura-esp-cv" width="160" height="160" style="display:block"></canvas>' +
+                     '<div id="sakura-esp-lg" style="text-align:center"></div>';
+      // Canvas elements need a real 2d context; the test DOM has none, so guard
+      // rather than assume. A missing context must not take the HUD with it.
+      var cvStubs = { cv: { getContext: function () { return null; } }, el: el };
+      document.body.appendChild(el);
+      RADAR = { el: el, cv: el.querySelector("#sakura-esp-cv"), lg: el.querySelector("#sakura-esp-lg") };
+      if (!RADAR.cv || !RADAR.cv.getContext) RADAR = cvStubs;
+      return RADAR;
+    } catch (_) { return null; }
+  }
+
+  function drawEsp() {
+    var r = radar();
+    if (!r || !r.cv) return;
+    try {
+      var ctx2 = r.cv.getContext && r.cv.getContext("2d");
+      if (!ctx2) return;
+      var S = r.cv.width, C = S / 2;
+      var live = liveEnemies();
+      var me = live.me;
+      ctx2.clearRect(0, 0, S, S);
+      // grid + rings
+      ctx2.strokeStyle = "rgba(255,143,177,.16)";
+      ctx2.lineWidth = 1;
+      for (var g = 1; g <= 3; g++) {
+        ctx2.beginPath();
+        ctx2.arc(C, C, (C - 4) * g / 3, 0, Math.PI * 2);
+        ctx2.stroke();
+      }
+      ctx2.beginPath(); ctx2.moveTo(4, C); ctx2.lineTo(S - 4, C);
+      ctx2.moveTo(C, 4); ctx2.lineTo(C, S - 4); ctx2.stroke();
+      if (!me) { if (r.lg) r.lg.textContent = "no local player yet"; return; }
+
+      var k = (C - 6) / ESP.span;      // pixels per world unit
+      var myTeam = null;
+      // Our own team: whichever group the local instance reports.
+      var syncSelf = SEEN.PhotonNetworkSync || {};
+      var sk = Object.keys(syncSelf);
+      for (var s = 0; s < sk.length; s++) {
+        var p2 = readVec(syncSelf[sk[s]].ptr, 0x34, 3);
+        if (p2 && p2[0] === 0 && p2[1] === 0 && p2[2] === 0) {
+          myTeam = rd(syncSelf[sk[s]].ptr + 0x58, "i32");
+          break;
+        }
+      }
+      var shown = 0;
+      for (var i = 0; i < live.list.length; i++) {
+        var e = live.list[i];
+        var dx = (e.x - me.feet[0]) * k, dz = (e.z - me.feet[2]) * k;
+        // Clamp to the rim rather than dropping: an enemy 200m away is still
+        // information, and silently omitting it reads as "nobody there".
+        var d = Math.sqrt(dx * dx + dz * dz);
+        var cx = C, cz = C;
+        if (d > C - 6) { cx = C + dx / d * (C - 6); cz = C + dz / d * (C - 6); }
+        else { cx = C + dx; cz = C + dz; }
+        var mate = (myTeam !== null && e.team === myTeam);
+        ctx2.fillStyle = mate ? "#4f8f6a" : "#ff6e74";
+        ctx2.beginPath();
+        ctx2.arc(cx, cz, mate ? 2 : 3.2, 0, Math.PI * 2);
+        ctx2.fill();
+        shown++;
+      }
+      // us
+      ctx2.fillStyle = "#7ee0a8";
+      ctx2.beginPath(); ctx2.arc(C, C, 3, 0, Math.PI * 2); ctx2.fill();
+      if (r.lg) {
+        r.lg.textContent = "esp " + shown + " · " + Math.round(ESP.span) + "m" +
+          (myTeam !== null ? " · team" + myTeam : "");
+      }
+    } catch (_) {}
+  }
+
+  function espLoop() {
+    if (!ESP.on) { setTimeout(espLoop, 500); return; }
+    drawEsp();
+    // ~20fps. Every frame is wasteful for a radar and costs heap reads.
+    setTimeout(espLoop, 50);
+  }
+
+  /* ---------------------------------------------------------------- *
    * Report.
    * ---------------------------------------------------------------- */
   function collect() {
@@ -1900,6 +2104,15 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
         skipped: SPEED_SKIPPED.slice(0, 16)
       },
       esp: recon(),
+        // The local player has NO network position - PhotonNetworkSync+0x34 reads
+        // zero for the local instance - so where we are comes from FPScontroller.
+        // +0x2E4 is the body position, +0x298 the same point raised by eye height.
+        local: (function () {
+          var m = localSpot();
+          if (!m) return null;
+          return { ptr: "0x" + m.ptr.toString(16), feet: m.feet, eye: m.eye,
+                   pitch: m.pitch, yaw: m.yaw, reach: m.reach };
+        })(),
       uwmkLog: UWMK_LOG.slice(0, 20),
       warnings: []
     };
@@ -2001,6 +2214,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     // anything registered later. The retry below is only a safety net for the
     // case where arming ran before the Runtime existed.
     var ticks = 0;
+    try { espLoop(); } catch (_) {}
     emit(safeCollect());
     (function poll() {
       if (!HOOKS.length) {

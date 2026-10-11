@@ -728,6 +728,105 @@ function check(name, cond, detail) {
 }
 
 /* ================================================================== *
+ * THE GRAVITY BUG. Live report: controllers[0].pos was (0, -3.85, 0) and
+ * posAt "0xe0". FPScontroller+0xE0 is gravity. "First non-zero vector" is not
+ * a position rule - it is a "whatever came first" rule.
+ * ================================================================== */
+{
+  const c = OBJ.FPScontroller;
+  const r = runFrame({
+    setup() {
+      // Exactly the live numbers: gravity at 0xE0, real position at 0x2E4.
+      wF32(c + 0xe0, 0); wF32(c + 0xe4, -3.8499999046325684); wF32(c + 0xe8, 0);
+      wF32(c + 0x2e4, -23.135995864868164); wF32(c + 0x2e8, 5.010324954986572);
+      wF32(c + 0x2ec, 38.27300262451172);
+      wF32(c + 0x298, -23.135995864868164); wF32(c + 0x29c, 6.896000385284424);
+      wF32(c + 0x2a0, 38.27300262451172);
+    }
+  });
+  const ctl = (r.report.esp.controllers || [])[0] || {};
+  // 0x2E4 and 0x298 are the same XZ, so which one "wins" is arbitrary and
+  // irrelevant - feet or eye, the map is identical. What matters is that it is
+  // one of the real positions and not the gravity vector.
+  check('gravity is never mistaken for the player position',
+    ctl.posAt !== '0xe0' && (ctl.posAt === '0x2e4' || ctl.posAt === '0x298'),
+    `posAt=${ctl.posAt} pos=${JSON.stringify(ctl.pos)}`);
+  check('the reported position is the real world position',
+    ctl.pos && Math.abs(ctl.pos[0] + 23.136) < 1e-3 && Math.abs(ctl.pos[2] - 38.273) < 1e-3,
+    JSON.stringify(ctl.pos));
+  check('the local player is reported from FPScontroller, with eye height above it',
+    r.report.local && r.report.local.feet &&
+      Math.abs(r.report.local.feet[2] - 38.273) < 1e-3 &&
+      r.report.local.eye &&
+      Math.abs(r.report.local.eye[1] - 6.896) < 1e-3,
+    JSON.stringify(r.report.local));
+}
+
+/* The local player has NO network position. In a live report every remote read a
+ * real PhotonNetworkSync+0x34 while the local instance read zero, because local
+ * position is authoritative here and never comes back over the wire. Drawing
+ * from +0x34 for everyone would plot us at the world origin. */
+{
+  const s1 = OBJ.PhotonNetworkSync, s2 = OBJ.PhotonNetworkSync + 0x400;
+  const c = OBJ.FPScontroller;
+  const r = runFrame({
+    fireMany: { PhotonNetworkSync: [s1, s2], FPScontroller: [c, c] },
+    setup() {
+      // ours: zero network position, exactly as in the field
+      wI32(s1 + 0x28, c); wI32(s1 + 0x20, OBJ.HealthScript); wI32(s1 + 0x58, 2);
+      // theirs
+      wI32(s2 + 0x20, 0x28000); wI32(s2 + 0x58, 3);
+      wF32(s2 + 0x34, 40.5); wF32(s2 + 0x38, 1.5); wF32(s2 + 0x3c, -12.25);
+      wF32(c + 0x2e4, 0); wF32(c + 0x2e8, 0); wF32(c + 0x2ec, 0);
+      wF32(c + 0x298, 30); wF32(c + 0x29c, 2); wF32(c + 0x2a0, 0);
+    }
+  });
+  const esp = r.report.esp || {};
+  const me = esp.players.filter(p => p.isLocal)[0];
+  check('the local instance is recognised even with a zero network position',
+    !!me, JSON.stringify(esp.players.map(p => ({ p: p.ptr, l: p.isLocal }))));
+  check('and it is excluded from the enemy list',
+    esp.enemies.filter(x => x.kind === 'PhotonNetworkSync').length === 1 &&
+      esp.enemies.every(x => !x.isLocal),
+    JSON.stringify(esp.enemies.map(x => ({ k: x.kind, p: x.ptr, l: x.isLocal }))));
+  check('a remote position is never reported as zero', !esp.enemies[0].allVecs
+    .every(v => v.v[0] === 0 && v.v[2] === 0), JSON.stringify(esp.enemies[0].allVecs));
+}
+
+/* The team field. In the live report +0x58 read 2 or 3 across eight players and
+ * split them 4/4 with the local player in the 2-group - a 4v4 TDM roster. That
+ * is reported as an observation with its evidence, never asserted as fact, and
+ * the renderer must not drop anyone if the guess is wrong. */
+{
+  const sync = [];
+  for (let i = 0; i < 8; i++) sync.push(OBJ.PhotonNetworkSync + i * 0x400);
+  const r = runFrame({
+    fireMany: { PhotonNetworkSync: sync, FPScontroller: [OBJ.FPScontroller] },
+    setup() {
+      sync.forEach((s, i) => {
+        wI32(s + 0x58, i === 0 || i === 1 || i === 3 || i === 5 ? 2 : 3);
+        wF32(s + 0x34, 10 + i); wF32(s + 0x38, 1); wF32(s + 0x3c, 5 * i);
+      });
+      wI32(sync[0] + 0x28, OBJ.FPScontroller);   // ours
+      wF32(OBJ.FPScontroller + 0x2e4, 0); wF32(OBJ.FPScontroller + 0x2e8, 0);
+      wF32(OBJ.FPScontroller + 0x2ec, 0);
+    }
+  });
+  const esp = r.report.esp || {};
+  check('all eight players are captured',
+    esp.playerCount === 8, `playerCount=${esp.playerCount}`);
+  check('the team value is reported per player, not inferred',
+    esp.players.every(p => p.tag && typeof p.tag.team === 'number'),
+    JSON.stringify(esp.players.map(p => p.tag)));
+  check('and it partitions into two groups',
+    new Set(esp.players.map(p => p.tag.team)).size === 2,
+    JSON.stringify([...new Set(esp.players.map(p => p.tag.team))]));
+  check('every other player is still an enemy regardless of team',
+    esp.enemies.filter(x => x.kind === 'PhotonNetworkSync').length === 7,
+    `enemyCount=${esp.enemies.length}`);
+}
+
+/* ================================================================== *
  * REAL PLAYERS, NOT JUST BOTS.
  *
  * PhotonNetworkSync is one instance per player, local and remote, carrying an
@@ -826,7 +925,13 @@ function check(name, cond, detail) {
     fireEnemyTwice: [e1, e2],
     setup() {
       wF32(e1 + 0x14, 10.5); wF32(e1 + 0x18, 1.25); wF32(e1 + 0x1c, -3.0);
-      wF32(e1 + 0x5c, 99.0); wF32(e1 + 0x60, 0.0);  wF32(e1 + 0x64, 88.0); // a decoy vector
+      // A big PURELY VERTICAL vector, earlier in the struct than the real position.
+      // This is the live report's bug exactly: FPScontroller+0xE0 is gravity -
+      // (0, -3.85, 0) on the ground, (0, -4.16, 0) airborne - and "first
+      // non-zero vector" reported it as the player position. Magnitude must not
+      // be enough to win; extent in XZ is what separates a position from
+      // gravity.
+      wF32(e1 + 0x5c, 0); wF32(e1 + 0x60, 9.0);  wF32(e1 + 0x64, 0);
       wF32(e2 + 0x14, -4.5); wF32(e2 + 0x18, 0.5);  wF32(e2 + 0x1c, 7.75);
       wI32(e1 + 0xd0, 0x28000);                        // bot HealthScript ref
       wI32(e2 + 0xd0, 0x29000);
