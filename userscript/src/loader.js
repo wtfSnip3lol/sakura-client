@@ -29,12 +29,14 @@
 
   var IS_CLUTCHER = /(^|\.)clutcher\.io$/.test(HOST);
   var IS_ASTRA = /(^|\.)astrastrike\.fun$/.test(HOST);
+  var IS_2V2 = /(^|\.)2v2\.io$/.test(HOST);
   var IS_COOKIE = /(^|\.)orteil\.dashnet\.org$/.test(HOST) && /\/cookieclicker/i.test(location.pathname || "");
-  if (!IS_CLUTCHER && !IS_ASTRA && !IS_COOKIE) return;
+  if (!IS_CLUTCHER && !IS_ASTRA && !IS_2V2 && !IS_COOKIE) return;
 
   var BASE = "__SAKURA_RAW_BASE__";
   var FILE = IS_CLUTCHER ? "sakura.clutcher.js"
             : IS_ASTRA ? "sakura.astra.js"
+            : IS_2V2 ? "sakura.2v2.js"
             : "sakura.cc.js";
 
   function run(code) {
