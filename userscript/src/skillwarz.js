@@ -2149,26 +2149,36 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
    * is the only honest way to fit a number nobody can read.
    */
   var FOV_KEY = "sakura-sw-fov";
-  var OFF_KEY = "sakura-sw-view-off";
-  var VIEW = { pitch: null, yaw: null, pitchOff: 0, yawOff: 0, fov: 90, known: false };
+  var VIEW = { pitch: null, yaw: null, fov: 90, known: false };
 
   try { var _f = localStorage.getItem(FOV_KEY); if (_f) VIEW.fov = Math.min(140, Math.max(30, parseFloat(_f) || 90)); } catch (_) {}
-  try {
-    var _o = localStorage.getItem(OFF_KEY);
-    if (_o) {
-      var _p = JSON.parse(_o);
-      if (typeof _p.y === "number" && isFinite(_p.y)) VIEW.yawOff = _p.y;
-      if (typeof _p.p === "number" && isFinite(_p.p)) VIEW.pitchOff = _p.p;
-    }
-  } catch (_) {}
 
   function saveFov() { try { localStorage.setItem(FOV_KEY, String(VIEW.fov)); } catch (_) {} }
-  // The offsets used to exist but could only ever be cleared, never set - a
-  // correction knob with no handle on it. They persist so a dialled-in
-  // correction survives a reload.
-  function saveOff() {
-    try { localStorage.setItem(OFF_KEY, JSON.stringify({ y: VIEW.yawOff, p: VIEW.pitchOff })); } catch (_) {}
-  }
+
+  /* The manual pitch/yaw corrections are GONE, and the stored value is deleted.
+   *
+   * They existed because the angles were guesses, and a guessed constant is
+   * something a person can dial out by eye. They are worse than useless now:
+   * the field report came back with "yawOff": 93 - leftover state from a
+   * workaround, persisting in localStorage across every reload and rotating
+   * every box by 93 degrees while looking like a working feature. A stored
+   * correction is indistinguishable from a real one, which is the same failure
+   * as the silent struct fallback, one layer up.
+   *
+   * The angles now come from the game's own getters. If they are still wrong the
+   * answer belongs in the report, not in a slider. */
+  var OFF_KEY_LEGACY = "sakura-sw-view-off";
+  var LEGACY_OFFSET_CLEARED = false;
+  try {
+    // Both variables are assigned ABOVE this read deliberately. Declaring them
+    // below it - the habit this file has fallen into twice - leaves them
+    // undefined here, getItem is handed undefined, and the stale 93 survives
+    // every reload while the code reads as though it cleared it.
+    if (localStorage.getItem(OFF_KEY_LEGACY) !== null) {
+      localStorage.removeItem(OFF_KEY_LEGACY);
+      LEGACY_OFFSET_CLEARED = true;
+    }
+  } catch (_) {}
 
   /* Which two of MouseLook's floats are pitch and yaw is still an open question
    * - see viewState(). Until a deliberate turn names them this reads the pair
@@ -2308,8 +2318,8 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     }
     ANGLE.why = "";
     ANGLE.identified = true;
-    ANGLE.pitch = pitch + VIEW.pitchOff;
-    ANGLE.yaw = yaw + VIEW.yawOff;
+    ANGLE.pitch = pitch;
+    ANGLE.yaw = yaw;
     return ANGLE;
   }
 
@@ -2325,7 +2335,19 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     var z = dx * fx + dy * fy + dz * fz;
     if (z <= 0.05) return null;                    // behind the camera
     var x = dx * rx + dy * ry + dz * rz;
-    var y = dx * (ry * fz - rz * fy) + dy * (rz * fx - rx * fz) + dz * (rx * fy - ry * fx);
+    // up = FORWARD x RIGHT, not right x forward. The two are a sign flip apart:
+    //   cross(right, forward) = cross((1,0,0), (0,0,1)) = (0,-1,0)  DOWN
+    //   cross(forward, right) = cross((0,0,1), (1,0,0)) = (0, 1,0)  UP
+    // Unity is left-handed with forward +Z and up +Y, so right is +X, and the
+    // code was computing the first of those. A target ten units above the camera
+    // therefore projected BELOW centre - every box has been drawn vertically
+    // mirrored for the life of the feature.
+    //
+    // It was invisible while pitch sat at 0 and every box came out level, which
+    // is exactly why no turn-and-diff could catch it: the inputs that would
+    // have revealed the mirror were themselves broken. A test that only varies
+    // one axis at a time cannot see a bug on the other axis.
+    var y = dx * (fy * rz - fz * ry) + dy * (fz * rx - fx * rz) + dz * (fx * ry - fy * rx);
     var aspect = w / h;
     var vf = VIEW.fov * Math.PI / 180;
     var t = Math.tan(vf / 2);
@@ -2609,7 +2631,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       var rr5 = row("Reset view", "fov back to 75, offsets clear");
       var resetBtn = el("button", "sk-btn", "Reset");
       resetBtn.addEventListener("click", function () {
-        VIEW.fov = 75; VIEW.pitchOff = 0; VIEW.yawOff = 0; saveFov(); saveOff();
+        VIEW.fov = 75; saveFov();
         // showCat, not just refreshMenu: the card's own text says whether the
         // projection is usable, and only a rebuild re-renders it.
         showCat(MENU.cat);
@@ -2618,34 +2640,22 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       v2.body.appendChild(rr4);
       v2.body.appendChild(rr5);
 
-      // Yaw and pitch are read from hooked MouseLook getters - dump.cs shows the
-      // getters, and UWMK hands a postfix hook the return value. Which getter is
-      // which is worked out by matching each returned value against the struct
-      // offsets already being read, so it needs no calibration from the player.
-      // These two sliders only exist for a constant error left after that, and
-      // the card above states plainly when the reading is a struct guess.
-      var yo = mkRange(-180, 180, 1, function () { return VIEW.yawOff; },
-        function (v) { VIEW.yawOff = v; saveOff(); paintEspBtn(); });
-      yo.input.dataset.unit = "°";
-      var rr6 = row("Yaw correction", "0 if boxes line up");
-      rr6.appendChild(yo);
-      v2.body.appendChild(rr6);
-      var po = mkRange(-90, 90, 1, function () { return VIEW.pitchOff; },
-        function (v) { VIEW.pitchOff = v; saveOff(); paintEspBtn(); });
-      po.input.dataset.unit = "°";
-      var rr7 = row("Pitch correction", "pitch is unverified");
-      rr7.appendChild(po);
-      v2.body.appendChild(rr7);
+      // No calibration sliders here. There used to be pitch/yaw correction
+      // sliders, added because the angles were guesses, and they caused more
+      // harm than the guess: the stored value persisted across reloads and the
+      // field report came back with yawOff 93, rotating every box by 93 degrees
+      // while looking like a working feature. A stored correction is
+      // indistinguishable from a real one. The angles come from the game's own
+      // getters now; if they are wrong the answer belongs in the report.
       var n = rep && rep.view;
       v2.body.appendChild(el("div", "sk-note",
         "view: " + (n ? (n.mouseLook ? "MouseLook " + n.mouseLook + (n.camera ? "  camera " + n.camera : "") : "no MouseLook yet")
                       : "no MouseLook yet") +
         (ang ? "\n" + (ang.source === "getter"
-                 ? "read from MouseLook getters - yaw " + ang.yawAt + "=" + Math.round(ang.rawYaw) +
-                   (ang.yawOff ? " " + (ang.yawOff > 0 ? "+" : "") + Math.round(ang.yawOff) : "") +
-                   "\npitch " + ang.pitchAt + "=" + Math.round(ang.rawPitch)
-                 : "GUESSING from struct offsets: +0x28 and +0x1C.\nThe angle getters are hooked but have not fired.") : "") +
-        (VIEW.pitchOff || VIEW.yawOff ? "\npitch " + Math.round(VIEW.pitchOff) + "  yaw " + Math.round(VIEW.yawOff) : "")));
+                 ? "read from MouseLook getters\nyaw   " + ang.yawAt + " = " + Math.round(ang.rawYaw) +
+                   "\npitch " + ang.pitchAt + " = " + Math.round(ang.rawPitch)
+                 : "GUESSING from struct offsets +0x28 and +0x1C\nthe angle getters are hooked but have not fired") : "") +
+        (LEGACY_OFFSET_CLEARED ? "\n(cleared a stale saved correction)" : "")));
       out.push(v2);
     }
 
@@ -3473,6 +3483,23 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
             var pr = project(me.eye, [me.eye[0], me.eye[1], me.eye[2] + 1], 1000, 1000);
             if (pr) { cx = pr.x / 1000; cy = pr.y / 1000; }
           }
+          // Two more probes, straight up and straight down from the eye. A
+          // projection with a mirrored vertical axis passes every level-view
+          // check and fails these. The vertical sign is simply not observable
+          // from a world point at the camera's own height, which is why it
+          // survived this long: nothing we could read off a screenshot or a
+          // struct diff would ever have shown it.
+          var ay = null, by = null;
+          if (me) {
+            // Diagonal, not straight up. At pitch 0 a point directly overhead is
+            // exactly 90 degrees off-axis, z collapses to 0, and the
+            // behind-the-camera guard correctly rejects it - which would leave
+            // this probe measuring nothing.
+            var pu = project(me.eye, [me.eye[0], me.eye[1] + 10, me.eye[2] + 10], 1000, 1000);
+            if (pu) ay = pu.y / 1000;
+            var pd = project(me.eye, [me.eye[0], me.eye[1] - 10, me.eye[2] + 10], 1000, 1000);
+            if (pd) by = pd.y / 1000;
+          }
           return { identified: ANGLE.identified, why: ANGLE.why,
                    // Which source produced the reading - a hooked getter, or a
                    // struct offset that is only a guess - plus every getter with
@@ -3485,10 +3512,10 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
                    getters: ANGLE.getters,
                    rawPitch: ANGLE.rawPitch, rawYaw: ANGLE.rawYaw,
                    pitch: ANGLE.pitch, yaw: ANGLE.yaw,
-                   pitchOff: VIEW.pitchOff, yawOff: VIEW.yawOff,
+                   legacyOffsetsCleared: LEGACY_OFFSET_CLEARED,
                    fov: VIEW.fov,
                    fovSane: VIEW.fov >= 60 && VIEW.fov <= 110,
-                   centreX: cx, centreY: cy };
+                   centreX: cx, centreY: cy, aboveY: ay, belowY: by };
         })(),
         fov: VIEW.fov,
         // ESP state is reported, not just drawn. A toggle whose result cannot be

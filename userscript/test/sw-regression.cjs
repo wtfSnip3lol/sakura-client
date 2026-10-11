@@ -469,6 +469,7 @@ class BC {
   const reports = posted.filter(m => m && m.kind === 'report').map(m => m.report);
   return {
     fatal, posted, pluginCalls, hookCalls, reports, order, listeners, portalCommands, doc, ctx,
+    ls,
     pluginVersion: pluginCalls[0] && pluginCalls[0].version,
     report: reports[reports.length - 1]
   };
@@ -1315,11 +1316,16 @@ function check(name, cond, detail) {
   check('a yaw of 45 puts a target straight ahead off to the side',
     base.report.angles && Math.abs(base.report.angles.centreX - 0.5) > 0.05,
     `centreX=${base.report.angles && base.report.angles.centreX}`);
-  check('a stored correction is applied on load',
-    corrected.report.angles && Math.abs(corrected.report.angles.yawOff) === 45,
+  // A stored correction is GONE - it was a workaround for a guess, and it
+  // persisted as yawOff 93 across reloads while looking like a working feature.
+  // The case below proves the projection itself honours yaw, which is what the
+  // correction used to fake.
+  check('a stored correction is not applied - the key does not exist any more',
+    corrected.report.angles && corrected.report.angles.yawOff === undefined
+      && corrected.report.angles.legacyOffsetsCleared === true,
     JSON.stringify(corrected.report.angles));
-  check('and it brings the projection back to centre, which is what a correction is for',
-    corrected.report.angles && Math.abs(corrected.report.angles.centreX - 0.5) < 1e-3,
+  check('so a target straight ahead stays off to the side, unrotated',
+    corrected.report.angles && Math.abs(corrected.report.angles.centreX - 0.5) > 0.05,
     `centreX=${corrected.report.angles && corrected.report.angles.centreX}`);
 }
 
@@ -1483,6 +1489,81 @@ function check(name, cond, detail) {
   check('and the export field names are ASCII, so they need no patch',
     /resolvedIl2CppFunctions\["il2cpp_string_new"\]/.test(vendorText),
     'export keys changed - recheck they are ASCII');
+}
+
+/* ================================================================== *
+ * THE BOXES WERE DRAWN VERTICALLY MIRRORED.
+ *
+ * project() built its up vector as right x forward. In Unity's left-handed
+ * system with forward +Z and up +Y, right is +X, and:
+ *
+ *   cross(right, forward) = cross((1,0,0), (0,0,1)) = (0,-1,0)   DOWN
+ *   cross(forward, right) = cross((0,0,1), (1,0,0)) = (0, 1,0)   UP
+ *
+ * A sign apart. A target ten units above the camera projected below centre.
+ *
+ * It was invisible for the life of the feature because pitch sat at 0, so every
+ * box came out level and the mirror had nothing to act on - and the one test
+ * that varied yaw could not see a bug on the vertical axis. This is the limit
+ * of a test that moves one axis at a time.
+ */
+{
+  const ml = 0x2c000;
+  const s1 = 0x40000;
+  const r = runFrame({
+    fireMany: { PhotonNetworkSync: [s1] },
+    setup() {
+      wI32(s1 + 0x30, ml);
+      wF32(ml + 0x18, 360); wF32(ml + 0x1c, 0); wF32(ml + 0x28, 0);   // level, facing +Z
+      // us at the origin, eye at y=1.8; the target is straight ahead and UP
+      wF32(OBJ.FPScontroller + 0x2e4, -40); wF32(OBJ.FPScontroller + 0x2e8, 5); wF32(OBJ.FPScontroller + 0x2ec, 12);
+      wF32(OBJ.FPScontroller + 0x154, -40); wF32(OBJ.FPScontroller + 0x158, 5); wF32(OBJ.FPScontroller + 0x15c, 12);
+      wF32(OBJ.FPScontroller + 0x160, -40); wF32(OBJ.FPScontroller + 0x164, 5); wF32(OBJ.FPScontroller + 0x168, 12);
+      wF32(OBJ.FPScontroller + 0x3d0, -40); wF32(OBJ.FPScontroller + 0x3d4, 5); wF32(OBJ.FPScontroller + 0x3d8, 12);
+      wF32(s1 + 0x6c, -40); wF32(s1 + 0x70, 5.2); wF32(s1 + 0x74, 22);   // dead ahead, same ground
+      wI32(s1 + 0x7c, 10);
+    }
+  });
+  const a = r.report.angles;
+  check('a target above the camera projects above the centre line',
+    a && a.aboveY !== undefined && a.aboveY < 0.5,
+    JSON.stringify(a));
+  check('and a target below it projects below, the other way round',
+    a && a.belowY !== undefined && a.belowY > 0.5,
+    JSON.stringify(a));
+  check('the two are symmetric about the centre, so the axis is not merely flipped',
+    a && typeof a.aboveY === 'number' && typeof a.belowY === 'number'
+      && Math.abs((a.aboveY + a.belowY) - 1) < 1e-6,
+    `aboveY=${a && a.aboveY} belowY=${a && a.belowY}`);
+}
+
+/* A stale saved correction is the same failure as a silent guess, one layer up:
+ * it persists, it is indistinguishable from a real value, and it survives every
+ * reload looking like the feature working. The report came back with yawOff 93. */
+{
+  const ml = 0x2c000;
+  const s1 = 0x40000;
+  const r = runFrame({
+    ls: { 'sakura-sw-view-off': JSON.stringify({ y: 93, p: 0 }) },
+    fireMany: { PhotonNetworkSync: [s1] },
+    setup() {
+      wI32(s1 + 0x30, ml);
+      wF32(ml + 0x18, 360); wF32(ml + 0x1c, 0); wF32(ml + 0x28, 0);
+      wF32(OBJ.FPScontroller + 0x2e4, -40); wF32(OBJ.FPScontroller + 0x2e8, 5); wF32(OBJ.FPScontroller + 0x2ec, 12);
+      wF32(s1 + 0x6c, -40); wF32(s1 + 0x70, 5.2); wF32(s1 + 0x74, 52);
+      wI32(s1 + 0x7c, 10);
+    }
+  });
+  check('a legacy stored correction is deleted on load, not applied',
+    r.report.angles && r.report.angles.legacyOffsetsCleared === true,
+    JSON.stringify(r.report.angles));
+  check('and it is gone from storage, not merely ignored',
+    r.ls['sakura-sw-view-off'] === undefined,
+    `stored=${JSON.stringify(r.ls['sakura-sw-view-off'])}`);
+  check('a target dead ahead still lands at the centre, unrotated',
+    r.report.angles && Math.abs(r.report.angles.centreX - 0.5) < 1e-3
+      && Math.abs(r.report.angles.centreY - 0.5) < 1e-3,
+    `centreX=${r.report.angles && r.report.angles.centreX} centreY=${r.report.angles && r.report.angles.centreY}`);
 }
 
 /* The menu opens bottom-right, which is where this game keeps the weapon and
@@ -2420,6 +2501,12 @@ function check(name, cond, detail) {
   check('player DOES arm UWMK', p.pluginCalls.length === 1, `armed ${p.pluginCalls.length}x`);
   check('report identifies the player frame', p.report.frameRole === 'player', p.report.frameRole);
 }
+
+/* SENTINEL. If this does not print, the suite died partway through and the
+ * PASS/FAIL totals describe only the part that ran - which is exactly how
+ * "FAIL=0 PASS=143" came to look like a green run while 130 assertions were
+ * never reached. A truncated suite must never read as a passing one. */
+check('the suite ran to completion', true, '');
 
 console.log(`\ntarget: ${target}`);
 process.exit(failed ? 1 : 0);
