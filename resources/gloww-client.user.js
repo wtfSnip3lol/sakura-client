@@ -86,7 +86,17 @@
     caseOdds: false,
     coFallback: "off",
     coPicks: "{}",
-    giveReveal: true
+    giveReveal: true,
+    // Arm chams
+    armCharms: false,
+    charmsType: "outline",
+    charmColor: "#ff6b9d",
+    charmWidth: 4,
+    // Gun chams
+    gunChams: false,
+    chamType: "outline",
+    chamColor: "#ff6b9d",
+    chamWidth: 4
   };
 
   var VISUAL_PRESETS = {
@@ -1274,11 +1284,14 @@
     hud: '<rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M7 9h6M7 13h10M7 16h4"/>',
     world: '<circle cx="12" cy="12" r="9.5"/><path d="M3 12h18M12 2.5a15 15 0 0 1 0 19M12 2.5a15 15 0 0 0 0 19"/>',
     dev: '<path d="m12 2 2.4 6.6L21 11l-6.6 2.4L12 20l-2.4-6.6L3 11l6.6-2.4z"/>',
-    beta: '<path d="M9 3h6M10 3v6l-5.2 9.4A2 2 0 0 0 6.6 21h10.8a2 2 0 0 0 1.8-2.6L14 9V3"/><path d="M7.5 15h9"/>'
+    beta: '<path d="M9 3h6M10 3v6l-5.2 9.4A2 2 0 0 0 6.6 21h10.8a2 2 0 0 0 1.8-2.6L14 9V3"/><path d="M7.5 15h9"/>',
+    charms: '<path d="M12 2c1.66 0 3 .67 3 1.5V7h2v5l5 5v4L21 7c0-1.1-.9-2-2-2h-5V3.5C14 .67 13.34 2 12 2zM8 5c0-1.1.9-2 2-2h2v5c0 1.1-.9 2-2 2H8V5zm4 10c0-1.1.9-2 2-2h2v5c0-1.1-.9-2-2-2h-2v5z"/>',
+    chams: '<path d="M6 2c-3.3 0-6 2.7-6 6v10c0 3.3 2.7 6 6 6h4c3.3 0 6-2.7 6-6V8c0-3.3-2.7-6-6-6H6zm2 2v4h12V8H8zM8 4v12h8V4H8z"/>'
   };
   var CATEGORIES = [
     { id: "hud", label: "HUD", icon: ICONS.hud },
-    { id: "world", label: "World", icon: ICONS.world }
+    { id: "world", label: "World", icon: ICONS.world },
+    { id: "chams", label: "Chams", icon: ICONS.chams }
   ];
   if (devUnlocked) CATEGORIES.push({ id: "dev", label: "Dev", icon: ICONS.dev });
   if (betaUnlocked) CATEGORIES.push({ id: "beta", label: "Beta", icon: ICONS.beta });
@@ -1573,6 +1586,8 @@
       { tab: "dev", title: "Infinite Coins", icon: "coin", get: () => settings.infiniteCoins, set: (v) => { settings.infiniteCoins = v; save(); } },
       { tab: "dev", title: "Case Odds", icon: "dice", get: () => settings.caseOdds, set: (v) => { settings.caseOdds = v; save(); } },
       { tab: "dev", title: "Give Item", icon: "plus", toggle: null },
+      { tab: "chams", title: "Arm Chams", icon: "charms", get: () => settings.armCharms, set: (v) => { settings.armCharms = v; save(); } },
+      { tab: "chams", title: "Gun Chams", icon: "chams", get: () => settings.gunChams, set: (v) => { settings.gunChams = v; save(); } },
       { tab: "beta", title: "Interface", icon: "sliders", toggle: null }
     ];
     if (settings.uiStyle === "lunar" && betaUnlocked) return buildLunarPanel();
@@ -1817,6 +1832,20 @@
             ])
         ];
       }
+      if (id === "chams") return [
+        moduleCard("Arm Chams", "Viewmodel arm chams - colored arms.", settings.armCharms,
+          (v) => { settings.armCharms = v; save(); }, [
+            row("Cham Type", null, selectField(settings.charmsType, [["outline", "Outline"], ["glow", "Glow"], ["both", "Both"], ["wireframe", "Wireframe"]], (v) => { settings.charmsType = v; save(); })),
+            row("Color", null, colorField(settings.charmColor || "#ff6b9d", (v) => { settings.charmColor = v; save(); })),
+            row("Width", null, rangeField(settings.charmWidth, 1, 10, 0.5, (v) => { settings.charmWidth = v; save(); }))
+          ]),
+        moduleCard("Gun Chams", "Weapon chams - colored weapon.", settings.gunChams,
+          (v) => { settings.gunChams = v; save(); }, [
+            row("Cham Type", null, selectField(settings.chamType, [["outline", "Outline"], ["glow", "Glow"], ["both", "Both"], ["wireframe", "Wireframe"]], (v) => { settings.chamType = v; save(); })),
+            row("Color", null, colorField(settings.chamColor || "#ff6b9d", (v) => { settings.chamColor = v; save(); })),
+            row("Width", null, rangeField(settings.chamWidth, 1, 10, 0.5, (v) => { settings.chamWidth = v; save(); }))
+          ])
+      ];
       if (id === "beta") return [interfaceCard()];
       if (id === "dev") return devCards();
       const presets = [["custom", "Custom (manual)"], ["default", "Game default"], ["sakura", "Sakura"], ["midnight", "Midnight"], ["sunset", "Sunset"], ["neon", "Neon"], ["vivid", "Vivid"], ["cinematic", "Cinematic"], ["arctic", "Arctic"], ["void", "Void"], ["synthwave", "Synthwave"], ["noir", "Noir"], ["dream", "Dream"]];

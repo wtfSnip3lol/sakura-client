@@ -74,11 +74,11 @@
     fpsFree: false,
     fpsX: 16,
     fpsY: 16,
-    // Arm charms
+    // Arm chams
     armCharms: false,
-    charmsType: "wing",
-    charmsSize: 1,
-    charmsPos: "both",
+    charmsType: "outline",
+    charmColor: "#ff6b9d",
+    charmWidth: 4,
     // Gun chams
     gunChams: false,
     chamType: "outline",
@@ -794,8 +794,7 @@
   var CATEGORIES = [
     { id: "hud", label: "HUD", icon: ICONS.hud },
     { id: "world", label: "World", icon: ICONS.world },
-    { id: "charms", label: "Arm Charms", icon: ICONS.charms },
-    { id: "chams", label: "Gun Chams", icon: ICONS.chams }
+    { id: "chams", label: "Chams", icon: ICONS.chams }
   ];
   if (betaUnlocked) CATEGORIES.push({ id: "beta", label: "Beta", icon: ICONS.beta });
 
@@ -1079,7 +1078,7 @@
       { tab: "hud", title: "Keystrokes", icon: "keys", get: () => settings.keystrokes, set: (v) => { settings.keystrokes = v; save(); } },
       { tab: "world", title: "Ambience", icon: "globe", get: () => settings.ambience, set: (v) => { settings.ambience = v; save(); } },
       { tab: "world", title: "Motion Blur", icon: "blur", get: () => settings.motionBlur, set: (v) => { settings.motionBlur = v; save(); } },
-      { tab: "charms", title: "Arm Charms", icon: "charms", get: () => settings.armCharms, set: (v) => { settings.armCharms = v; save(); } },
+      { tab: "chams", title: "Arm Chams", icon: "charms", get: () => settings.armCharms, set: (v) => { settings.armCharms = v; save(); } },
       { tab: "chams", title: "Gun Chams", icon: "chams", get: () => settings.gunChams, set: (v) => { settings.gunChams = v; save(); } },
       { tab: "beta", title: "Interface", icon: "sliders", toggle: null }
     ];
@@ -1324,16 +1323,14 @@
             ])
         ];
       }
-      if (id === "charms") return [
-        moduleCard("Arm Charms", "Visual charms attached to viewmodel arms.", settings.armCharms,
-          (v) => { settings.armCharms = v; save(); }, [
-            row("Charm Type", null, selectField(settings.charmsType, [["wing", "Wings"], ["halo", "Halo"], ["glow", "Glow Effect"], ["sparkles", "Sparkles"], ["none", "None"]], (v) => { settings.charmsType = v; save(); })),
-            row("Size", null, rangeField(settings.charmsSize, 0.3, 2, 0.05, (v) => { settings.charmsSize = v; save(); })),
-            row("Position", null, selectField(settings.charmsPos, [["left_arm", "Left Arm"], ["right_arm", "Right Arm"], ["both", "Both Arms"], ["viewmodel", "Viewmodel Position"]], (v) => { settings.charmsPos = v; save(); }))
-          ])
-      ];
       if (id === "chams") return [
-        moduleCard("Gun Chams", "Weapon chams / outline effects.", settings.gunChams,
+        moduleCard("Arm Chams", "Viewmodel arm chams - colored arms.", settings.armCharms,
+          (v) => { settings.armCharms = v; save(); }, [
+            row("Cham Type", null, selectField(settings.charmsType, [["outline", "Outline"], ["glow", "Glow"], ["both", "Both"], ["wireframe", "Wireframe"]], (v) => { settings.charmsType = v; save(); })),
+            row("Color", null, colorField(settings.charmColor || "#ff6b9d", (v) => { settings.charmColor = v; save(); })),
+            row("Width", null, rangeField(settings.charmWidth, 1, 10, 0.5, (v) => { settings.charmWidth = v; save(); }))
+          ]),
+        moduleCard("Gun Chams", "Weapon chams - colored weapon.", settings.gunChams,
           (v) => { settings.gunChams = v; save(); }, [
             row("Cham Type", null, selectField(settings.chamType, [["outline", "Outline"], ["glow", "Glow"], ["both", "Both"], ["wireframe", "Wireframe"]], (v) => { settings.chamType = v; save(); })),
             row("Color", null, colorField(settings.chamColor || "#ff6b9d", (v) => { settings.chamColor = v; save(); })),
