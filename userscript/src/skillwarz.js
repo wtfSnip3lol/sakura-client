@@ -1360,6 +1360,41 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     return true;
   }
 
+  /* Why are the angle hooks producing nothing?
+   *
+   * The 2.9.12 field report came back with "getters": [] and "setterPair": null,
+   * alongside `hooksTotal: 9` - which counts only the Update capture hooks, so
+   * the view family was invisible in the report entirely. An absent number is
+   * not a diagnosis: registered-but-never-fired, never-registered, and
+   * registered-then-rejected-by-signature all look identical from outside.
+   *
+   * All four are counted here and the lot is reported. */
+  function viewHookStats() {
+    var total = 0, resolved = 0, applied = 0, getterHits = 0, setterHits = 0;
+    try {
+      var RT = window.UnityWebModkit && window.UnityWebModkit.Runtime;
+      var pl = plugin || (RT && RT.plugins && RT.plugins[RT.plugins.length - 1]);
+      if (pl && pl.hooks) {
+        for (var i = 0; i < pl.hooks.length; i++) {
+          var h = pl.hooks[i];
+          if (!h || h.typeName !== "MouseLook") continue;
+          total++;
+          if (h.tableIndex !== undefined) resolved++;
+          if (h.applied) applied++;
+        }
+      }
+    } catch (_) {}
+    for (var k in VIEW_HOOKS) {
+      var rec = VIEW_HOOKS[k];
+      getterHits += rec.hits || 0;
+      setterHits += (rec.setHits || 0) + (rec.pairHits || 0);
+    }
+    return { registered: VIEW_HOOKS_REGISTERED, total: total, resolved: resolved,
+             applied: applied, getterHits: getterHits, setterHits: setterHits,
+             distinct: Object.keys(VIEW_HOOKS).length,
+             errorCount: VIEW_HOOK_ERRORS.length, errors: VIEW_HOOK_ERRORS.slice(0, 4) };
+  }
+
   // The most recent (a, b) pair written by any two-float setter, split into
   // pitch and yaw by range rather than by argument position.
   function lastAnglePair() {
@@ -1519,7 +1554,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     var pick = pickPos(row.allVecs, groundY());
     row.pos = pick.pos;
     row.posAt = pick.posAt;
-    row.inBand = pick.inBand;
+    row.candidates = pick.candidates;
     row.cluster = pick.cluster;
     row.reach = pick.reach;
     void best;
@@ -2707,6 +2742,11 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
                  ? "read from MouseLook getters\nyaw   " + ang.yawAt + " = " + Math.round(ang.rawYaw) +
                    "\npitch " + ang.pitchAt + " = " + Math.round(ang.rawPitch)
                  : "GUESSING from struct offsets +0x28 and +0x1C\nthe angle hooks have not fired yet") : "") +
+        (ang && ang.viewHooks && ang.viewHooks.applied === 0 && ang.viewHooks.total > 0
+                 ? "\nhooks registered but none applied (" + ang.viewHooks.resolved + "/" + ang.viewHooks.total + " resolved)"
+                 : ang && ang.viewHooks && ang.viewHooks.total === 0
+                 ? "\nview hooks were never registered (" + ang.viewHooks.errorCount + " errors)"
+                 : "") +
         (LEGACY_OFFSET_CLEARED ? "\n(cleared a stale saved correction)" : "")));
       out.push(v2);
     }
@@ -3073,62 +3113,82 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
 
   /* Pick the position Vector3.
    *
-   * These classes hold SEVERAL world positions - the character's, plus
-   * waypoints, targets and spawn anchors. Two rules, in order.
+   * These classes hold SEVERAL world positions and vectors that are not
+   * positions at all. Two rules, in order.
    *
    * 1. CONSENSUS. The body position is stored in more than one place. On
-   *    FPScontroller in the 2.9.3 field report, +0x154, +0x160, +0x2E4 and
-   *    +0x3D0 all held (39.474, 5.097, 25.414) - four identical copies - while
-   *    +0x298 held (37.267, 6.543, 35.151), a point thirteen metres away. Four
-   *    votes beat one, and the earlier "furthest from the world origin" rule
-   *    picked +0x298 precisely because it was slightly further out.
+   *    FPScontroller, +0x154, +0x160, +0x2E4 and +0x3D0 all held
+   *    (39.474, 5.097, 25.414) while +0x298 held a point thirteen metres away.
+   *    Four votes beat one.
    *
-   * 2. HEIGHT BAND, for when nothing duplicates. Everyone stands on the same
-   *    ground plane, so drop anything whose Y is far from the local player's,
-   *    then take the largest horizontal extent.
+   * 2. NEAREST THE GROUND, among candidates big enough to be a place. This
+   *    replaced a "height band, then largest horizontal extent" rule that was
+   *    quietly not being applied: the band filtered, then a CLUSTER TIE-BREAK
+   *    that preferred whichever candidate came first in the field map decided
+   *    it, and extent never got a say across clusters at all.
    *
-   * Cluster size is reported. A tie resolved silently is a tie that is wrong
-   * silently, and that is how bots came to be drawn at +0x134 in one frame and
-   * +0xF0 in the next.
+   *    The 2.9.12 field report is what that cost. Four enemies, four wrong:
+   *
+   *      ptr      shipped   ground-matching   note
+   *      8070c78  0x34      0x6c  (dy 0.000)
+   *      8070d10  0x34      0x6c  (dy 0.002)
+   *      8070da8  0x34      0x6c  (dy 0.000)
+   *      8070ed8  0x48      0x34  0x48 is the VELOCITY, drawn as a position
+   *
+   *    +0x48 is always horizontal - velocity, not a place - and this player was
+   *    drawn 30 metres from where they were standing.
+   *
+   * "Big enough to be a place" is the part that keeps velocity out: it is a
+   * speed in m/s, so on a map this size it is a tiny fraction of the local
+   * player's own reach. A candidate below the floor is discarded, not ranked,
+   * and the count of discarded candidates is reported.
    */
   var GROUND_TOL = 2.5;
   // Two candidates count as "the same point" within this many world units.
   var CLUSTER_R2 = 6.25;
-  // Standing eye height above the feet. A constant because it is one, and
-  // because reading it off the struct meant reading a reused scratch field.
+  // Standing eye height above the feet. A constant because it is one.
   var EYE_H = 1.8;
 
   function pickPos(vecs, groundY) {
+   try {
     var pool = [], i, j;
     var known = (groundY !== null && groundY !== undefined && isFinite(groundY));
+    var localReach = 0;
+    for (i = 0; i < vecs.length; i++) {
+      var v0 = vecs[i].v;
+      if (!v0) continue;
+      var h0 = Math.sqrt(v0[0] * v0[0] + v0[2] * v0[2]);
+      if (h0 > localReach) localReach = h0;
+    }
+    // A velocity is metres per second; a position on this map is tens of units
+    // from the origin. A quarter of the local player's own reach separates them
+    // with a wide margin, and it is expressed relative to the map rather than
+    // as a magic number.
+    var floor = localReach * 0.25;
+    var tooSmall = 0;
+    if (typeof console !== 'undefined' && console.log && !globalThis.__ppLogged) {
+      globalThis.__ppLogged = 1;
+      console.log('PP>> n=' + vecs.length + ' reach=' + localReach.toFixed(2) +
+        ' floor=' + floor.toFixed(2) + ' known=' + known +
+        ' sample=' + JSON.stringify(vecs.slice(0, 2)));
+    }
+
     for (i = 0; i < vecs.length; i++) {
       var v = vecs[i].v;
-      // An all-zero Vector3 is never anybody's position - on an uninitialised
-      // object it is what every v3 field reads as, and gravity at +0xE0 is
-      // early enough in the field map to win the tie-break outright.
       if (!v) continue;
       if (v[0] === 0 && v[1] === 0 && v[2] === 0) continue;
-      if (known && Math.abs(v[1] - groundY) > GROUND_TOL) continue;
+      var h = Math.sqrt(v[0] * v[0] + v[2] * v[2]);
+      if (h < floor) { tooSmall++; continue; }
       pool.push(vecs[i]);
     }
     if (!pool.length) {
-      // Nothing in band - the local player is not known yet, or this entity is
-      // somewhere the band does not cover. Fall back rather than report nothing.
-      for (i = 0; i < vecs.length; i++) {
-        var v2 = vecs[i].v;
-        if (!v2) continue;
-        if (v2[0] === 0 && v2[1] === 0 && v2[2] === 0) continue;
-        pool.push(vecs[i]);
-      }
-    }
-    if (!pool.length) {
-      // Every Vector3 reads exactly zero: there is no position here, and saying
-      // so is the only truthful answer. espLive() gates on it.
-      return { pos: null, posAt: null, inBand: 0, cluster: 0, reach: 0 };
+      // Nothing survived the floor. That means everything here is small, which
+      // means there is no position here - say so rather than plot a velocity.
+      return { pos: null, posAt: null, candidates: 0, cluster: 0, groups: 0,
+               discarded: tooSmall, ambiguous: false, reach: 0 };
     }
 
-    // Single-link clustering. n is ~20 at most, so the quadratic form is not
-    // worth avoiding and the merge rule is easy to reason about.
+    // Single-link clustering over what survived.
     var groups = [];
     for (i = 0; i < pool.length; i++) {
       var a = pool[i].v;
@@ -3142,22 +3202,55 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       else groups[gi].c.push(pool[i]);
     }
 
-    var bestG = groups[0];
-    for (j = 1; j < groups.length; j++) if (groups[j].c.length > bestG.c.length) bestG = groups[j];
+    // Score every cluster, not just the largest. The previous version took
+    // groups[0] on a size tie, which made the whole extent rule unreachable
+    // for exactly the entities that needed it - head and feet of a standing
+    // player, which are too far apart to cluster.
+    var bestG = groups[0], bestScore = -Infinity;
+    for (j = 0; j < groups.length; j++) {
+      var gc = groups[j].c;
+      // Consensus first: four copies of a point beat one copy of a far point.
+      var score = gc.length * 1000;
+      if (known) {
+        // Then closeness to the ground plane. That is what separates the body
+        // from the aim point and the muzzle above it.
+        var bestDy = Infinity;
+        for (var q = 0; q < gc.length; q++) {
+          var dyq = Math.abs(gc[q].v[1] - groundY);
+          if (dyq < bestDy) bestDy = dyq;
+        }
+        score -= bestDy;
+      } else {
+        // No ground reference: fall back to how far out it reaches.
+        var bestH = 0;
+        for (var q2 = 0; q2 < gc.length; q2++) {
+          var hq = Math.sqrt(gc[q2].v[0] * gc[q2].v[0] + gc[q2].v[2] * gc[q2].v[2]);
+          if (hq > bestH) bestH = hq;
+        }
+        score += bestH;
+      }
+      // The GROUP, not its contents. `bestG = gc` looks equivalent and is not:
+      // bestG.c is read again below, so it has to stay a group.
+      if (score > bestScore) { bestScore = score; bestG = groups[j]; }
+    }
 
     // Representative of the winning cluster: the member reaching furthest out,
-    // and on an exact tie the LOWEST one. A character stacks its feet and its
-    // head at the same XZ - PhotonNetworkSync holds 0x34 and 0x6C about three
-    // metres apart with identical horizontal extent - and the feet are what the
-    // radar, the distance and the ground band should all be measured from.
+    // and on an exact tie the LOWEST one - a character stacks its feet and its
+    // aim point at the same XZ, and the feet are what the radar and the ground
+    // band should be measured from.
     var rep = bestG.c[0], reach = -1;
     for (j = 0; j < bestG.c.length; j++) {
       var b = bestG.c[j].v;
-      var h = b[0] * b[0] + b[2] * b[2];
-      if (h > reach || (h === reach && b[1] < rep.v[1])) { reach = h; rep = bestG.c[j]; }
+      var hb = Math.sqrt(b[0] * b[0] + b[2] * b[2]);
+      if (hb > reach || (hb === reach && b[1] < rep.v[1])) { reach = hb; rep = bestG.c[j]; }
     }
-    return { pos: rep.v, posAt: rep.o, inBand: known ? pool.length : 0,
-             cluster: bestG.c.length, groups: groups.length, reach: Math.sqrt(reach) };
+    return { pos: rep.v, posAt: rep.o, candidates: pool.length,
+             cluster: bestG.c.length, groups: groups.length,
+             discarded: tooSmall, ambiguous: groups.length > 1, reach: reach };
+   } catch (e) {
+     console.log('PICKPOS>>', e.message, String(e.stack || '').split('\n').slice(0, 4).join(' | '));
+     return { pos: null, posAt: null, candidates: 0, cluster: 0, groups: 0, discarded: 0, ambiguous: false, reach: 0 };
+   }
   }
 
   function localSpot() {
@@ -3188,7 +3281,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       ptr: c.ptr,
       feet: feet,
       posAt: pick.posAt,
-      inBand: pick.inBand,
+      candidates: pick.candidates,
       cluster: pick.cluster,
       copies: vecs.filter(function (q) {
         return q.v[0] === feet[0] && q.v[1] === feet[1] && q.v[2] === feet[2];
@@ -3228,7 +3321,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       if (!p) continue;
       var row = {
         ptr: rec.ptr, x: p[0], y: p[1], z: p[2], posAt: pick.posAt,
-        inBand: pick.inBand, cluster: pick.cluster,
+        candidates: pick.candidates, cluster: pick.cluster,
         team: rd(rec.ptr + 0x58, "i32"),
         localFlag: rd(rec.ptr + 0x7c, "i32")
       };
@@ -3559,6 +3652,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
                    // rotation is one slider from right, and only if the wrong
                    // thing is a number in the report.
                    source: ANGLE.source,
+                   viewHooks: (function(){ try { return viewHookStats(); } catch(e){ return {err:String(e && e.message), stack:String(e && e.stack)}; } })(),
                    setterPair: (function () {
                      var p = lastAnglePair();
                      return p ? { a: p.rawA, b: p.rawB, hits: p.hits, order: p.order } : null;

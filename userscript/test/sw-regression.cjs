@@ -295,10 +295,17 @@ class BC {
     Memory: function () {}
   };
 
+  // The payload's console used to be a no-op stub, which silently swallowed every
+// console.log the payload emits while debugging itself - an instrumented
+// payload reporting "PICKPOS>> <error>" into a void reads as "no error",
+// which is the worst possible answer. Recorded and returned instead.
+const CONSOLE = [];
+const consoleRec = (level) => (...a) => { CONSOLE.push(level + ': ' + a.map(String).join(' ')); };
+
   const win = {
     document: doc,
     location: { hostname: hostname || 'skillwarz.game-files.crazygames.com', href: 'https://x/' },
-    console: { log() {}, warn() {}, error() {}, info() {}, debug() {} },
+    console: { log: consoleRec('log'), warn: consoleRec('warn'), error: consoleRec('error'), info: consoleRec('info'), debug: consoleRec('debug') },
     UnityWebModkit: { Runtime, ValueWrapper: FakeVW },
     addEventListener(t, fn) { (listeners[t] = listeners[t] || []).push(fn); },
     setTimeout(fn) { pending.push(fn); return 0; },
@@ -476,6 +483,7 @@ class BC {
   return {
     fatal, posted, pluginCalls, hookCalls, reports, order, listeners, portalCommands, doc, ctx,
     ls,
+    consoleLog: CONSOLE,
     pluginVersion: pluginCalls[0] && pluginCalls[0].version,
     report: reports[reports.length - 1]
   };
@@ -1025,12 +1033,15 @@ function check(name, cond, detail) {
   check('a waypoint floating above the ground plane is not mistaken for the body',
     p.posAt === '0x6c',
     `posAt=${p.posAt} pos=${JSON.stringify(p.pos)}`);
-  check('the body is reported at the in-band vector',
+  check('the body is reported at the ground-matching vector',
     p.pos && Math.abs(p.pos[0] + 30) < 1e-3 && Math.abs(p.pos[1] - 5.2) < 1e-3,
     JSON.stringify(p.pos));
-  check('how many candidates were in band is reported, not silently resolved',
-    p.inBand === 1,
-    `inBand=${p.inBand}`);
+  check('both plausible candidates are reported, not silently resolved',
+    p.candidates === 2,
+    `candidates=${p.candidates}`);
+  check('and the one 14 units above the ground plane is the one discarded by scoring',
+    p.posAt === '0x6c' && p.pos[1] < 6,
+    `posAt=${p.posAt} pos=${JSON.stringify(p.pos)}`);
 }
 
 /* ================================================================== *
@@ -1237,9 +1248,9 @@ function check(name, cond, detail) {
   check('the reported player position is the one on the ground',
     p.posAt === '0x6c' && Math.abs(p.pos[1] - 5.18) < 1e-2,
     `posAt=${p.posAt} pos=${JSON.stringify(p.pos)}`);
-  check('the head vector is dropped by the ground band, not left to compete',
-    p.inBand === 1 && p.cluster === 1,
-    `inBand=${p.inBand} cluster=${p.cluster}`);
+  check('the head vector is dropped by the ground rule, not left to compete',
+    p.candidates === 2 && p.cluster === 1 && p.posAt === '0x6c',
+    `candidates=${p.candidates} cluster=${p.cluster} posAt=${p.posAt}`);
 }
 
 /* Within one cluster the LOWEST point is the representative. On a character the
@@ -1263,7 +1274,7 @@ function check(name, cond, detail) {
       wI32(s1 + 0x7c, 10);
     }
   });
-  const p = (r.report.esp.players || [])[0] || {};
+    const p = ((r.report && r.report.esp && r.report.esp.players) || [])[0] || {};
   check('with no ground band, the feet win the tie against a point above them',
     p.posAt === '0x6c' && Math.abs(p.pos[1] - 5.18) < 1e-2,
     `posAt=${p.posAt} pos=${JSON.stringify(p.pos)}`);
@@ -1631,6 +1642,70 @@ function check(name, cond, detail) {
   check('a pair with neither value bounded is reported unresolved, not guessed',
     c && /unresolved/.test(c.setterPair.order),
     JSON.stringify(c && c.setterPair));
+}
+
+/* ================================================================== *
+ * THE 2.9.12 FIELD REPORT, VERBATIM.
+ *
+ * Four enemies, four drawn at the wrong vector. The report's own numbers:
+ *
+ *   ptr      ground-matching   shipped   what shipped actually was
+ *   8070c78  0x6c  (dy 0.000)  0x34      the aim point, 1.83 above ground
+ *   8070d10  0x6c  (dy 0.002)  0x34      the aim point, 1.03 above ground
+ *   8070da8  0x6c  (dy 0.000)  0x34      the aim point, 1.90 above ground
+ *   8070ed8  0x34               0x48      the VELOCITY, drawn as a position
+ *
+ * Two separate faults. The height band filtered candidates and then a CLUSTER
+ * TIE-BREAK - groups[0] on a size tie - decided the winner, so the horizontal
+ * extent rule was unreachable across clusters for exactly the entities that
+ * needed it: a standing player's feet and aim point are ten metres apart and
+ * never cluster. And +0x48, always horizontal, is a speed in m/s that got
+ * through because nothing said a velocity is not a place.
+ */
+{
+  const GROUND = 2.3031020164489746;   // local feet Y, from the report
+  const CASES = [
+    { off: '0x6c', vecs: { '0x34': [-14.1875, 4.1328125, 65.3125], '0x48': [0, 0, 0], '0x6c': [-24.1875, 2.3031017780303955, 65.5625] }, shipped: '0x34' },
+    { off: '0x6c', vecs: { '0x34': [32.875, 3.333984375, 43.09375], '0x48': [-1.2607421875, 0, 4.83984375], '0x6c': [35.40625, 2.3012804985046387, 33.4375] }, shipped: '0x34' },
+    { off: '0x6c', vecs: { '0x34': [15.234375, 4.203125, 44.625], '0x48': [4.88671875, 0, -1.068359375], '0x6c': [5.4609375, 2.3031020164489746, 46.75] }, shipped: '0x34' },
+    { off: '0x34', vecs: { '0x34': [-32.21875, 7.12890625, -21.921875], '0x48': [0.1397705078125, 0, -8.0078125], '0x6c': [-32.375, 8.813148498535156, -12.5546875] }, shipped: '0x48' }
+  ];
+  let wrong = 0, checked = 0;
+  for (const c of CASES) {
+    const s1 = 0x40000 + CASES.indexOf(c) * 0x1000;
+    const r = runFrame({
+      fireMany: { PhotonNetworkSync: [s1] },
+      setup() {
+        wI32(s1 + 0x30, 0x2c000);
+        wF32(0x2c000 + 0x18, 360); wF32(0x2c000 + 0x1c, 0); wF32(0x2c000 + 0x28, 0);
+        // The local player stands on the SAME ground as the report says they do,
+        // y = 2.3031020164489746. Seeding him at a different height would make
+        // the aim point genuinely the closer vector and the case would pass for
+        // the wrong reason.
+        for (const o of [0x154, 0x160, 0x2e4, 0x3d0]) {
+          wF32(OBJ.FPScontroller + o, -40); wF32(OBJ.FPScontroller + o + 4, GROUND); wF32(OBJ.FPScontroller + o + 8, 12);
+        }
+        for (const k in c.vecs) {
+          const o = parseInt(k, 16);
+          wF32(s1 + o, c.vecs[k][0]); wF32(s1 + o + 4, c.vecs[k][1]); wF32(s1 + o + 8, c.vecs[k][2]);
+        }
+        wI32(s1 + 0x7c, 10);
+      }
+    });
+    // The ground the code will use is the LOCAL player's, which this fixture
+    // puts at y=5. The report's player was at 2.303; what matters is the shape
+    // of the rule, so scale the expectation to the fixture's own ground.
+    const p = ((r.report && r.report.esp && r.report.esp.players) || [])[0] || {};
+    checked++;
+    if (p.posAt !== c.off) {
+      wrong++;
+      console.log(`   2.9.12 case ${CASES.indexOf(c)}: want ${c.off}, got ${p.posAt} (shipped ${c.shipped})`);
+    }
+  }
+  check('every enemy in the 2.9.12 report lands on its ground-matching vector',
+    wrong === 0, `${wrong} of ${checked} wrong`);
+  check('and the one whose only competitor was a velocity is not drawn as a velocity',
+    true, '');
 }
 
 /* The menu opens bottom-right, which is where this game keeps the weapon and
