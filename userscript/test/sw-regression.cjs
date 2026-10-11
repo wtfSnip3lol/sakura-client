@@ -163,7 +163,7 @@ var BC_HUB = [];
 function sendToPlayer(msg) {
   for (const b of BC_HUB) if (typeof b.onmessage === 'function') b.onmessage({ data: msg });
 }
-function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'resolveGame', scriptDataLate = false, applyFirst = false, resolveButNotApply = false, noInstantiate = false, speed = null, thenOff = false, extraFrames = 0, fireEnemyTwice = null, setup = null, lobby = false, deliverVia = 'bc', preFire = null, ls = {}, fireMany = null, post = null, mouseLook = null }) {
+function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'resolveGame', scriptDataLate = false, applyFirst = false, resolveButNotApply = false, noInstantiate = false, speed = null, thenOff = false, extraFrames = 0, fireEnemyTwice = null, setup = null, lobby = false, deliverVia = 'bc', preFire = null, ls = {}, fireMany = null, post = null, mouseLook = null, onFrame = null, onTick = null }) {
   // Reset the channel hub: payload instances from earlier runs would keep
   // their own SPEED_STATE and keep writing to the same heap, which looks
   // exactly like a compounding bug in the payload.
@@ -426,7 +426,9 @@ const consoleRec = (level) => (...a) => { CONSOLE.push(level + ': ' + a.map(Stri
     ctx.hudEl = (name) => (ctx.hud && ctx.hud._els ? ctx.hud._els['[data-a="' + name + '"]'] : null);
     if (preFire) { try { preFire(ctx); } catch (e) { fatal = 'preFire threw: ' + e.message; } }
 
-    if (plugin) for (const h of plugin.hooks) {
+    if (plugin) {
+      let mlFired = false;
+      for (const h of plugin.hooks) {
       if (!h.applied) continue;
 
       // MouseLook has no instance in OBJ: the payload reaches it through
@@ -435,12 +437,26 @@ const consoleRec = (level) => (...a) => { CONSOLE.push(level + ': ' + a.map(Stri
       // one return value per registered getter, in registration order, which is
       // how a real frame delivers them.
       if (h.typeName === 'MouseLook') {
+        // Once per MouseLook hook, not once per hook per hook. The outer loop
+        // visits every registered hook, and re-running this block for each of
+        // them fired the getters 15 times a frame - and the stray
+        // `h.callback(self)` below passed the `this` POINTER as a postfix
+        // hook's return value, so every getter "returned" 0x2c000.
+        if (mlFired) continue;
+        mlFired = true;
         if (!mouseLook) continue;
         try {
-          if (h.kind === 1) {
-            const vals = mouseLook.getters || [];
-            let n = 0;
-            for (const hh of plugin.hooks) if (hh.typeName === 'MouseLook' && hh.kind === 1) n++;
+          // A getter's credibility now depends on having been seen to MOVE, so
+          // the harness has to be able to fire it more than once with different
+          // values - a getter fired once is exactly what the code refuses.
+          // `getters` may be a flat list, or a list of lists for successive
+          // fires; `times` repeats the last one.
+          const frames = Array.isArray(mouseLook.getters) && Array.isArray(mouseLook.getters[0])
+            ? mouseLook.getters
+            : [mouseLook.getters || []];
+          const times = mouseLook.times || frames.length;
+          for (let round = 0; round < times; round++) {
+            const vals = frames[Math.min(round, frames.length - 1)] || [];
             for (const hh of plugin.hooks) {
               if (hh.typeName !== 'MouseLook') continue;
               if (hh.kind === 1) {
@@ -451,9 +467,6 @@ const consoleRec = (level) => (...a) => { CONSOLE.push(level + ': ' + a.map(Stri
                 const sVals = mouseLook.sets || [];
                 const idx = plugin.hooks.filter(x => x.typeName === 'MouseLook' && x.kind === 0).indexOf(hh);
                 const a0 = sVals[idx];
-                // A scalar in the set list drives the (float) setters; a
-                // [a, b] pair drives the (float, float) setters, which is how
-                // the real SetLookAngles(pitch, yaw) arrives.
                 const args = [new FakeVW(mouseLook.self === undefined ? 0x2c000 : mouseLook.self)];
                 args.push(new FakeVW(Array.isArray(a0) ? a0[0] : (a0 === undefined ? 0 : a0)));
                 if (Array.isArray(a0)) args.push(new FakeVW(a0[1]));
@@ -461,7 +474,6 @@ const consoleRec = (level) => (...a) => { CONSOLE.push(level + ': ' + a.map(Stri
               }
             }
           }
-          if (h.callback) h.callback(new FakeVW(mouseLook.self === undefined ? 0x2c000 : mouseLook.self));
         } catch (e) { fatal = 'mouseLook hook threw: ' + e.message; }
         continue;
       }
@@ -500,13 +512,34 @@ const consoleRec = (level) => (...a) => { CONSOLE.push(level + ': ' + a.map(Stri
         }
       }
       fire();
-      for (let n = 0; n < extraFrames; n++) fire();
+      for (let n = 0; n < extraFrames; n++) {
+        // A per-frame mutation hook, so a test can change the heap BETWEEN two
+        // frames of the same run. Jitter is a property of two frames in one
+        // run; two separate runs are two separate runs. The second argument is
+        // the hook being fired and a test MUST filter on it - the loop visits
+        // every registered hook, so an unfiltered mutation lands before the
+        // frame under test has ever been read and the fixture measures nothing.
+        if (onFrame) { try { onFrame(n + 1, h.typeName); } catch (e) { fatal = 'onFrame threw: ' + e.message; } }
+        fire();
+      }
       if (thenOff && h.typeName === 'FPScontroller') {
         sendToPlayer({ __sakura: '__sakura_sw_v2', kind: 'cmd', cmd: 'speed', arg: { on: false } });
       }
+      }
     }
+    // `onTick` fires between pending timers, not between hook frames. The drain
+    // below runs the whole report chain AFTER every frame has been consumed, so
+    // mutating on a frame boundary changes the heap before the first report ever
+    // reads it - the fixture then measures nothing at all. Anything about what
+    // the payload SEES BETWEEN two of its own periodic runs has to be scheduled
+    // here instead.
+    let tick = 0;
     guard = 0;
-    while (pending.length && guard++ < 200) pending.shift()();
+    while (pending.length && guard++ < 200) {
+      if (onTick) { try { onTick(tick + 1); } catch (e) { fatal = 'onTick threw: ' + e.message; } }
+      tick++;
+      pending.shift()();
+    }
     // `post` runs once the frame loop has drained, so a test can drive the
     // command channel by hand - which is the only way to exercise snapshot
     // pairs. The snapshot command needs two presses with the heap changed in
@@ -1411,7 +1444,13 @@ function check(name, cond, detail) {
   // positionally so the test does not have to name obfuscated identifiers.
   const r = runFrame({
     fireMany: { PhotonNetworkSync: [s1] },
-    mouseLook: { self: ml, getters: [999, 45, 12345, 0, 7, -3, 123456] },
+    // Getter 1 is the yaw and travels 30 -> 45 -> 61 -> 45, ending on the value
+  // +0x28 holds, because in the running game the field and the getter are two
+  // views of the same number and the code checks they agree.
+  mouseLook: { self: ml, getters: [[999, 30, 12345, 0, 7, -3, 123456],
+                                   [999, 45, 12345, 0, 7, -3, 123456],
+                                   [999, 61, 12345, 0, 7, -3, 123456],
+                                   [999, 45, 12345, 0, 7, -3, 123456]] },
     setup() {
       wI32(s1 + 0x30, ml);
       wF32(ml + 0x14, -360); wF32(ml + 0x18, 360); wF32(ml + 0x1c, 0);
@@ -1428,6 +1467,9 @@ function check(name, cond, detail) {
   check('a getter returning the stored 0x28 is identified as the yaw getter',
     a && a.yawAt && a.yawAt !== '0x28' && Math.abs(a.rawYaw - 45) < 1e-3,
     `yawAt=${a && a.yawAt} rawYaw=${a && a.rawYaw}`);
+  check('and the rejected candidates are listed with the ranges that rejected them',
+    a && a.getters.some(g => g.travel === 0),
+    JSON.stringify(a && a.getters && a.getters.slice(0, 3)));
   check('the reading comes from the getter, not the struct fallback',
     a && a.source === 'getter',
     `source=${a && a.source}`);
@@ -1437,6 +1479,140 @@ function check(name, cond, detail) {
   check('the identification makes the projection usable',
     a && a.identified === true,
     JSON.stringify(a));
+}
+
+/* ================================================================== *
+ * "LOCKED TO A CENTRE LINE" WAS A FROZEN GETTER.
+ *
+ * The getter whose return value matched +0x28 used to be believed outright.
+ * But a sensitivity, a clamp bound and a flag are constants too, and any
+ * constant equal to +0x28 matched by the same rule. A frozen yaw pins forward
+ * to one heading, every box lands at the same offset from centre, and the boxes
+ * line up in a column - which is what was reported.
+ *
+ * An angle MOVES. The candidate has to be seen to travel before it is believed,
+ * and the largest single-frame step is capped, because a value that leaps 90
+ * degrees between calls is a misfire and not a look direction.
+ */
+{
+  const scene = (yawField) => {
+    wI32(0x40000 + 0x30, 0x2c000);
+    wF32(0x2c000 + 0x14, -360); wF32(0x2c000 + 0x18, 360); wF32(0x2c000 + 0x1c, 0);
+    wF32(0x2c000 + 0x28, yawField); wF32(0x2c000 + 0x30, 1.1382339000701904);
+    wF32(OBJ.FPScontroller + 0x2e4, -40); wF32(OBJ.FPScontroller + 0x2e8, 5); wF32(OBJ.FPScontroller + 0x2ec, 12);
+    wF32(0x40000 + 0x6c, -40); wF32(0x40000 + 0x70, 5.2); wF32(0x40000 + 0x74, 52);
+    wI32(0x40000 + 0x7c, 10);
+  };
+  const seq = (v) => [[999, v, 12345, 0, 7, -3, 123456], [999, v, 12345, 0, 7, -3, 123456],
+                       [999, v, 12345, 0, 7, -3, 123456], [999, v, 12345, 0, 7, -3, 123456]];
+
+  // Getter 1 returns exactly what +0x28 holds, on every single fire. It matches
+  // the struct perfectly and it never moves, which is precisely the failure.
+  const frozen = runFrame({
+    fireMany: { PhotonNetworkSync: [0x40000] },
+    mouseLook: { self: 0x2c000, getters: seq(45) },
+    setup() { scene(45); }
+  });
+  const fa = frozen.report.angles;
+  const frozenRow = fa && fa.getters && fa.getters.find(g => g.matches === '0x28');
+  check('a getter that matches +0x28 but never moves is seen, with a zero range',
+    frozenRow && frozenRow.travel === 0 && frozenRow.hits > 1,
+    JSON.stringify(frozenRow));
+  check('and is refused as the yaw, because a look angle moves',
+    fa && fa.yawAt === '0x28 (guess)',
+    `yawAt=${fa && fa.yawAt} source=${fa && fa.source}`);
+  check('so the reading falls back and says so, rather than freezing on one heading',
+    fa && fa.source && fa.source !== 'getter' && /field/.test(fa.source),
+    `source=${fa && fa.source}`);
+
+  // Same match, but it leaps 155 degrees between two calls.
+  const leaping = runFrame({
+    fireMany: { PhotonNetworkSync: [0x40000] },
+    mouseLook: { self: 0x2c000,
+                 getters: [[999, 45, 12345, 0, 7, -3, 123456], [999, 200, 12345, 0, 7, -3, 123456],
+                           [999, 45, 12345, 0, 7, -3, 123456], [999, 45, 12345, 0, 7, -3, 123456]] },
+    setup() { scene(45); }
+  });
+  const la = leaping.report.angles;
+  const leapRow = la && la.getters && la.getters.find(g => g.matches === '0x28');
+  check('a getter that leaps 155 degrees in one call is recorded as such',
+    leapRow && leapRow.travel > 1 && leapRow.jump > 90,
+    JSON.stringify(leapRow));
+  check('and is refused as the yaw too - travel alone is not enough',
+    la && la.yawAt === '0x28 (guess)',
+    `yawAt=${la && la.yawAt} source=${la && la.source}`);
+
+  // The control: the working case must keep working, or "refuse everything"
+  // would pass both of the above.
+  const moving = runFrame({
+    fireMany: { PhotonNetworkSync: [0x40000] },
+    mouseLook: { self: 0x2c000,
+                 getters: [[999, 30, 12345, 0, 7, -3, 123456], [999, 45, 12345, 0, 7, -3, 123456],
+                           [999, 61, 12345, 0, 7, -3, 123456], [999, 45, 12345, 0, 7, -3, 123456]] },
+    setup() { scene(45); }
+  }).report.angles;
+  check('a getter that travels in small steps is still believed, so the fix is not "refuse all"',
+    moving && moving.source === 'getter' && moving.yawAt !== '0x28 (guess)',
+    `yawAt=${moving && moving.yawAt} source=${moving && moving.source}`);
+
+  /* ==================================================================== *
+   * "GLITCHY" WAS A TIE-BREAK ALTERNATING FRAME TO FRAME.
+   *
+   * pickPos clusters candidates and then breaks a tie between near-identical
+   * members - a character's head and its feet, centimetres apart. Two runs over
+   * the same heap can pick different members, and the box jumps between them
+   * every frame. That is not an ESP that is slightly off; it is an ESP nobody
+   * can use, and no amount of getting the yaw right will hide it.
+   *
+   * The fix is that the tie-break only has to break ties: if the offset chosen
+   * last frame is still in the winning cluster, it is kept.
+   */
+  const ML = 0x2c000;
+  const S1 = OBJ.PhotonNetworkSync;
+  const jitterFrames = () => runFrame({
+    // The mutation belongs between two of the PAYLOAD'S OWN periodic runs, not
+    // between two game frames: the report chain is drained only after every
+    // frame has been consumed, so a frame-boundary mutation lands before the
+    // first report ever reads the heap and the fixture measures nothing.
+    onTick(n) {
+      if (n !== 4) return;
+      // The OTHER vector is now marginally closer to the ground plane. The ground
+      // is 5.0, so |5.20-5.00| = 0.20 loses to |4.85-5.00| = 0.15 and the scoring
+      // genuinely prefers +0x34 from here on. Without stickiness the box hops
+      // onto a different part of the body - 35cm of jump, every report.
+      wF32(S1 + 0x34, -30); wF32(S1 + 0x38, 4.85); wF32(S1 + 0x3c, 40);
+    },
+    fireMany: { PhotonNetworkSync: [S1] },
+    setup() {
+      wI32(S1 + 0x30, ML);
+      wF32(ML + 0x18, 360); wF32(ML + 0x1c, 0); wF32(ML + 0x28, 0);
+      for (const o of [0x154, 0x160, 0x2e4, 0x3d0]) {
+        wF32(OBJ.FPScontroller + o, -40); wF32(OBJ.FPScontroller + o + 4, 5); wF32(OBJ.FPScontroller + o + 8, -20);
+      }
+      // +0x34 floats 0.5 above the ground plane, +0x6c sits 0.2 above.
+      wF32(S1 + 0x34, -30); wF32(S1 + 0x38, 5.50); wF32(S1 + 0x3c, 40);
+      wF32(S1 + 0x6c, -30); wF32(S1 + 0x70, 5.20); wF32(S1 + 0x74, 40);
+      wI32(S1 + 0x7c, 10);
+    }
+  });
+  const j = jitterFrames();
+  const seen = j.reports.map(r => (r.esp.players || [])[0]).filter(p => p && p.posAt);
+  const jp = seen[seen.length - 1] || {};
+  check('the first reports pick the vector nearer the ground plane',
+    seen.length > 5 && seen.slice(0, 5).every(p => p.posAt === '0x6c'),
+    `seq=${JSON.stringify(seen.slice(0, 6).map(p => p.posAt))}`);
+  check('and once the scoring prefers the other, the first choice is HELD',
+    jp.posAt === '0x6c' && jp.held === true,
+    `posAt=${jp.posAt} held=${jp.held}`);
+  check('the held position is the one it held, not the one the scoring wanted',
+    jp.pos && Math.abs(jp.pos[1] - 5.20) < 1e-3,
+    `pos=${JSON.stringify(jp.pos)}`);
+  check('the hold is reported rather than hidden, so a stuck read is visible',
+    jp.held === true && jp.candidates >= 2,
+    `held=${jp.held} candidates=${jp.candidates}`);
+  check('and it never flips back once established',
+    seen.length > 5 && seen.slice(5).every(p => p.posAt === '0x6c'),
+    `flips=${JSON.stringify(seen.map(p => p.posAt).filter((v, i, a) => i && a[i - 1] !== v))}`);
 }
 
 /* The fallback has to announce itself. A silent fallback is how +0x18 came to

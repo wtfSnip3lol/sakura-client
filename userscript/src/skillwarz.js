@@ -1305,12 +1305,31 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     return function () {
       try {
         var rec = VIEW_HOOKS[methodName] ||
-          (VIEW_HOOKS[methodName] = { last: null, hits: 0, setLast: null, setHits: 0, setB: null, pairHits: 0 });
+          (VIEW_HOOKS[methodName] = { last: null, hits: 0, setLast: null, setHits: 0, setB: null, pairHits: 0,
+                                     lo: null, hi: null, jump: 0 });
         var a = arguments;
         if (kind === "get") {
           var r = a[0];
           if (r && typeof r.val === "function") {
-            rec.last = r.val();
+            var val = r.val();
+            // The observed RANGE, not just the current value. That distinction
+            // is the whole difference between an angle and a constant.
+            //
+            // The getters were identified by matching a returned value against
+            // a struct offset - and any constant that happened to equal that
+            // offset matched too. A frozen "yaw" pins forward to one heading,
+            // every box lands at the same offset from centre, and the result is
+            // a line of boxes the user described as "locked to a centre line".
+            // A look angle moves. A sensitivity, a clamp and a flag do not.
+            if (typeof val === "number" && isFinite(val)) {
+              if (rec.lo === null || val < rec.lo) rec.lo = val;
+              if (rec.hi === null || val > rec.hi) rec.hi = val;
+              if (rec.last !== null) {
+                var dj = Math.abs(val - rec.last);
+                if (dj > rec.jump) rec.jump = dj;
+              }
+              rec.last = val;
+            }
             rec.hits++;
             if (a[1] && typeof a[1].val === "function") { var t = a[1].val(); if (t) ML_INSTANCE = t; }
           }
@@ -1551,9 +1570,15 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     // (0, -4.16, 0) in the air - and "first non-zero" picked it as the player
     // position in a live report. See pickPos() for the full rule.
     var best = 0;
-    var pick = pickPos(row.allVecs, groundY());
+    // The stick has to outlive this row. describe() builds a fresh row on every
+    // report, so a preference recorded on `row` would be gone before the next
+    // frame could use it and the tie-break would alternate exactly as before.
+    var stickKey = typeName + "@" + ptr;
+    var pick = pickPos(row.allVecs, groundY(), POS_STICK[stickKey]);
+    POS_STICK[stickKey] = pick.posAt ? { o: pick.posAt } : null;
     row.pos = pick.pos;
     row.posAt = pick.posAt;
+    row.held = pick.held;
     row.candidates = pick.candidates;
     row.cluster = pick.cluster;
     row.reach = pick.reach;
@@ -2350,6 +2375,8 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
         }
       }
       rows.push({ name: k, value: rec.last, matches: matches, hits: rec.hits,
+                  lo: rec.lo, hi: rec.hi, travel: (rec.lo === null ? 0 : Math.round((rec.hi - rec.lo) * 100) / 100),
+                  jump: Math.round(rec.jump * 100) / 100,
                   set: rec.setHits ? rec.setLast : null });
     }
     return rows;
@@ -2364,15 +2391,39 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     ANGLE.getters = getterRows(ml);
     var pair = lastAnglePair();
 
-    // Preferred source: the two-float setter, because it carries both angles in
-    // one call and range alone says which is which.
-    var yawG = getterFor(YAW_OFF);
-    var pitchG = null;
+    // An angle MOVES. A constant, a sensitivity, a clamp and a flag do not.
+    //
+    // The getters were picked by matching their return value against struct
+    // +0x28, which any constant equal to +0x28 also matched. A frozen yaw pins
+    // forward to a single heading, every box lands at the same offset from
+    // centre, and the boxes line up in a column - which is exactly what was
+    // reported. So a candidate must have been seen to travel before it is
+    // believed, and the largest single-frame jump is capped: a value that
+    // leaps 90 degrees between calls is not a look angle, it is a misfire.
+    var MIN_TRAVEL = 1.0;
+    var MAX_STEP = 90;
+    function travel(rec) { return (rec.lo === null || rec.hi === null) ? 0 : rec.hi - rec.lo; }
+
+    var yawG = null;
     for (var g in VIEW_HOOKS) {
-      if (g === yawG) continue;
-      var rc = VIEW_HOOKS[g];
-      if (!rc.hits || rc.last === null) continue;
-      if (rc.last >= -90 && rc.last <= 90) { pitchG = g; break; }
+      var rg = VIEW_HOOKS[g];
+      if (!rg.hits || rg.last === null) continue;
+      if (travel(rg) < MIN_TRAVEL) continue;          // frozen: not an angle
+      if (rg.jump > MAX_STEP) continue;              // leaps: not an angle
+      var stored = rd(ML_INSTANCE + YAW_OFF, "f32");
+      if (typeof stored !== "number" || Math.abs(rg.last - stored) >= 1e-3) continue;
+      if (!yawG || rg.hits > VIEW_HOOKS[yawG].hits) yawG = g;
+    }
+    var pitchG = null;
+    for (var g2 in VIEW_HOOKS) {
+      if (g2 === yawG) continue;
+      var rp = VIEW_HOOKS[g2];
+      if (!rp.hits || rp.last === null) continue;
+      if (travel(rp) < MIN_TRAVEL) continue;
+      if (rp.jump > MAX_STEP) continue;
+      // Pitch is bounded; yaw is not. That is the only property separating them
+      // that does not depend on where in the struct anyone typed something.
+      if (rp.last >= -90 && rp.last <= 90) { pitchG = g2; break; }
     }
     ANGLE.yawGetter = yawG; ANGLE.pitchGetter = pitchG;
 
@@ -3146,10 +3197,16 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
   var GROUND_TOL = 2.5;
   // Two candidates count as "the same point" within this many world units.
   var CLUSTER_R2 = 6.25;
+
+  /* Which offset each entity's position was read from last time, so pickPos can
+   * prefer it over a tie-break that might decide the other way this frame. Jitter
+   * is not a small offset; it is an ESP nobody can use. */
+  var POS_STICK = {};
+  var LOCAL_PICK = null;
   // Standing eye height above the feet. A constant because it is one.
   var EYE_H = 1.8;
 
-  function pickPos(vecs, groundY) {
+  function pickPos(vecs, groundY, stick) {
    try {
     var pool = [], i, j;
     var known = (groundY !== null && groundY !== undefined && isFinite(groundY));
@@ -3185,7 +3242,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       // Nothing survived the floor. That means everything here is small, which
       // means there is no position here - say so rather than plot a velocity.
       return { pos: null, posAt: null, candidates: 0, cluster: 0, groups: 0,
-               discarded: tooSmall, ambiguous: false, reach: 0 };
+               discarded: tooSmall, ambiguous: false, reach: 0, held: false };
     }
 
     // Single-link clustering over what survived.
@@ -3244,12 +3301,31 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       var hb = Math.sqrt(b[0] * b[0] + b[2] * b[2]);
       if (hb > reach || (hb === reach && b[1] < rep.v[1])) { reach = hb; rep = bestG.c[j]; }
     }
+
+    // Stickiness. Two members of a winning cluster can be nearly identical - a
+    // character's head and its feet - and the representative rule is a tie-break
+    // between values that differ by a few centimetres, so which one wins can
+    // alternate frame to frame. The box then jitters, which is not "an ESP that
+    // is slightly off", it is an ESP that is unusable. If the offset chosen last
+    // frame is still in the winning cluster, keep it: the tie-break only has to
+    // break ties when there is nothing to be consistent with.
+    var held = false;
+    if (stick && stick.o) {
+      for (j = 0; j < bestG.c.length; j++) {
+        if (bestG.c[j].o !== stick.o) continue;
+        rep = bestG.c[j];
+        reach = Math.sqrt(rep.v[0] * rep.v[0] + rep.v[2] * rep.v[2]);
+        held = true;
+        break;
+      }
+    }
     return { pos: rep.v, posAt: rep.o, candidates: pool.length,
-             cluster: bestG.c.length, groups: groups.length,
+             cluster: bestG.c.length, groups: groups.length, held: held,
              discarded: tooSmall, ambiguous: groups.length > 1, reach: reach };
    } catch (e) {
      console.log('PICKPOS>>', e.message, String(e.stack || '').split('\n').slice(0, 4).join(' | '));
-     return { pos: null, posAt: null, candidates: 0, cluster: 0, groups: 0, discarded: 0, ambiguous: false, reach: 0 };
+     return { pos: null, posAt: null, candidates: 0, cluster: 0, groups: 0, held: false,
+               discarded: 0, ambiguous: false, reach: 0 };
    }
   }
 
@@ -3272,8 +3348,9 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     // ground reference every other entity is filtered against, so it cannot be
     // filtered against one. Consensus alone identifies it - the body position is
     // held by four offsets at once, the scratch vectors are held by none.
-    var pick = pickPos(vecs, null);
+    var pick = pickPos(vecs, null, LOCAL_PICK);
     if (!pick.pos) return null;
+    LOCAL_PICK = pick.posAt ? { o: pick.posAt } : null;
     // Eye height is a constant, not a field. It is reported so it can be
     // checked against a screenshot rather than taken on faith.
     var feet = pick.pos;
@@ -3314,7 +3391,11 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
         var qv = readVec(rec.ptr, sf[q][0], 3);
         if (qv) sv.push({ o: "0x" + sf[q][0].toString(16), v: qv });
       }
-      var pick = pickPos(sv, me ? me.feet[1] : null);
+      var pick = pickPos(sv, me ? me.feet[1] : null, POS_STICK[keys[i]]);
+      // Same stickiness, for the same reason, on the path that actually paints.
+      // Per entity, keyed by its network id: a tie-break that alternates between
+      // a head and a foot reads as jitter, not as a small offset.
+      POS_STICK[keys[i]] = pick.posAt ? { o: pick.posAt } : null;
       var p = pick.pos;
       // The local instance has no network position; skip it rather than
       // plotting the origin.
