@@ -58,17 +58,28 @@ function obfBool(base, real, key) {
   U8[base + 0x0a] = 1;
 }
 
-const OBJ = {};
-let base = 0x20000;
-for (const t of ['FPScontroller', 'HealthScript', 'WeaponManager', 'GG_GameManager']) {
-  OBJ[t] = base;
-  base += 0x1000;
-}
-obfFloat(OBJ.FPScontroller + 0x10, 4.25, 0x51);
-obfFloat(OBJ.FPScontroller + 0x28, 7.5, 0x33);
-obfBool(OBJ.FPScontroller + 0xb8, true, 0x19);
-obfInt(OBJ.HealthScript + 0xc0, 100, 0x34);
-obfFloat(OBJ.HealthScript + 0x130, 99.5, 0x12);
+// Re-seed the fixture. The heap is module-global and shared by every runFrame,
+// so a write from an earlier case would otherwise leak into the next one and
+  // look exactly like a compounding bug.
+  const OBJ = {};
+  let base = 0x20000;
+  for (const t of ['FPScontroller', 'HealthScript', 'WeaponManager', 'GG_GameManager']) {
+    OBJ[t] = base;
+    base += 0x1000;
+  }
+  function seedObjects() {
+    U8.fill(0);
+    obfFloat(OBJ.FPScontroller + 0x10, 4.25, 0x51);
+    obfFloat(OBJ.FPScontroller + 0x28, 7.5, 0x33);
+    obfFloat(OBJ.FPScontroller + 0x40, 12.5, 0xabcdef);
+    obfFloat(OBJ.FPScontroller + 0x88, 2.5, 0x21);
+    obfFloat(OBJ.FPScontroller + 0x11c, 1.75, 0x77);
+    obfBool(OBJ.FPScontroller + 0xb8, true, 0x19);
+    obfInt(OBJ.HealthScript + 0xc0, 100, 0x006c81c);
+    obfInt(OBJ.HealthScript + 0xd4, 200, 0x006c81c);
+    obfFloat(OBJ.HealthScript + 0x130, 99.5, 0x12);
+  }
+  seedObjects();
 
 /* Fake ValueWrapper, still used by the payload for getClassName(). */
 class FakeVW {
@@ -102,7 +113,18 @@ function makeEl() {
 /* ------------------------------------------------------------------ *
  * Harness
  * ------------------------------------------------------------------ */
-function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'resolveGame', scriptDataLate = false, applyFirst = false, resolveButNotApply = false, noInstantiate = false }) {
+// var, not const, and declared here: the test body calls runFrame() before
+// execution ever reaches the BroadcastChannel stub further down.
+var BC_HUB = [];
+function sendToPlayer(msg) {
+  for (const b of BC_HUB) if (typeof b.onmessage === 'function') b.onmessage({ data: msg });
+}
+function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'resolveGame', scriptDataLate = false, applyFirst = false, resolveButNotApply = false, noInstantiate = false, speed = null, thenOff = false, extraFrames = 0 }) {
+  // Reset the channel hub: payload instances from earlier runs would keep
+  // their own SPEED_STATE and keep writing to the same heap, which looks
+  // exactly like a compounding bug in the payload.
+  BC_HUB.length = 0;
+  seedObjects();
   const posted = [], pluginCalls = [], hookCalls = [], pending = [], listeners = [], order = [];
   const fireTypes = fireUpdate ? ['FPScontroller', 'HealthScript', 'WeaponManager', 'GG_GameManager'] : [];
 
@@ -177,7 +199,12 @@ function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'r
     readyState: 'complete', body: makeEl(), documentElement: makeEl(), head: makeEl(),
     createElement: makeEl, getElementById: () => null, addEventListener() {}
   };
-  class BC { constructor() {} postMessage() {} close() {} }
+  // The payload sets bc.onmessage; commands arrive this way from the portal.
+class BC {
+  constructor() { BC_HUB.push(this); }
+  postMessage() {}
+  close() {}
+}
 
   // Models UWMK's instantiate flow: it hands back an instance whose exports
   // carry the memory, and never assigns window.unityInstance / unityGame /
@@ -263,8 +290,22 @@ function runFrame({ hostname, hooksApply = true, fireUpdate = true, heapVia = 'r
     const plugin = Runtime.plugins[0];
     if (plugin) for (const h of plugin.hooks) {
       if (!h.applied || !fireTypes.includes(h.typeName)) continue;
-      try { h.callback(new FakeVW(OBJ[h.typeName])); }
-      catch (e) { fatal = 'hook threw: ' + e.message; }
+      const rec = OBJ[h.typeName];
+      if (rec === undefined) continue;
+      const fire = () => {
+        try { h.callback(new FakeVW(rec)); }
+        catch (e) { fatal = 'hook threw: ' + e.message; }
+      };
+      // Command must land BEFORE the frame it should affect, exactly as the
+      // portal sends it while the game is already running.
+      if (speed && h.typeName === 'FPScontroller') {
+        sendToPlayer({ __sakura: '__sakura_sw_v2', kind: 'cmd', cmd: 'speed', arg: speed });
+      }
+      fire();
+      for (let n = 0; n < extraFrames; n++) fire();
+      if (thenOff && h.typeName === 'FPScontroller') {
+        sendToPlayer({ __sakura: '__sakura_sw_v2', kind: 'cmd', cmd: 'speed', arg: { on: false } });
+      }
     }
     guard = 0;
     while (pending.length && guard++ < 200) pending.shift()();
@@ -433,7 +474,7 @@ function check(name, cond, detail) {
     !!(r.report.hookFireProof && r.report.hookFireProof.resolveGameAtFire === true),
     JSON.stringify(r.report.hookFireProof));
   check('report version comes from the payload, not a stale literal',
-    /^2\.0\.\d+$/.test(r.report.version) && r.report.version === r.pluginVersion,
+    /^\d+\.\d+\.\d+$/.test(r.report.version) && r.report.version === r.pluginVersion,
     `report=${r.report.version} plugin=${r.pluginVersion}`);
 }
 
@@ -573,6 +614,44 @@ function check(name, cond, detail) {
   check('still heartbeats with no instances', idle.reports.length > 3, `reports=${idle.reports.length}`);
   check('an empty survey with NO instances does not cry wolf',
     !idle.report.warnings.some(w => /read 0 fields/.test(w)), JSON.stringify(idle.report.warnings));
+}
+
+/* ================================================================== *
+ * SPEED. No offsets are hardcoded: every inited ObscuredFloat on
+ * FPScontroller holding a movement-plausible value gets scaled. The value is
+ * re-based whenever the game writes it, so the multiplier cannot compound.
+ * ================================================================== */
+{
+  const r0 = runFrame({});
+  const walk = (r0.report.survey.FPScontroller || []).filter(x => x.k === 'obfF' && x.v > 3 && x.v < 10);
+  check('the movement cluster is present in the fixture to act on',
+    walk.length >= 2, `walk-like fields=${walk.length}`);
+
+  const r = runFrame({ speed: { on: true, factor: 2 } });
+  const after = (r.report.survey.FPScontroller || []).filter(x => x.k === 'obfF');
+  const scaled = after.filter(x => walk.some(w => Math.abs(w.v * 2 - x.v) < 1e-3));
+  check('speed ON multiplies the movement fields', scaled.length === walk.length,
+    `scaled=${scaled.length} of ${walk.length}`);
+  check('speed OFF is the default (nothing written without consent)',
+    r0.report.speed.on === false && r0.report.speed.writes === 0,
+    JSON.stringify(r0.report.speed));
+  check('speed state is reported back to the portal',
+    r.report.speed.on === true && r.report.speed.factor === 2, JSON.stringify(r.report.speed));
+
+  // The compounding guard: run many frames and confirm the value does not run
+  // away. This is the failure mode that makes naive speed hacks unusable.
+  const many = runFrame({ speed: { on: true, factor: 2 }, extraFrames: 30 });
+  const base = {};
+  for (const x of (r0.report.survey.FPScontroller || [])) if (x.k === 'obfF') base[x.o] = x.v;
+  const afterMany = (many.report.survey.FPScontroller || []).filter(x => x.k === 'obfF');
+  const drifted = afterMany.filter(x => Math.abs(base[x.o] * 2 - x.v) > 1e-3);
+  check('every movement field is exactly base * factor after 30 frames',
+    drifted.length === 0, `drifted=${JSON.stringify(drifted.map(x => ({ o: x.o, v: x.v, want: base[x.o] * 2 })))}`);
+  check('no value ran away',
+    afterMany.every(x => Math.abs(x.v) < 100), JSON.stringify(afterMany.map(x => x.v)));
+
+  const off = runFrame({ speed: { on: true, factor: 2 }, thenOff: true, extraFrames: 10 });
+  check('turning speed OFF stops writes', off.report.speed.on === false, JSON.stringify(off.report.speed));
 }
 
 /* ================================================================== *

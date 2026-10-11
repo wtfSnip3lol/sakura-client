@@ -53,7 +53,7 @@
   // It was hand-written in three places once and one drifted, so a field report
   // claimed 2.0.2 while the plugin logged 2.0.3 - which sends everyone chasing
   // a stale build.
-  var VERSION = "2.0.8";
+  var VERSION = "2.1.0";
 
   /* ================================================================== *
    * WRAPPER — relay only. Arming UWMK here achieves nothing: this frame
@@ -140,7 +140,10 @@
         '<button id="sw2-copy" style="display:none;margin-left:auto;background:' + ACCENT + ';border:0;color:#2a0f1b;border-radius:7px;padding:4px 10px;font-weight:700;cursor:pointer;">Copy JSON</button>' +
         '<button id="sw2-x" style="background:transparent;border:1px solid rgba(255,143,177,.4);color:#f7eef5;border-radius:7px;padding:4px 8px;cursor:pointer;">x</button>' +
         '</div>' +
-        '<div style="padding:8px 12px;border-bottom:1px solid rgba(255,143,177,.18);display:flex;gap:6px;align-items:center;flex:0 0 auto;">' +
+        '<div style="padding:8px 12px;border-bottom:1px solid rgba(255,143,177,.18);display:flex;gap:8px;align-items:center;flex:0 0 auto;flex-wrap:wrap;">' +
+        '<button id="sw2-speed" style="background:transparent;border:1px solid rgba(255,143,177,.4);color:#f7eef5;border-radius:7px;padding:4px 10px;cursor:pointer;">Speed off</button>' +
+        '<input id="sw2-factor" type="range" min="1" max="5" step="0.1" value="1" style="width:120px;accent-color:' + ACCENT + ';">' +
+        '<span id="sw2-factorlabel" style="color:#bda9c9;min-width:34px;">1.0x</span>' +
         '<button id="sw2-snap" style="background:transparent;border:1px solid rgba(255,143,177,.4);color:#f7eef5;border-radius:7px;padding:4px 9px;cursor:pointer;">Snapshot (F9)</button>' +
         '<span id="sw2-hint" style="color:#8d7a99">F9 twice while walking / sprinting / jumping marks which field is which.</span>' +
         '</div>' +
@@ -153,11 +156,29 @@
       var copyBtn = root.querySelector("#sw2-copy");
       var closeBtn = root.querySelector("#sw2-x");
       var snapBtn = root.querySelector("#sw2-snap");
+      var speedBtn = root.querySelector("#sw2-speed");
+      var factorEl = root.querySelector("#sw2-factor");
+      var factorLabel = root.querySelector("#sw2-factorlabel");
       var hintEl = root.querySelector("#sw2-hint");
       var payload = null;
 
       if (closeBtn) closeBtn.onclick = function () { try { root.remove(); } catch (_) {} };
       if (snapBtn) snapBtn.onclick = function () { down("snapshot"); };
+      // Speed state lives in the PLAYER frame (the only place with the pointer).
+      // The portal just relays intent and renders whatever comes back.
+      var speedOn = false;
+      function pushSpeed() { down("speed", { on: speedOn, factor: parseFloat(factorEl.value) || 1 }); }
+      if (speedBtn) speedBtn.onclick = function () {
+        speedOn = !speedOn;
+        speedBtn.textContent = speedOn ? "Speed ON" : "Speed off";
+        speedBtn.style.background = speedOn ? ACCENT : "transparent";
+        speedBtn.style.color = speedOn ? "#2a0f1b" : "#f7eef5";
+        pushSpeed();
+      };
+      if (factorEl) factorEl.oninput = function () {
+        if (factorLabel) factorLabel.textContent = (parseFloat(factorEl.value) || 1).toFixed(1) + "x";
+        pushSpeed();
+      };
       if (copyBtn) copyBtn.onclick = function () {
         var text = MARK0 + "\n" + (payload ? JSON.stringify(payload, null, 1) : "") + "\n" + MARK1;
         var done = function () { if (copyBtn) copyBtn.textContent = "Copied"; };
@@ -224,6 +245,17 @@
             hintEl.textContent = rep.diff && rep.diff.length
               ? "Diff vs snapshot: " + rep.diff.join(", ")
               : "F9 twice while walking / sprinting / jumping marks which field is which.";
+          }
+          // Reflect the player's speed state so the panel never claims a toggle
+          // the frame has not actually applied.
+          if (rep.speed && speedBtn) {
+            speedOn = !!rep.speed.on;
+            speedBtn.textContent = speedOn ? "Speed ON" : "Speed off";
+            speedBtn.style.background = speedOn ? ACCENT : "transparent";
+            speedBtn.style.color = speedOn ? "#2a0f1b" : "#f7eef5";
+            if (factorLabel && rep.speed.factor) {
+              factorLabel.textContent = Number(rep.speed.factor).toFixed(1) + "x";
+            }
           }
           if (outEl) {
             try { outEl.textContent = render(rep); }
@@ -786,25 +818,65 @@
     return { real: real, fake: fake, act: act, init: init, key: key, hidden: hid };
   }
 
-  // Writing through ACTk: the decoy must agree with the payload or
-  // ObscuredCheatingDetector compares real vs fake every frame and flags it.
-  // Clearing fakeValueActive makes currentRawValue return the decrypted value,
-  // so the two sides are trivially consistent again.
-  function writeObf(ptr, base, kind, value) {
+  /* ---- Writing through ACTk ------------------------------------------
+   * hiddenValue = value ^ currentCryptoKey, fakeValue set to the same value,
+   * fakeValueActive cleared. Clearing the decoy is what makes
+   * ObscuredCheatingDetector's per-frame comparison self-consistent: it reads
+   * currentRawValue, which returns the decrypted value once the decoy is off.
+   * Writing a decoy the detector can disagree with is how a cheat gets flagged.
+   */
+  function writeObfValue(ptr, base, kind, value) {
     var L = LAYOUT[kind];
-    if (!L) return false;
-    var cur = readObf(ptr, base, kind);
-    if (!cur) return false;
-    var key = cur.key;
-    var hidden;
-    if (kind === "obfF") hidden = bitsOf(value) ^ key;
-    else if (kind === "obfI") hidden = (value | 0) ^ key;
-    else hidden = ((value ? 1 : 0) & 0xff) ^ key;
-    var fakeKind = kind === "obfF" ? "f32" : kind === "obfI" ? "i32" : "u8";
-    var fakeVal = kind === "obfF" ? value : kind === "obfI" ? (value | 0) : (value ? 1 : 0);
-    return wr(ptr + base + L.hidden, "i32", hidden | 0)
-        && wr(ptr + base + L.fake, fakeKind, fakeVal)
+    var snap = snapStruct(ptr, base, L.size);
+    if (!snap) return false;
+    var dv = new DataView(snap.buffer, snap.byteOffset, snap.byteLength);
+    var key = L.keyType === "u8" ? dv.getUint8(L.key) : dv.getInt32(L.key, true);
+    var bits;
+    if (kind === "obfF") bits = bitsOf(value);
+    else if (kind === "obfI") bits = (value | 0);
+    else bits = ((value ? 1 : 0) & 0xff);
+    return wr(ptr + base + L.hidden, "i32", bits ^ key)
+        && wr(ptr + base + L.fake, kind === "obfF" ? "f32" : kind === "obfI" ? "i32" : "u8",
+              kind === "obfF" ? value : kind === "obfI" ? (value | 0) : (value ? 1 : 0))
         && wr(ptr + base + L.active, "u8", 0);
+  }
+
+  /* ---- Speed ---------------------------------------------------------
+   * No offsets are hardcoded. On the first field report, FPScontroller's
+   * ObscuredFloats fell into two clusters: six fields reading 4.19-4.21 and
+   * three reading 16.76-16.82, a ratio of 3.997 - walk speed and sprint speed.
+   * Rather than trust that grouping forever, scale any inited ObscuredFloat
+   * whose decrypted value is movement-plausible, which adapts if the game
+   * rebalances or if this is a different weapon.
+   *
+   * Values are re-based whenever something other than us wrote them, so the
+   * multiplier cannot compound frame over frame.
+   */
+  var SPEED = { on: false, factor: 1, min: 0.5, max: 50 };
+  var SPEED_STATE = {};   // "ptr:offset" -> { base, lastWritten }
+  var SPEED_TOUCHED = 0;
+
+  function applySpeed(ptr) {
+    var fields = SK_FIELDS.FPScontroller || [];
+    for (var i = 0; i < fields.length; i++) {
+      var off = fields[i][0];
+      if (fields[i][1] !== "obfF") continue;
+      var d = readObfRaw(ptr, off, "obfF");
+      if (!d || d.inited !== 1) continue;          // never write an uninitialised struct
+      var cur = applyKey("obfF", d.hidden, d.keyAtOffset0);
+      if (typeof cur !== "number" || !isFinite(cur)) continue;
+      if (Math.abs(cur) < SPEED.min || Math.abs(cur) > SPEED.max) continue;
+      var k = ptr + ":" + off;
+      var st = SPEED_STATE[k];
+      // If the current value is not the one we last wrote, the game changed it
+      // - rebase, or the multiplier compounds into orbit within a second.
+      if (!st || cur !== st.lastWritten) st = SPEED_STATE[k] = { base: cur, lastWritten: null };
+      var target = st.base * SPEED.factor;
+      if (writeObfValue(ptr, off, "obfF", target)) {
+        st.lastWritten = target;
+        SPEED_TOUCHED++;
+      }
+    }
   }
 
   /* ---------------------------------------------------------------- *
@@ -855,6 +927,12 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
           } catch (_) {}
         }
         INSTANCES[typeName].hits++;
+        // Movement ticks here, once per frame, on the local player - the one
+        // place where a speed write is guaranteed to be read back by the game
+        // this frame rather than some frame later.
+        if (typeName === "FPScontroller" && SPEED.on) {
+          try { applySpeed(p); } catch (_) {}
+        }
         if (!enabled) {
           var h = HOOKS.filter(function (x) { return x.type === typeName; })[0];
           if (h && h.hook) { try { h.hook.enabled = false; } catch (_) {} }
@@ -997,12 +1075,23 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     }
     return {
       rows: rows, key: key, sane: sane, checked: checked,
-      // One key per instance, so fields that disagree mean the offsets or the
-      // key width are wrong somewhere.
-      keyConsistent: rows.filter(function (x) { return x.k.indexOf("obf") === 0; })
-        .every(function (x) { return x.keyUsed === key; }),
+      // ACTk keeps one key per instance PER KIND: ObscuredFloat/Int share an
+      // int key, ObscuredBool has its own byte key. Comparing them together
+      // reports a false mismatch on every object that has both.
+      keyConsistent: consistentByKind(rows),
       keySource: "offset 0 (int-width)"
     };
+  }
+
+  function consistentByKind(rows) {
+    var seen = {};
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      if (r.k.indexOf("obf") !== 0) continue;
+      if (seen[r.k] === undefined) seen[r.k] = r.keyUsed;
+      else if (seen[r.k] !== r.keyUsed) return false;
+    }
+    return true;
   }
 
   function looksPlausible(row) {
@@ -1063,7 +1152,15 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     return m;
   }
 
-  function onCommand(cmd) {
+  function onCommand(cmd, arg) {
+    if (cmd === "speed") {
+      if (arg && typeof arg.on === "boolean") SPEED.on = arg.on;
+      if (arg && typeof arg.factor === "number") {
+        SPEED.factor = Math.min(5, Math.max(1, arg.factor));
+      }
+      if (!SPEED.on) SPEED_STATE = {};
+      return;
+    }
     if (cmd !== "snapshot") return;
     var sv = survey();
     var now = flat(sv);
@@ -1145,6 +1242,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
         exportKeys: WASM_EXPORT_KEYS
       },
       diff: DIFF.slice(0, 40),
+      speed: { on: SPEED.on, factor: SPEED.factor, writes: SPEED_TOUCHED },
       uwmkLog: UWMK_LOG.slice(0, 20),
       warnings: []
     };
