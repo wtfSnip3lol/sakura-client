@@ -53,7 +53,7 @@
   // It was hand-written in three places once and one drifted, so a field report
   // claimed 2.0.2 while the plugin logged 2.0.3 - which sends everyone chasing
   // a stale build.
-  var VERSION = "2.9.1";
+  var VERSION = "2.9.2";
 
   /* ================================================================== *
    * WRAPPER — relay only. Arming UWMK here achieves nothing: this frame
@@ -409,10 +409,13 @@
       }
     });
 
-    // Hidden panels leave a one-word tab behind, so X is never a dead end.
+    // Hidden by default. The in-frame Sakura menu does everything this did -
+    // including copying the JSON - so the only reason for a second, differently
+    // styled strip on the CrazyGames page is to be another thing to look at.
+    // The sakura tab brings it back if someone wants a report without entering a
+    // game.
     function boot() {
-      if (isHidden()) { setHidden(true); return; }
-      panel();
+      setHidden(true);
     }
     if (document.body) boot();
     else document.addEventListener("DOMContentLoaded", boot, { once: true });
@@ -2038,14 +2041,19 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
   ];
 
   var MENU_CSS =
+    // all:initial is here to stop the game's stylesheet leaking in, and it is an
+    // ID selector. That makes it outrank .mn-panel (100 vs 10) and win EVERY
+    // root-level property: the panel fell back to position:static, background
+    // none, display:inline and the cards spilled out over the game as unstyled
+    // text. Same reason the radar and the HUD carry their styling inline.
     '#sakura-menu-root{all:initial}' +
-    '.mn-panel{position:fixed;right:24px;bottom:24px;width:min(620px,calc(100vw - 48px));max-height:min(500px,calc(100vh - 48px));' +
+    '#sakura-menu-root.mn-panel{position:fixed;right:24px;bottom:24px;width:min(620px,calc(100vw - 48px));max-height:min(500px,calc(100vh - 48px));' +
     'display:flex;gap:10px;padding:10px;border-radius:22px;pointer-events:auto;z-index:2147483647;' +
     'background:rgba(24,17,21,.82);backdrop-filter:blur(22px) saturate(150%);-webkit-backdrop-filter:blur(22px) saturate(150%);' +
     'box-shadow:0 0 0 1px rgba(255,255,255,.06),inset 0 1px 0 rgba(255,255,255,.05),0 30px 80px rgba(0,0,0,.55);' +
     'opacity:0;transform:translateY(18px);pointer-events:none;transition:opacity .35s ease,transform .45s cubic-bezier(.22,1,.36,1);' +
     'color:#f6eef2;font-size:13px;font-family:"Inter","Segoe UI",system-ui,sans-serif;}' +
-    '.mn-panel.shown{opacity:1;transform:none;pointer-events:auto;}' +
+    '#sakura-menu-root.mn-panel.shown{opacity:1;transform:none;pointer-events:auto;}' +
     '.mn-side{display:flex;flex-direction:column;align-items:center;gap:4px;width:62px;flex:none;padding:12px 0;' +
     'border-radius:16px;background:rgba(255,255,255,.025);box-shadow:inset 0 0 0 1px rgba(255,255,255,.05);}' +
     '.mn-logo{display:grid;place-items:center;width:32px;height:32px;margin-bottom:6px;}' +
@@ -2095,7 +2103,9 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     'font-size:11.5px;font-weight:700;cursor:pointer;font-family:inherit;}' +
     '.sk-btn:hover{filter:brightness(1.1);}' +
     '.sk-pre{font:11px/1.5 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-word;margin:0;opacity:.75;max-height:280px;overflow:auto;}' +
-    '#sakura-petal{position:fixed;top:12px;right:12px;z-index:2147483646;cursor:pointer;width:26px;height:26px;opacity:.5;' +
+    // The petal, the one glyph allowed on screen before a round loads. Also an ID
+    // rule on its own element, so nothing has to out-rank it.
+    '#sakura-petal{position:fixed;top:12px;right:12px;z-index:2147483646;cursor:pointer;width:26px;height:26px;opacity:.28;' +
     'transition:opacity .2s;pointer-events:auto;filter:drop-shadow(0 0 4px rgba(255,107,157,.7));}';
 
   var PETAL_SVG =

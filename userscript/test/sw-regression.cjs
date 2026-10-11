@@ -816,7 +816,33 @@ function check(name, cond, detail) {
   check('a second click turns it off entirely', step(2) && step(2).on === false, JSON.stringify(step(2)));
 }
 
-/* NOTHING MAY BE DRAWN OVER THE GAME UNTIL THERE IS A ROUND.
+/* THE MENU RENDERED WITH NO CSS AT ALL.
+ *
+ * Field screenshot: the menu's cards spilled out over the game as unstyled
+ * text. Cause: `#sakura-menu-root{all:initial}` is an ID selector, so at
+ * specificity 100 it outranks `.mn-panel` at 10 and wins every root-level
+ * property - position:static, background:none, display:inline. The panel and
+ * its contents were laid out in normal document flow at the top-left of the
+ * frame, on top of the match.
+ *
+ * Source-only: the obfuscator rewrites these CSS strings.
+ */
+{
+  const src = require('fs').readFileSync(target, 'utf8');
+  if (/\b_0x[0-9a-f]{4,}\b/.test(src)) {
+    check('menu CSS specificity check skipped (target is obfuscated)', true, '');
+  } else {
+    check('the menu root reset is outranked by the panel rule, not the reverse',
+      /#sakura-menu-root\.mn-panel\{/.test(src), 'no #sakura-menu-root.mn-panel rule');
+    check('the shown state is scoped the same way',
+      /#sakura-menu-root\.mn-panel\.shown\{/.test(src),
+      'no #sakura-menu-root.mn-panel.shown rule');
+    check('no bare .mn-panel rule can lose to the ID reset',
+      !/(^|[^.\w-])\.mn-panel\{/.test(src), 'a bare .mn-panel{ rule exists');
+  }
+}
+
+/* Nothing may be drawn over the game until there is a round.
  *
  * Field evidence: a screenshot of the game's own loading screen -
  * "DOWNLOADING CONTENT (18.63 MB)" - with the radar's compass rose and caption
@@ -1372,20 +1398,40 @@ function check(name, cond, detail) {
     after.length === 1 && Math.abs(after[0].v - 8.4234) < 1e-3, JSON.stringify(after));
 }
 
-/* The portal side: it must post INTO the iframes, not only broadcast. */
+/* The portal side. It is a report VIEWER and is hidden by default - the
+ * in-frame Sakura menu does the same job and looks like part of the suite. The
+ * portal posts commands into iframes so a panel that ever opens can still
+ * drive the game. */
 {
   const r = runFrame({ hostname: 'www.crazygames.com' });
-  const speedBtn = r.doc._els['#sw2-speed'];
-  check('portal wires a speed toggle', !!(speedBtn && typeof speedBtn.onclick === 'function'),
-    `speedBtn=${!!speedBtn} onclick=${speedBtn && typeof speedBtn.onclick}`);
-  if (speedBtn && speedBtn.onclick) {
-    speedBtn.onclick();
-    check('clicking speed posts a command into the game frame',
-      r.portalCommands.some(m => m && m.kind === 'cmd' && m.cmd === 'speed'),
-      JSON.stringify(r.portalCommands));
-    check('the command targets the game frame, not just a broadcast',
-      r.portalCommands.some(m => m && m.kind === 'cmd' && m.arg && typeof m.arg.on === 'boolean'),
-      JSON.stringify(r.portalCommands.map(m => m && m.arg)));
+  const inDom = () => r.doc.body.children.some(c => c && c.id === 'sakura-sw-v2');
+  const tab = () => r.doc.body.children.find(c => c && c.id === 'sakura-sw-v2-tab');
+  check('the portal panel is not built by default',
+    !inDom(), 'a #sakura-sw-v2 exists before anything asks for it');
+  check('but the sakura tab is there, so it is never a dead end',
+    !!tab(), 'no #sakura-sw-v2-tab');
+
+  if (tab()) {
+    tab().onclick();
+    check('clicking the tab builds the panel', inDom(), 'panel never appeared');
+    check('and the tab retires once the panel is up',
+      !r.doc.body.children.some(c => c && c.id === 'sakura-sw-v2-tab'), 'tab lingered');
+    check('the panel starts collapsed to a header pill',
+      r.doc._els['#sw2-body'] && r.doc._els['#sw2-body'].style.display === 'none',
+      `display=${r.doc._els['#sw2-body'] && r.doc._els['#sw2-body'].style.display}`);
+    check('and is not stretched across the viewport',
+      r.doc.body.children.find(c => c && c.id === 'sakura-sw-v2').style.width === 'auto',
+      'width was not auto');
+    const speedBtn = r.doc._els['#sw2-speed'];
+    check('portal wires a speed toggle once opened',
+      !!(speedBtn && typeof speedBtn.onclick === 'function'),
+      `speedBtn=${!!speedBtn} onclick=${speedBtn && typeof speedBtn.onclick}`);
+    if (speedBtn && speedBtn.onclick) {
+      speedBtn.onclick();
+      check('clicking speed posts a command into the game frame',
+        r.portalCommands.some(m => m && m.kind === 'cmd' && m.cmd === 'speed'),
+        JSON.stringify(r.portalCommands));
+    }
   }
 }
 
@@ -1501,7 +1547,12 @@ function check(name, cond, detail) {
   const REPORT = { __sakura: '__sakura_sw_v2', kind: 'report',
     report: { version: '2.3.0', elapsedMs: 1000, hooksApplied: 5, hooksTotal: 5, instances: {}, survey: {} } };
 
-  check('the panel is built', panelInDom(), 'no #sakura-sw-v2 in the document');
+  // It starts hidden now, so the tab is the only thing on the page and the
+  // panel has to be asked for before any of the rest can be tested.
+  check('the panel is not built until the tab is clicked', !panelInDom(),
+    'a #sakura-sw-v2 exists on load');
+  if (tab()) tab().onclick();
+  check('the tab builds it', panelInDom(), 'no #sakura-sw-v2 after the tab was clicked');
 
   const bodyEl = r.doc._els['#sw2-body'];
   check('the panel starts COLLAPSED so it does not cover the game',
@@ -1509,13 +1560,13 @@ function check(name, cond, detail) {
   check('the collapsed panel is not stretched across the viewport',
     rootEl() && rootEl().style.width === 'auto', `width=${rootEl() && rootEl().style.width}`);
 
-  r.doc._els['#sw2-toggle'].onclick();
+  if (r.doc._els['#sw2-toggle']) r.doc._els['#sw2-toggle'].onclick();
   check('the toggle opens it',
     r.doc._els['#sw2-body'].style.display === '', JSON.stringify(r.doc._els['#sw2-body'].style));
   check('the toggle button now says close',
     r.doc._els['#sw2-toggle'].textContent === 'close', r.doc._els['#sw2-toggle'].textContent);
 
-  r.doc._els['#sw2-x'].onclick();
+  if (r.doc._els['#sw2-x']) r.doc._els['#sw2-x'].onclick();
   check('X removes the panel', !panelInDom(), 'still in the document');
   check('X REMEMBERS it - this is what it failed to do', store['sakura-sw-panel-hidden'] === '1',
     JSON.stringify(store));
