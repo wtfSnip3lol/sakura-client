@@ -424,7 +424,7 @@ class BC {
     // command channel by hand - which is the only way to exercise snapshot
     // pairs. The snapshot command needs two presses with the heap changed in
     // between, and there is no game frame left to hang that off.
-    if (post) post((cmd, arg) => sendToPlayer({ __sakura: '__sakura_sw_v2', kind: 'cmd', cmd, arg }));
+    if (post) post((cmd, arg) => sendToPlayer({ __sakura: '__sakura_sw_v2', kind: 'cmd', cmd, arg }), ctx);
   } catch (e) { fatal = e.message; }
 
   const reports = posted.filter(m => m && m.kind === 'report').map(m => m.report);
@@ -804,6 +804,11 @@ function check(name, cond, detail) {
     JSON.stringify(r.report.local));
   // Drive the toggle exactly the way the user does: click 1 = radar+boxes,
   // click 2 = off. Each step must be observable from the report.
+  //
+  // AFTER the frame has run, not before. Whether boxes can be drawn now depends
+  // on a MouseLook having been captured, so clicking during preFire - with the
+  // heap still empty - measures the "not in a round yet" case and not the one
+  // the player is in.
   const step = (clicks) => {
     const r2 = runFrame({
       fireMany: { PhotonNetworkSync: [s1] },
@@ -816,7 +821,7 @@ function check(name, cond, detail) {
         wF32(ml + 0x18, 0); wF32(ml + 0x1c, 0);
         wF32(s1 + 0x34, 0); wF32(s1 + 0x38, 0); wF32(s1 + 0x3c, 20);
       },
-      preFire(c) { for (let i = 0; i < clicks; i++) c.hudEl('esp').onclick(); }
+      post(send, c) { for (let i = 0; i < clicks; i++) c.hudEl('esp').onclick(); send('snapshot'); }
     });
     return r2.report.espView;
   };
@@ -824,6 +829,62 @@ function check(name, cond, detail) {
     JSON.stringify(step(0)));
   check('one click turns the box layer on', step(1) && step(1).boxes === true, JSON.stringify(step(1)));
   check('a second click turns it off entirely', step(2) && step(2).on === false, JSON.stringify(step(2)));
+}
+
+/* The dead middle state.
+ *
+ * "ESP both" used to be written on the button whenever boxes were toggled on.
+ * With the view unidentified nothing extra is drawn, so the second click looked
+ * broken, the third turned everything off, and the reasonable reading was that
+ * the whole ESP had died. The state is now skipped, and the label never claims
+ * boxes that will not appear. */
+{
+  const ml = 0x2c000;
+  const s1 = 0x40000;
+  const label = (clicks) => {
+    const r = runFrame({
+      fireMany: { PhotonNetworkSync: [s1] },
+      setup() {
+        wF32(OBJ.FPScontroller + 0x2e4, -40); wF32(OBJ.FPScontroller + 0x2e8, 5); wF32(OBJ.FPScontroller + 0x2ec, 12);
+        wI32(s1 + 0x30, ml);
+        // the live field reading: 360 is not a pitch
+        wF32(ml + 0x14, -360); wF32(ml + 0x18, 360); wF32(ml + 0x1c, 0);
+        wF32(s1 + 0x6c, -30); wF32(s1 + 0x70, 5.2); wF32(s1 + 0x74, 9);
+        wI32(s1 + 0x7c, 10);
+      },
+      post(send, c) {
+        const b = c.hudEl('esp');
+        for (let i = 0; i < clicks; i++) b.onclick();
+        send('snapshot');
+      }
+    });
+    return { view: r.report.espView, text: r.ctx.hudEl('esp').textContent };
+  };
+  const one = label(1);
+  check('clicking with an unidentified view never turns boxes on',
+    one.view.on === false && one.view.boxes === false,
+    JSON.stringify(one));
+  check('and the button never claims "ESP both" for boxes it will not draw',
+    one.text !== 'ESP both',
+    `text="${one.text}"`);
+
+  const usable = runFrame({
+    fireMany: { PhotonNetworkSync: [s1] },
+    setup() {
+      wF32(OBJ.FPScontroller + 0x2e4, -40); wF32(OBJ.FPScontroller + 0x2e8, 5); wF32(OBJ.FPScontroller + 0x2ec, 12);
+      wI32(s1 + 0x30, ml);
+      wF32(ml + 0x18, 12); wF32(ml + 0x1c, 0);      // a plausible pair
+      wF32(s1 + 0x6c, -30); wF32(s1 + 0x70, 5.2); wF32(s1 + 0x74, 9);
+      wI32(s1 + 0x7c, 10);
+    },
+    post(send, c) { c.hudEl('esp').onclick(); send('snapshot'); }
+  });
+  check('with the view identified the same click does turn boxes on',
+    usable.report.espView.boxes === true,
+    JSON.stringify(usable.report.espView));
+  check('and only then does the button say "ESP both"',
+    usable.ctx.hudEl('esp').textContent === 'ESP both',
+    `text="${usable.ctx.hudEl('esp').textContent}"`);
 }
 
 /* ================================================================== *

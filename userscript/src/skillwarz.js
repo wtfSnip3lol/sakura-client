@@ -1806,19 +1806,12 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       if (q("snap")) q("snap").onclick = function () { onCommand("snapshot"); };
       var espBtn = q("esp");
       if (espBtn) espBtn.onclick = function () {
-        // radar -> radar+boxes -> off
-        if (!ESP.on) { ESP.on = true; ESP.boxes = false; }
-        else if (!ESP.boxes) { ESP.boxes = true; }
-        else { ESP.on = false; }
-        espBtn.textContent = !ESP.on ? "ESP off" : (ESP.boxes ? "ESP both" : "ESP map");
-        espBtn.style.background = ESP.on ? ACCENT : "transparent";
-        espBtn.style.color = ESP.on ? "#2a0f1b" : "#f7eef5";
-        try {
-          var rr = radar();
-          if (rr && rr.el) rr.el.style.display = ESP.on ? "" : "none";
-          var bb = BOXES;
-          if (bb && bb.cv) bb.cv.style.display = (ESP.on && ESP.boxes) ? "" : "none";
-        } catch (_) {}
+        // off -> map -> (both) -> off, with the dead middle state skipped when
+        // the view has not been identified.
+        if (!ESP.on) setEsp(true, false);
+        else if (ESP.boxes) setEsp(false, false);
+        else if (boxesUsable()) setEsp(true, true);
+        else setEsp(false, false);
       };
       if (q("fold")) q("fold").onclick = function () {
         if (!barRow) return;
@@ -1828,12 +1821,66 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       };
 
       document.body.appendChild(el);
-      HUD = { el: el, st: st, st2: st2, sp: spBtn, fx: fx, fv: fv };
+      HUD = { el: el, st: st, st2: st2, sp: spBtn, fx: fx, fv: fv, esp: espBtn };
       return HUD;
     } catch (err) {
       console.warn("%c[sakura] in-frame HUD disabled", "color:" + ACCENT, err);
       return null;
     }
+  }
+
+  /* ------------------------------------------------------------------ *
+   * ESP STATE.
+   *
+   * These belong here at IIFE scope, not inside buildHUD(). An earlier attempt
+   * declared them in the middle of that function body: the menu could not see
+   * them, every call raised a ReferenceError, and the surrounding catch (_) {}
+   * swallowed all thirty-odd assertions depending on them without a word. The
+   * widest catch in this file is also the one that hides this class of fault.
+   * ------------------------------------------------------------------ */
+
+  // Can the boxes be drawn right now? The view pair is only usable once it has
+  // been identified - see viewAngles(). Until then "both" is indistinguishable
+  // from "map", and offering it is a dead click.
+  function boxesUsable() {
+    try {
+      var a = viewAngles();
+      return !!(a && ANGLE.identified);
+    } catch (_) { return false; }
+  }
+
+  /* The one writer for ESP state, and the one place the button label is
+   * derived. Same rule as setSpeed: the HUD, the keys and the menu can never
+   * disagree about what is switched on.
+   *
+   * The label used to be written as "ESP both" whenever boxes were toggled on.
+   * With the view unidentified that promise was not kept - nothing extra was
+   * drawn - so the second click looked broken, the third turned everything off,
+   * and the reasonable conclusion was that the whole ESP had stopped working.
+   * The dead state is skipped rather than offered. */
+  function paintEspBtn() {
+    try {
+      var b = HUD && HUD.esp;
+      if (!b) return;
+      // Never claim boxes that will not be drawn.
+      if (ESP.boxes && !boxesUsable()) ESP.boxes = false;
+      var label = !ESP.on ? "ESP off" : (ESP.boxes ? "ESP both" : "ESP map");
+      if (label !== b.textContent) b.textContent = label;
+      b.style.background = ESP.on ? ACCENT : "transparent";
+      b.style.color = ESP.on ? "#2a0f1b" : "#f7eef5";
+    } catch (_) {}
+  }
+
+  function setEsp(on, boxes) {
+    ESP.on = !!on;
+    ESP.boxes = !!boxes;
+    paintEspBtn();
+    try {
+      var rr = radar();
+      if (rr && rr.el) rr.el.style.display = ESP.on ? "" : "none";
+      var bb = BOXES;
+      if (bb && bb.cv) bb.cv.style.display = (ESP.on && ESP.boxes) ? "" : "none";
+    } catch (_) {}
   }
 
   // The single writer for speed state. Every surface - HUD, keys, portal panel -
@@ -2299,7 +2346,7 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
     if (cat === "visuals") {
       var v1 = mkCard("Radar", ESP.on);
       var rr1 = row("Enabled");
-      rr1.appendChild(mkSwitch(function () { return ESP.on; }, function (v) { ESP.on = v; applyVis(); }));
+      rr1.appendChild(mkSwitch(function () { return ESP.on; }, function (v) { setEsp(v, ESP.boxes); }));
       v1.body.appendChild(el("div", "sk-mdesc", "World-space minimap, top-right. Needs only positions."));
       v1.body.appendChild(rr1);
       var sp = mkRange(40, 160, 10, function () { return ESP.span; }, function (v) { ESP.span = v; });
@@ -2311,7 +2358,13 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
 
       var v2 = mkCard("Boxes", ESP.boxes);
       var rr3 = row("Enabled");
-      rr3.appendChild(mkSwitch(function () { return ESP.boxes; }, function (v) { ESP.boxes = v; ESP.on = true; applyVis(); }));
+      // A switch that turns on something which will not appear is a dead control
+      // with a live label. Refuse the toggle rather than accept it and let the
+      // user discover the absence on their own.
+      rr3.appendChild(mkSwitch(function () { return ESP.boxes; }, function (v) {
+        if (v && !boxesUsable()) { paintEspBtn(); return; }
+        setEsp(true, v);
+      }));
       // Saying "boxes on" while the projection is known to be wrong is the same
       // lie as drawing them. The switch stays live so the state is visible, but
       // the card says outright that nothing will be drawn and why.
@@ -3070,6 +3123,10 @@ var SK_FIELDS = {"FPScontroller":[[16,"obfF"],[40,"obfF"],[64,"obfF"],[88,"obfF"
       return;
     }
     setOverlayVisible(true);
+    // The button must never sit there claiming "ESP both" while the view is
+    // unidentified and nothing extra is being drawn. Repainting every tick is
+    // what keeps that true as the view comes and goes.
+    paintEspBtn();
     radar();
     if (ESP.boxes) boxCanvas();
     var live = null;
