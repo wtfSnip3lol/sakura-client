@@ -152,6 +152,19 @@
     chamsMatchOnly: true,
     gunHide: false,
     armHide: false,
+    // Viewmodel pose (offsets applied after the game's own update)
+    vmOn: false,
+    vmX: 0,
+    vmY: 0,
+    vmZ: 0,
+    vmRX: 0,
+    vmRY: 0,
+    vmRZ: 0,
+    vmFovOn: false,
+    vmFov: 70,
+    vmKick: 100,
+    vmBob: 100,
+    vmSway: 100,
     // Crosshair studio (visual only — drawn on the overlay canvas)
     crosshair: false,
     chPreset: "custom",
@@ -1541,12 +1554,23 @@
     const c = chHexRgb(hex);
     return chHexo([c[0] * m, c[1] * m, c[2] * m]);
   }
-  // Per-frame animated base color for a side's options.
+  function chHslHex(h, s, l) {
+    h = ((((h % 360) + 360) % 360) / 360);
+    s = Math.max(0, Math.min(1, s));
+    l = Math.max(0, Math.min(1, l));
+    const f = (n) => {
+      const k = (n + h * 12) % 12;
+      const a = s * Math.min(l, 1 - l);
+      return (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1))) * 255;
+    };
+    return chHexo([f(0), f(8), f(4)]);
+  }
+  // Per-frame animated base color for a side's options (always hex — the
+  // brightness mixer below only parses hex, which is why rainbow broke).
   function chamsFrameColor(o, now) {
     const base = o.color || "#ff6b9d";
     if (o.rainbow) {
-      const h = ((now / 1000) * chNum(o.rainbowSpd, 60)) % 360;
-      return `hsl(${h},100%,60%)`;
+      return chHslHex((now / 1000) * chNum(o.rainbowSpd, 60), 1, 0.6);
     }
     if (o.candy && o.color2) {
       const f = Math.sin(now / 1000 * chNum(o.candySpd, 2) * Math.PI * 2) * 0.5 + 0.5;
@@ -1779,6 +1803,109 @@
     }
     return { armRoot: null, gunRoot: null, armFilter: null, gunFilter: null };
   }
+  // ── Viewmodel pose (position / rotation offsets + camera FOV + motion) ──
+  // Offsets are applied inside a wrapper around the game's own viewmodel
+  // update, so they land after its per-frame positioning (order-safe) and are
+  // removed cleanly with the original function when toggled off.
+  var vmStore = new WeakMap();
+  function tickViewmodel(g) {
+    const vm = g && g.viewmodel;
+    if (!vm || typeof vm.update !== "function") return;
+    let st = vmStore.get(vm);
+    if (!settings.vmOn) {
+      if (st) {
+        try {
+          if (st.wrapped && vm.update === st.wrapper) vm.update = st.origUpdate;
+          const cam = vm.camera;
+          if (st.fov != null && cam && isFinite(cam.fov)) {
+            cam.fov = st.fov;
+            if (typeof cam.updateProjectionMatrix === "function") cam.updateProjectionMatrix();
+          }
+        } catch (_) {}
+        vmStore.delete(vm);
+      }
+      return;
+    }
+    if (!st) {
+      st = { origUpdate: null, wrapper: null, wrapped: false, fov: null };
+      try {
+        if (vm.camera && isFinite(vm.camera.fov)) st.fov = vm.camera.fov;
+      } catch (_) {}
+      vmStore.set(vm, st);
+    }
+    // Motion scales: damp the game's spring state before its update runs.
+    try {
+      const kick = chNum(settings.vmKick, 100) / 100;
+      if (kick < 1) {
+        if (isFinite(vm.kickZ)) vm.kickZ *= kick;
+        if (isFinite(vm.kickRX)) vm.kickRX *= kick;
+      }
+      const bob = chNum(settings.vmBob, 100) / 100;
+      if (bob < 1) {
+        if (isFinite(vm.bobAmt)) vm.bobAmt *= bob;
+        if (isFinite(vm._bobA)) vm._bobA *= bob;
+      }
+      const sway = chNum(settings.vmSway, 100) / 100;
+      if (sway < 1 && vm._sway) {
+        if (isFinite(vm._sway.x)) vm._sway.x *= sway;
+        if (isFinite(vm._sway.y)) vm._sway.y *= sway;
+      }
+    } catch (_) {}
+    // Viewmodel camera FOV.
+    try {
+      const cam = vm.camera;
+      if (settings.vmFovOn && cam && typeof cam.updateProjectionMatrix === "function") {
+        const fov = Math.max(30, Math.min(120, chNum(settings.vmFov, st.fov ?? 70)));
+        if (Math.abs(cam.fov - fov) > 0.01) {
+          cam.fov = fov;
+          cam.updateProjectionMatrix();
+        }
+      }
+    } catch (_) {}
+    // Post-update offsets (viewmodel node + cs2 rig nodes, set fresh so
+    // weapon switches and rig swaps keep working).
+    if (!st.wrapped || vm.update !== st.wrapper) {
+      try {
+        const orig = vm.update.bind(vm);
+        const wrapper = function (t, ...rest) {
+          const r = orig(t, ...rest);
+          try {
+            const ox = chNum(settings.vmX, 0), oy = chNum(settings.vmY, 0), oz = chNum(settings.vmZ, 0);
+            const d2r = Math.PI / 180;
+            const rx = chNum(settings.vmRX, 0) * d2r;
+            const ry = chNum(settings.vmRY, 0) * d2r;
+            const rz = chNum(settings.vmRZ, 0) * d2r;
+            if (ox || oy || oz || rx || ry || rz) {
+              const gg = getGame();
+              const nodes = [];
+              if (vm.current) nodes.push(vm.current);
+              const rig = gg && gg.cs2 && gg.cs2.rig;
+              if (rig) {
+                if (rig.arms) nodes.push(rig.arms);
+                if (rig.gun) nodes.push(rig.gun);
+              }
+              for (const nd of nodes) {
+                if (!nd || !nd.position) continue;
+                nd.position.x += ox;
+                nd.position.y += oy;
+                nd.position.z += oz;
+                if ((rx || ry || rz) && nd.rotation) {
+                  nd.rotation.x += rx;
+                  nd.rotation.y += ry;
+                  nd.rotation.z += rz;
+                }
+              }
+            }
+          } catch (_) {}
+          return r;
+        };
+        st.origUpdate = vm.update;
+        st.wrapper = wrapper;
+        vm.update = wrapper;
+        st.wrapped = true;
+      } catch (_) {}
+    }
+  }
   function tickChams(g, now) {
     if (!g) return;
     const firing = held.has("mouse1");
@@ -1823,6 +1950,7 @@
 
     worldTick(g);
     tickChams(g, now);
+    tickViewmodel(g);
     tickGameCrosshair();
     tickMotionBlur(g);
 
@@ -2332,7 +2460,8 @@
       sliders: '<path d="M4 8h10M18 8h2M4 16h4M12 16h8"/><circle cx="16" cy="8" r="2"/><circle cx="10" cy="16" r="2"/>',
       charms: '<path d="M6 21 21 6l-3-3L3 18l3 3z"/><path d="M14 5l3 3"/>',
       chams: '<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/>',
-      target: '<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.5"/>'
+      target: '<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.5"/>',
+      move: '<path d="M12 2v20M2 12h20"/><path d="M12 2 9 5M12 2l3 3M12 22l-3-3M12 22l3 3M2 12l3-3M2 12l3 3M22 12l-3-3M22 12l-3 3"/>'
     };
     var LUNAR_MODULES = [
       { tab: "hud", title: "Keystrokes", icon: "keys", get: () => settings.keystrokes, set: (v) => { settings.keystrokes = v; save(); } },
@@ -2352,6 +2481,7 @@
       { tab: "chams", title: "Gun Chams", icon: "chams", get: () => settings.gunChams, set: (v) => { settings.gunChams = v; save(); } },
       { tab: "chams", title: "Knife Chams", icon: "dice", get: () => settings.knifeChams, set: (v) => { settings.knifeChams = v; save(); } },
       { tab: "chams", title: "Viewmodel", icon: "gauge", get: () => !settings.gunHide || !settings.armHide, set: (v) => { settings.gunHide = !v; settings.armHide = !v; save(); } },
+      { tab: "chams", title: "Viewmodel Pose", icon: "move", get: () => settings.vmOn, set: (v) => { settings.vmOn = v; save(); } },
       { tab: "crosshair", title: "Crosshair", icon: "target", get: () => settings.crosshair, set: (v) => { settings.crosshair = v; save(); } },
       { tab: "crosshair", title: "Dynamics", icon: "trend", get: () => settings.chDynamic, set: (v) => { settings.chDynamic = v; save(); } },
       { tab: "crosshair", title: "Animation", icon: "refresh", get: () => settings.chPulse || settings.chSpin || settings.chRainbow, set: (v) => { settings.chPulse = v; settings.chSpin = v; settings.chRainbow = v; save(); } },
@@ -2680,6 +2810,25 @@
             row("Hide arms", "Hide the arm meshes", toggleSwitch(settings.armHide, (v) => { settings.armHide = v; save(); })),
             row("Match only", "Restores everything outside matches", toggleSwitch(settings.chamsMatchOnly !== false, (v) => { settings.chamsMatchOnly = v; save(); })),
             row("Rescan", "Recheck meshes every N seconds", rangeField(settings.chamsScan ?? 2, 0.5, 10, 0.5, (v) => { settings.chamsScan = v; save(); }))
+          ]),
+        moduleCard("Viewmodel Pose", "Move the gun around in first person.", settings.vmOn,
+          (v) => { settings.vmOn = v; save(); }, [
+            row("Offset X", "Right (+) / left (-)", rangeField(settings.vmX ?? 0, -0.5, 0.5, 0.01, (v) => { settings.vmX = v; save(); })),
+            row("Offset Y", "Up (+) / down (-)", rangeField(settings.vmY ?? 0, -0.5, 0.5, 0.01, (v) => { settings.vmY = v; save(); })),
+            row("Offset Z", "Toward (+) / away (-)", rangeField(settings.vmZ ?? 0, -0.5, 0.5, 0.01, (v) => { settings.vmZ = v; save(); })),
+            row("Tilt X", "Degrees", rangeField(settings.vmRX ?? 0, -15, 15, 0.5, (v) => { settings.vmRX = v; save(); })),
+            row("Tilt Y", "Degrees", rangeField(settings.vmRY ?? 0, -15, 15, 0.5, (v) => { settings.vmRY = v; save(); })),
+            row("Roll", "Degrees", rangeField(settings.vmRZ ?? 0, -15, 15, 0.5, (v) => { settings.vmRZ = v; save(); })),
+            row("Custom FOV", "Own camera zoom", toggleSwitch(settings.vmFovOn, (v) => { settings.vmFovOn = v; save(); })),
+            row("FOV value", null, rangeField(settings.vmFov ?? 70, 30, 120, 1, (v) => { settings.vmFov = v; save(); })),
+            row("Kick", "Recoil kick percent", rangeField(settings.vmKick ?? 100, 0, 100, 5, (v) => { settings.vmKick = v; save(); })),
+            row("Bob", "Walk bob percent", rangeField(settings.vmBob ?? 100, 0, 100, 5, (v) => { settings.vmBob = v; save(); })),
+            row("Sway", "Look sway percent", rangeField(settings.vmSway ?? 100, 0, 100, 5, (v) => { settings.vmSway = v; save(); })),
+            row("Reset pose", "Zero offsets, rotation and FOV", actionBtn("Reset", () => {
+              Object.assign(settings, { vmX: 0, vmY: 0, vmZ: 0, vmRX: 0, vmRY: 0, vmRZ: 0, vmFovOn: false });
+              save();
+              rebuildPanel();
+            }))
           ])
       ];
       if (id === "crosshair") {
