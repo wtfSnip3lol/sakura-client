@@ -151,6 +151,7 @@
     chGlowAmt: 10,
     chInLobby: false,
     chHideMenu: false,
+    chHideGame: true,
     // Custom drawn crosshair (21x21 pixel grid, stored as a 0/1 string)
     chPixels: "",
     chPxScale: 3,
@@ -864,6 +865,32 @@
   // spread values. All pure canvas cosmetics.
   var chState = { kick: 0, flash: 0, fireX: 0 };
   var CHDRAW_N = 21;
+  // ── Hide the game's built-in crosshair (DOM #crosshair) while ours draws ──
+  var xhEl = null, xhStyleEl = null, xhHidden = false;
+  function tickGameCrosshair() {
+    const want = settings.crosshair && settings.chHideGame;
+    if (!xhEl || !xhEl.isConnected) xhEl = document.getElementById("crosshair");
+    if (want) {
+      if (xhEl && xhEl.style.display !== "none") {
+        xhEl.dataset.sakuraXh = xhEl.style.display || "";
+        xhEl.style.display = "none";
+      }
+      if (!xhStyleEl) {
+        xhStyleEl = document.createElement("style");
+        xhStyleEl.textContent = "#crosshair{display:none!important}";
+        (document.head || document.documentElement).appendChild(xhStyleEl);
+      }
+      xhHidden = true;
+    } else if (xhHidden) {
+      if (xhStyleEl) { xhStyleEl.remove(); xhStyleEl = null; }
+      if (xhEl && xhEl.isConnected && "sakuraXh" in xhEl.dataset) {
+        xhEl.style.display = xhEl.dataset.sakuraXh;
+        delete xhEl.dataset.sakuraXh;
+      }
+      xhEl = null;
+      xhHidden = false;
+    }
+  }
   function chApplyPreset(name) {
     const P = {
       def: { chStyle: "cross", chColor: "#ffffff", chDotColor: "#ffffff", chLen: 8, chThick: 2, chGap: 4, chGapY: 4, chDot: true, chDotSize: 2, chOutline: true },
@@ -1538,6 +1565,7 @@
     if (!g) return;
 
     worldTick(g);
+    tickGameCrosshair();
     tickMotionBlur(g);
 
     const inMatch = liveMatch(g);
@@ -2391,7 +2419,8 @@
               row("Glow", null, toggleSwitch(settings.chGlow, (v) => { settings.chGlow = v; save(); })),
               row("Glow amount", null, rangeField(settings.chGlowAmt, 0, 30, 1, (v) => { settings.chGlowAmt = v; save(); })),
               row("Draw in lobby", "Also outside matches", toggleSwitch(settings.chInLobby, (v) => { settings.chInLobby = v; save(); })),
-              row("Hide in menu", "Hide while this menu is open", toggleSwitch(settings.chHideMenu, (v) => { settings.chHideMenu = v; save(); }))
+              row("Hide in menu", "Hide while this menu is open", toggleSwitch(settings.chHideMenu, (v) => { settings.chHideMenu = v; save(); })),
+              row("Hide game crosshair", "Hide the built-in crosshair while ours draws", toggleSwitch(settings.chHideGame !== false, (v) => { settings.chHideGame = v; save(); }))
             ]),
           moduleCard("Custom Draw", "Draw your own crosshair, then pick the Custom Draw style to use it.", true, null, [
               row("Mode", "Pixels toggles cells, free draw paints strokes", selectField(settings.chDrawMode || "pixels", [["pixels", "Pixels"], ["free", "Free draw"]], (v) => { settings.chDrawMode = v; save(); })),
