@@ -1566,6 +1566,7 @@
     if (fog && o && sky.fogTouched) {
       fog.near = o.near;
       fog.far = o.far;
+      if ("density" in fog) fog.density = o.density;
       if (fog.color && o.color) fog.color.copy(o.color);
     }
     sky.fogTouched = false;
@@ -1606,7 +1607,7 @@
     if (!fog) return;
     if (sky.fog !== fog) {
       sky.fog = fog;
-      sky.fogOrig = { near: fog.near, far: fog.far, color: fog.color ? fog.color.clone() : null };
+      sky.fogOrig = { near: fog.near, far: fog.far, density: fog.density, color: fog.color ? fog.color.clone() : null };
       sky.fogTouched = false;
     }
     if (fogMode === "default") {
@@ -1618,14 +1619,22 @@
       fog.near = 1e5;
       fog.far = 1e5 + 1;
     } else if (fogMode === "custom") {
-      fog.near = chNum(settings.fogNear, sky.fogOrig.near);
-      fog.far = chNum(settings.fogFar, sky.fogOrig.far);
-      if (fog.color) fog.color.set(settings.fogColor || "#888899");
-      if (settings.fogBreathe) {
-        const f = 1 + Math.sin(performance.now() / 1000 * chNum(settings.fogBreatheSpd, 1)) * 0.15;
-        fog.near *= f;
-        fog.far *= f;
+      const exp2 = fog.isFogExp2 || (!isFinite(fog.near) && isFinite(fog.density));
+      if (exp2) {
+        fog.density = 1.73 / Math.max(10, chNum(settings.fogFar, 400));
+        if (settings.fogBreathe) {
+          fog.density *= 1 + Math.sin(performance.now() / 1000 * chNum(settings.fogBreatheSpd, 1)) * 0.15;
+        }
+      } else {
+        fog.near = chNum(settings.fogNear, sky.fogOrig.near);
+        fog.far = chNum(settings.fogFar, sky.fogOrig.far);
+        if (settings.fogBreathe) {
+          const f = 1 + Math.sin(performance.now() / 1000 * chNum(settings.fogBreatheSpd, 1)) * 0.15;
+          fog.near *= f;
+          fog.far *= f;
+        }
       }
+      if (fog.color) fog.color.set(settings.fogColor || "#888899");
     } else {
       fog.near = sky.fogOrig.near;
       fog.far = sky.fogOrig.far;
@@ -3063,7 +3072,7 @@
       { tab: "world", title: "Motion Blur", icon: "blur", get: () => settings.motionBlur, set: (v) => { settings.motionBlur = v; save(); } },
       { tab: "world", title: "Day Cycle", icon: "sun", get: () => settings.wdCycle, set: (v) => { settings.wdCycle = v; save(); } },
       { tab: "world", title: "Light", icon: "sliders", get: () => settings.customLighting, set: (v) => { settings.customLighting = v; save(); } },
-      { tab: "world", title: "Fog Lab", icon: "blur", get: () => settings.fogCustom, set: (v) => { settings.fogCustom = v; settings.fogMode = v ? "custom" : "default"; save(); } },
+      { tab: "world", title: "Fog Lab", icon: "blur", get: () => settings.fogCustom, set: (v) => { settings.fogCustom = v; settings.fogMode = v ? "custom" : "default"; if (v) settings.ambience = true; save(); } },
       { tab: "world", title: "Radar", icon: "radar", get: () => settings.rdOn, set: (v) => { settings.rdOn = v; save(); } },
       { tab: "chams", title: "Arm Chams", icon: "charms", get: () => settings.armCharms, set: (v) => { settings.armCharms = v; save(); } },
       { tab: "chams", title: "Gun Chams", icon: "chams", get: () => settings.gunChams, set: (v) => { settings.gunChams = v; save(); } },
@@ -3743,8 +3752,14 @@
             row("Hemi sky", null, colorField(settings.hemiSky || "#bcd6ff", (v) => { settings.hemiSky = v; save(); })),
             row("Hemi ground", null, colorField(settings.hemiGround || "#4a4238", (v) => { settings.hemiGround = v; save(); }))
           ]),
-        moduleCard("Fog Lab", "Custom fog beyond the presets.", settings.fogCustom,
-          (v) => { settings.fogCustom = v; settings.fogMode = v ? "custom" : "default"; save(); rebuildPanel(); }, [
+        moduleCard("Fog Lab", "Custom fog beyond the presets. Needs Ambience.", settings.fogCustom,
+          (v) => {
+            settings.fogCustom = v;
+            settings.fogMode = v ? "custom" : "default";
+            if (v) settings.ambience = true;
+            save();
+            rebuildPanel();
+          }, [
             row("Color", null, colorField(settings.fogColor || "#888899", (v) => { settings.fogColor = v; save(); })),
             row("Near", null, rangeField(settings.fogNear ?? 10, 1, 200, 1, (v) => { settings.fogNear = v; save(); })),
             row("Far", null, rangeField(settings.fogFar ?? 400, 50, 2000, 10, (v) => { settings.fogFar = v; save(); })),
