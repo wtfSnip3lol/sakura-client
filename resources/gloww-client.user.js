@@ -114,6 +114,7 @@
     charmFireCol: "#ffffff",
     charmGhost: false,
     charmBack: false,
+    charmNoTex: false,
     // Gun chams
     gunChams: false,
     chamType: "outline",
@@ -141,6 +142,7 @@
     chamFireCol: "#ffffff",
     chamGhost: false,
     chamBack: false,
+    chamNoTex: false,
     // Knife chams (best-effort name match on the weapon meshes)
     knifeChams: false,
     knifeType: "outline",
@@ -1591,7 +1593,7 @@
       flat: v("Flat"), xray: v("Xray"), bright: v("Bright"),
       candy: v("Candy"), candySpd: v("CandySpd"),
       fire: v("Fire"), fireCol: v("FireCol"),
-      ghost: v("Ghost"), back: v("Back")
+      ghost: v("Ghost"), back: v("Back"), noTex: v("NoTex")
     };
   }
   // three.js side constants: 0 = FrontSide, 1 = BackSide, 2 = DoubleSide
@@ -1651,6 +1653,19 @@
     }
     if (o.metal && "metalness" in m) { m.metalness = 0.9; m.roughness = 0.25; }
     else if ("metalness" in m && oo.metalness != null) { m.metalness = oo.metalness; m.roughness = oo.roughness; }
+    if (m.map !== undefined) {
+      if (o.noTex && !m.userData._sakNoTex) {
+        m.userData._sakNoTex = true;
+        m.userData._sakMap = m.map || null;
+        m.map = null;
+        m.needsUpdate = true;
+      } else if (!o.noTex && m.userData._sakNoTex) {
+        m.userData._sakNoTex = false;
+        m.map = m.userData._sakMap || null;
+        m.userData._sakMap = null;
+        m.needsUpdate = true;
+      }
+    }
     if (m.flatShading !== undefined) {
       if (o.flat && m.userData._sakFlat !== true) {
         m.userData._sakFlat = true;
@@ -1692,6 +1707,12 @@
       if (m.polygonOffset !== undefined) {
         m.polygonOffset = orig.polygonOffset;
         m.polygonOffsetFactor = orig.polygonOffsetFactor;
+      }
+      if (m.userData && m.userData._sakNoTex) {
+        m.userData._sakNoTex = false;
+        m.map = m.userData._sakMap || null;
+        m.userData._sakMap = null;
+        m.needsUpdate = true;
       }
       if (m.userData && m.userData._sakFlat) {
         m.userData._sakFlat = false;
@@ -1810,19 +1831,20 @@
   var vmStore = new WeakMap();
   function tickViewmodel(g) {
     const vm = g && g.viewmodel;
-    if (!vm || typeof vm.update !== "function") return;
-    let st = vmStore.get(vm);
+    if (!vm) return;
+    let st = null;
+    try { st = vmStore.get(vm); } catch (_) { st = null; }
     if (!settings.vmOn) {
       if (st) {
         try {
-          if (st.wrapped && vm.update === st.wrapper) vm.update = st.origUpdate;
+          if (st.wrapped && st.wrapper && vm.update === st.wrapper) vm.update = st.origUpdate;
           const cam = vm.camera;
           if (st.fov != null && cam && isFinite(cam.fov)) {
             cam.fov = st.fov;
             if (typeof cam.updateProjectionMatrix === "function") cam.updateProjectionMatrix();
           }
         } catch (_) {}
-        vmStore.delete(vm);
+        try { vmStore.delete(vm); } catch (_) {}
       }
       return;
     }
@@ -1863,7 +1885,9 @@
       }
     } catch (_) {}
     // Post-update offsets (viewmodel node + cs2 rig nodes, set fresh so
-    // weapon switches and rig swaps keep working).
+    // weapon switches and rig swaps keep working). Only when the game
+    // exposes an update function to wrap.
+    if (typeof vm.update !== "function") return;
     if (!st.wrapped || vm.update !== st.wrapper) {
       try {
         const orig = vm.update.bind(vm);
@@ -1895,6 +1919,20 @@
                   nd.rotation.z += rz;
                 }
               }
+            }
+            // Last word on FOV inside the game's own update flow, in case it
+            // re-syncs the viewmodel camera after our per-frame write.
+            if (settings.vmFovOn) {
+              try {
+                const cam2 = vm.camera;
+                if (cam2 && typeof cam2.updateProjectionMatrix === "function") {
+                  const f2 = Math.max(30, Math.min(120, chNum(settings.vmFov, 70)));
+                  if (cam2.fov !== f2) {
+                    cam2.fov = f2;
+                    cam2.updateProjectionMatrix();
+                  }
+                }
+              } catch (_) {}
             }
           } catch (_) {}
           return r;
@@ -2761,6 +2799,7 @@
             row("X-ray", "Draw on top of walls", toggleSwitch(settings.charmXray, (v) => { settings.charmXray = v; save(); })),
             row("Ghost", "No depth write", toggleSwitch(settings.charmGhost, (v) => { settings.charmGhost = v; save(); })),
             row("Backside", "Hollow inside-out look", toggleSwitch(settings.charmBack, (v) => { settings.charmBack = v; save(); })),
+            row("No texture", "Flat color, no skin detail", toggleSwitch(settings.charmNoTex, (v) => { settings.charmNoTex = v; save(); })),
             row("Brightness", null, rangeField(settings.charmBright ?? 1, 0.2, 2, 0.05, (v) => { settings.charmBright = v; save(); })),
             row("Fire flash", "Flash color while shooting", toggleSwitch(settings.charmFire, (v) => { settings.charmFire = v; save(); })),
             row("Fire color", null, colorField(settings.charmFireCol || "#ffffff", (v) => { settings.charmFireCol = v; save(); }))
@@ -2794,6 +2833,7 @@
             row("X-ray", "Draw on top of walls", toggleSwitch(settings.chamXray, (v) => { settings.chamXray = v; save(); })),
             row("Ghost", "No depth write", toggleSwitch(settings.chamGhost, (v) => { settings.chamGhost = v; save(); })),
             row("Backside", "Hollow inside-out look", toggleSwitch(settings.chamBack, (v) => { settings.chamBack = v; save(); })),
+            row("No texture", "Flat color, no skin detail", toggleSwitch(settings.chamNoTex, (v) => { settings.chamNoTex = v; save(); })),
             row("Brightness", null, rangeField(settings.chamBright ?? 1, 0.2, 2, 0.05, (v) => { settings.chamBright = v; save(); })),
             row("Fire flash", "Flash color while shooting", toggleSwitch(settings.chamFire, (v) => { settings.chamFire = v; save(); })),
             row("Fire color", null, colorField(settings.chamFireCol || "#ffffff", (v) => { settings.chamFireCol = v; save(); }))
