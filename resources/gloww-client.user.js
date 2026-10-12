@@ -123,6 +123,9 @@
     chKickAmt: 8,
     chRecover: 4,
     chExpandCap: 24,
+    chSpreadSrc: "auto",
+    chSpreadScale: 1,
+    chSpreadCap: 40,
     chAds: true,
     chAdsAmt: 0.35,
     chScopeMult: 0.9,
@@ -860,32 +863,41 @@
     if (hudEdit) hudOutline(hudRects.keys, "KEYS");
   }
 
-  // ── Crosshair studio (visual only — overlay canvas, no game reads) ──
-  // Gap/size react to synthetic state (moving / firing / ADS), never to real
-  // spread values. All pure canvas cosmetics.
+  // ── Crosshair studio (visual only — overlay canvas, no game writes) ──
+  // Gap/size react to synthetic state (moving / firing / ADS) plus the game's
+  // live inaccuracy cone (read off its own crosshair geometry, auto-calibrated).
+  // All pure canvas cosmetics — nothing is written back to the game.
   var chState = { kick: 0, flash: 0, fireX: 0 };
   var CHDRAW_N = 21;
   // ── Hide the game's built-in crosshair (DOM #crosshair) while ours draws ──
+  // Uses visibility (not display) so the cone geometry stays measurable for
+  // live-spread mode. Restores everything when ours is toggled off.
   var xhEl = null, xhStyleEl = null, xhHidden = false;
   function tickGameCrosshair() {
     const want = settings.crosshair && settings.chHideGame;
     if (!xhEl || !xhEl.isConnected) xhEl = document.getElementById("crosshair");
     if (want) {
-      if (xhEl && xhEl.style.display !== "none") {
-        xhEl.dataset.sakuraXh = xhEl.style.display || "";
-        xhEl.style.display = "none";
+      if (xhEl && xhEl.style.visibility !== "hidden") {
+        xhEl.dataset.sakuraXhV = xhEl.style.visibility || "";
+        xhEl.style.visibility = "hidden";
       }
       if (!xhStyleEl) {
         xhStyleEl = document.createElement("style");
-        xhStyleEl.textContent = "#crosshair{display:none!important}";
+        xhStyleEl.textContent = "#crosshair{visibility:hidden!important}";
         (document.head || document.documentElement).appendChild(xhStyleEl);
       }
       xhHidden = true;
     } else if (xhHidden) {
       if (xhStyleEl) { xhStyleEl.remove(); xhStyleEl = null; }
-      if (xhEl && xhEl.isConnected && "sakuraXh" in xhEl.dataset) {
-        xhEl.style.display = xhEl.dataset.sakuraXh;
-        delete xhEl.dataset.sakuraXh;
+      if (xhEl && xhEl.isConnected) {
+        if ("sakuraXhV" in xhEl.dataset) {
+          xhEl.style.visibility = xhEl.dataset.sakuraXhV;
+          delete xhEl.dataset.sakuraXhV;
+        }
+        if ("sakuraXh" in xhEl.dataset) { // legacy key from display-based hide
+          xhEl.style.display = xhEl.dataset.sakuraXh;
+          delete xhEl.dataset.sakuraXh;
+        }
       }
       xhEl = null;
       xhHidden = false;
@@ -904,7 +916,45 @@
     Object.assign(settings, P, { chPreset: name });
     save();
   }
-  function drawCrosshair(rect, now, dt) {
+  // ── Live spread: read the game's own crosshair cone (its outer dashes ride
+  // the live inaccuracy via transform). Auto-calibrates a resting baseline
+  // while calm (still, grounded, not firing, unscoped) so any HUD scale works.
+  // Returns extra gap px, or null when unreadable (caller falls back to synthetic).
+  var xhProbeEl = null, spreadBase = null;
+  function chReadGameSpread(g, moving, firing, ads) {
+    try {
+      if (!xhProbeEl || !xhProbeEl.isConnected) {
+        const root = document.getElementById("crosshair");
+        xhProbeEl = (root && (root.querySelector(".cho-n") || root.querySelector(".chout"))) || null;
+      }
+      if (!xhProbeEl) return null;
+      let raw = null;
+      const t = xhProbeEl.style && xhProbeEl.style.transform;
+      if (t) {
+        let m = /translateY\(\s*(-?[\d.]+)/.exec(t)
+          || /translate(?:3d)?\(\s*-?[\d.]+[a-z%]*\s*,\s*(-?[\d.]+)/.exec(t)
+          || /translate3d\(\s*-?[\d.]+[a-z%]*\s*,\s*-?[\d.]+[a-z%]*\s*,\s*(-?[\d.]+)/.exec(t);
+        if (m) raw = Math.abs(parseFloat(m[1]));
+        else if ((m = /matrix(?:3d)?\(([^)]+)\)/.exec(t))) {
+          const p = m[1].split(",");
+          const v = parseFloat(p.length > 12 ? p[13] : p[5]);
+          if (isFinite(v)) raw = Math.abs(v);
+        }
+      }
+      if (raw == null) {
+        const r = xhProbeEl.getBoundingClientRect();
+        if (!r || (!r.width && !r.height)) return null;
+        raw = Math.abs(r.top + r.height / 2 - window.innerHeight / 2);
+      }
+      if (!isFinite(raw)) return null;
+      const p = g && g.player;
+      const calm = p && !moving && !firing && !ads && p.onGround !== false;
+      if (calm) spreadBase = spreadBase == null ? raw : spreadBase + (raw - spreadBase) * 0.06;
+      if (spreadBase == null) return 0;
+      return Math.max(0, raw - spreadBase);
+    } catch (_) { return null; }
+  }
+  function drawCrosshair(rect, now, dt, game) {
     const firing = held.has("mouse1"), ads = held.has("mouse3");
     if (settings.chScopeHide && ads) return;
     if (settings.chHideMenu && menuOpen) return;
@@ -918,10 +968,17 @@
       if (settings.chFireX) chState.fireX = 1;
     }
     const moving = held.has("KeyW") || held.has("KeyA") || held.has("KeyS") || held.has("KeyD");
+    let gameExp = null;
+    if ((settings.chSpreadSrc || "auto") !== "synth" && game && isPlaying(game)) gameExp = chReadGameSpread(game, moving, firing, ads);
     let exp = 0;
     if (settings.chDynamic && moving) exp += Number(settings.chMoveAmt) || 0;
     if (settings.chFireKick) exp += chState.kick * (Number(settings.chKickAmt) || 0);
     exp = Math.min(Math.max(0, Number(settings.chExpandCap) || 0), exp);
+    if (gameExp != null) {
+      const sc = Number(settings.chSpreadScale), cp = Number(settings.chSpreadCap);
+      const scaled = Math.min(isFinite(cp) ? cp : 40, gameExp * (isFinite(sc) ? sc : 1));
+      exp = (settings.chSpreadSrc || "auto") === "game" ? scaled : Math.max(exp, scaled);
+    }
     let shrink = 1;
     if (settings.chAds && ads) shrink *= 1 - clamp(Number(settings.chAdsAmt) || 0, 0, 0.9);
     if (settings.chCtrlT && (held.has("ControlLeft") || held.has("ControlRight"))) shrink *= 1 - clamp(Number(settings.chCtrlAmt) || 0, 0, 0.9);
@@ -1596,7 +1653,7 @@
 
     const rect = { left: 0, top: 0, right: size.w, bottom: size.h, width: size.w, height: size.h };
     if (settings.keystrokes && isPlaying(g)) drawKeystrokes(rect);
-    if (settings.crosshair && (isPlaying(g) || settings.chInLobby)) drawCrosshair(rect, now, dt);
+    if (settings.crosshair && (isPlaying(g) || settings.chInLobby)) drawCrosshair(rect, now, dt, g);
     if (devUnlocked && settings.fpsCounter) {
       drawFps(rect, now);
     }
@@ -2387,6 +2444,9 @@
               row("Kick amount", null, rangeField(settings.chKickAmt, 0, 24, 0.5, (v) => { settings.chKickAmt = v; save(); })),
               row("Recovery", "How fast kick settles", rangeField(settings.chRecover, 1, 10, 0.5, (v) => { settings.chRecover = v; save(); })),
               row("Expansion cap", null, rangeField(settings.chExpandCap, 0, 40, 1, (v) => { settings.chExpandCap = v; save(); })),
+              row("Spread source", "Game cone reads live inaccuracy", selectField(settings.chSpreadSrc || "auto", [["auto", "Auto"], ["game", "Game cone"], ["synth", "Synthetic"]], (v) => { settings.chSpreadSrc = v; save(); })),
+              row("Cone scale", null, rangeField(settings.chSpreadScale ?? 1, 0, 3, 0.1, (v) => { settings.chSpreadScale = v; save(); })),
+              row("Cone cap", null, rangeField(settings.chSpreadCap ?? 40, 0, 60, 1, (v) => { settings.chSpreadCap = v; save(); })),
               row("ADS tighten", "Contract while RMB held", toggleSwitch(settings.chAds, (v) => { settings.chAds = v; save(); })),
               row("ADS amount", null, rangeField(settings.chAdsAmt, 0, 0.8, 0.05, (v) => { settings.chAdsAmt = v; save(); })),
               row("Scoped size", "Size multiplier on RMB", rangeField(settings.chScopeMult, 0.5, 1.5, 0.05, (v) => { settings.chScopeMult = v; save(); })),
