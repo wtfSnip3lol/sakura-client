@@ -86,7 +86,58 @@
     chamColor: "#ff6b9d",
     chamWidth: 4,
     chamOpacity: 0.5,
-    chamGlowIntensity: 0.6
+    chamGlowIntensity: 0.6,
+    // Crosshair studio (visual only — drawn on the overlay canvas)
+    crosshair: false,
+    chPreset: "custom",
+    chStyle: "cross",
+    chColor: "#ffffff",
+    chDotColor: "#ffffff",
+    chLen: 8,
+    chLenH: 1,
+    chLenV: 1,
+    chThick: 2,
+    chGap: 4,
+    chGapY: 4,
+    chDot: true,
+    chDotSize: 2,
+    chOutline: true,
+    chOutlineColor: "#000000",
+    chOpacity: 1,
+    chDynamic: true,
+    chMoveAmt: 6,
+    chFireKick: true,
+    chKickAmt: 8,
+    chRecover: 4,
+    chExpandCap: 24,
+    chAds: true,
+    chAdsAmt: 0.35,
+    chScopeMult: 0.9,
+    chCtrlT: false,
+    chCtrlAmt: 0.3,
+    chScopeHide: false,
+    chOuter: false,
+    chOuterGap: 4,
+    chOuterLen: 6,
+    chPulse: false,
+    chPulseAmt: 0.1,
+    chPulseSpeed: 3,
+    chSpin: false,
+    chSpinSpeed: 1.5,
+    chRainbow: false,
+    chRainbowSpeed: 120,
+    chFlash: true,
+    chFlashColor: "#ff6b9d",
+    chWobble: false,
+    chWobbleAmt: 2,
+    chFireX: false,
+    chFireXSize: 12,
+    chOffX: 0,
+    chOffY: 0,
+    chGlow: false,
+    chGlowAmt: 10,
+    chInLobby: false,
+    chHideMenu: false
   };
 
   var VISUAL_PRESETS = {
@@ -318,6 +369,155 @@
     key("RMB", "mouse3", x0 + half + gap, ry, half, k, settings.ksCps ? `${cps(3)} CPS` : "");
     key("", "Space", x0, ry + k + gap, totalW, k * 0.45);
     if (hudEdit) hudOutline(hudRects.keys, "KEYS");
+  }
+
+  // ── Crosshair studio (visual only — overlay canvas, no game reads) ──
+  // Gap/size react to synthetic state (moving / firing / ADS), never to real
+  // spread values. All pure canvas cosmetics.
+  var chState = { kick: 0, flash: 0, fireX: 0 };
+  function chApplyPreset(name) {
+    const P = {
+      def: { chStyle: "cross", chColor: "#ffffff", chDotColor: "#ffffff", chLen: 8, chThick: 2, chGap: 4, chGapY: 4, chDot: true, chDotSize: 2, chOutline: true },
+      cs: { chStyle: "cross", chColor: "#00ff00", chDotColor: "#00ff00", chLen: 10, chThick: 2, chGap: 3, chGapY: 3, chDot: false, chDotSize: 2, chOutline: true },
+      val: { chStyle: "crossdot", chColor: "#00ff88", chDotColor: "#00ff88", chLen: 6, chThick: 2, chGap: 4, chGapY: 4, chDot: true, chDotSize: 2, chOutline: true },
+      dot: { chStyle: "dot", chColor: "#ffffff", chDotColor: "#ffffff", chLen: 8, chThick: 2, chGap: 4, chGapY: 4, chDot: true, chDotSize: 3, chOutline: true },
+      circ: { chStyle: "ringdot", chColor: "#ffffff", chDotColor: "#ffffff", chLen: 8, chThick: 2, chGap: 4, chGapY: 4, chDot: true, chDotSize: 2, chOutline: true },
+      chev: { chStyle: "chevron", chColor: "#ff6b9d", chDotColor: "#ff6b9d", chLen: 9, chThick: 2.5, chGap: 3, chGapY: 3, chDot: false, chDotSize: 2, chOutline: true }
+    }[name];
+    if (!P) return;
+    Object.assign(settings, P, { chPreset: name });
+    save();
+  }
+  function drawCrosshair(rect, now, dt) {
+    const firing = held.has("mouse1"), ads = held.has("mouse3");
+    if (settings.chScopeHide && ads) return;
+    if (settings.chHideMenu && menuOpen) return;
+    const rec = Math.max(0.5, Number(settings.chRecover) || 4);
+    chState.kick = Math.max(0, chState.kick - dt * rec * 4);
+    chState.flash = Math.max(0, chState.flash - dt * rec * 3);
+    chState.fireX = Math.max(0, chState.fireX - dt * rec * 2);
+    if (firing) {
+      if (settings.chFireKick) chState.kick = Math.min(1, chState.kick + dt * 8);
+      if (settings.chFlash) chState.flash = 1;
+      if (settings.chFireX) chState.fireX = 1;
+    }
+    const moving = held.has("KeyW") || held.has("KeyA") || held.has("KeyS") || held.has("KeyD");
+    let exp = 0;
+    if (settings.chDynamic && moving) exp += Number(settings.chMoveAmt) || 0;
+    if (settings.chFireKick) exp += chState.kick * (Number(settings.chKickAmt) || 0);
+    exp = Math.min(Math.max(0, Number(settings.chExpandCap) || 0), exp);
+    let shrink = 1;
+    if (settings.chAds && ads) shrink *= 1 - clamp(Number(settings.chAdsAmt) || 0, 0, 0.9);
+    if (settings.chCtrlT && (held.has("ControlLeft") || held.has("ControlRight"))) shrink *= 1 - clamp(Number(settings.chCtrlAmt) || 0, 0, 0.9);
+    const pulse = settings.chPulse ? 1 + Math.sin(now / 1000 * (Number(settings.chPulseSpeed) || 3)) * (Number(settings.chPulseAmt) || 0) : 1;
+    const k = Math.max(0.2, pulse * shrink * (ads ? (Number(settings.chScopeMult) || 1) : 1));
+    const L = (Number(settings.chLen) || 8) * k;
+    const LH = L * (Number(settings.chLenH) || 1), LV = L * (Number(settings.chLenV) || 1);
+    const g = ((Number(settings.chGap) || 0) + exp) * shrink;
+    const gv = ((Number(settings.chGapY) || 0) + exp) * shrink;
+    const w = Math.max(0.5, (Number(settings.chThick) || 2) * k);
+    let cx = rect.width / 2 + (Number(settings.chOffX) || 0);
+    let cy = rect.height / 2 + (Number(settings.chOffY) || 0);
+    if (settings.chWobble) cx += Math.sin(now / 1000 * 5) * (Number(settings.chWobbleAmt) || 0);
+    const col = settings.chRainbow ? `hsl(${(now / 1000 * (Number(settings.chRainbowSpeed) || 120)) % 360} 100% 65%)` : settings.chColor;
+    const main = (settings.chFlash && chState.flash > 0.35) ? settings.chFlashColor : col;
+    const ocol = settings.chOutlineColor || "#000000";
+
+    ctx.save();
+    ctx.globalAlpha = clamp(Number(settings.chOpacity) ?? 1, 0, 1);
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    if (settings.chGlow) { ctx.shadowColor = main; ctx.shadowBlur = Number(settings.chGlowAmt) || 0; }
+    if (settings.chSpin) { ctx.translate(cx, cy); ctx.rotate(now / 1000 * (Number(settings.chSpinSpeed) || 0)); cx = 0; cy = 0; }
+    const line = (x1, y1, x2, y2, lw, c) => {
+      if (settings.chOutline) {
+        ctx.strokeStyle = ocol; ctx.lineWidth = lw + 2;
+        ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+      }
+      ctx.strokeStyle = c; ctx.lineWidth = lw;
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    };
+    const dot = (x, y, r, c) => {
+      if (settings.chOutline) {
+        ctx.fillStyle = ocol;
+        ctx.beginPath(); ctx.arc(x, y, r + 1, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.fillStyle = c;
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    };
+    const ring = (x, y, r, lw, c) => {
+      if (settings.chOutline) {
+        ctx.strokeStyle = ocol; ctx.lineWidth = lw + 2;
+        ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+      }
+      ctx.strokeStyle = c; ctx.lineWidth = lw;
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+    };
+    const outer = (horiz) => {
+      if (!settings.chOuter) return;
+      const og = (horiz ? g : gv) + (horiz ? LH : LV) + (Number(settings.chOuterGap) || 0);
+      const ol = Number(settings.chOuterLen) || 6;
+      if (horiz) {
+        line(cx - og - ol, cy, cx - og, cy, w, main);
+        line(cx + og, cy, cx + og + ol, cy, w, main);
+      } else {
+        line(cx, cy - og - ol, cx, cy - og, w, main);
+        line(cx, cy + og, cx, cy + og + ol, w, main);
+      }
+    };
+    const style = settings.chStyle || "cross";
+    if (style === "dot") {
+      dot(cx, cy, Math.max(1, (Number(settings.chDotSize) || 2) * k + 1), settings.chDotColor || main);
+    } else if (style === "circle") {
+      ring(cx, cy, Math.max(2, L), w, main);
+    } else if (style === "ringdot") {
+      ring(cx, cy, Math.max(2, L), w, main);
+      dot(cx, cy, Math.max(1, (Number(settings.chDotSize) || 2) * k), settings.chDotColor || main);
+    } else if (style === "square") {
+      const h = Math.max(2, L);
+      if (settings.chOutline) {
+        ctx.strokeStyle = ocol; ctx.lineWidth = w + 2;
+        ctx.strokeRect(cx - h, cy - h, h * 2, h * 2);
+      }
+      ctx.strokeStyle = main; ctx.lineWidth = w;
+      ctx.strokeRect(cx - h, cy - h, h * 2, h * 2);
+    } else if (style === "diamond") {
+      const h = Math.max(2, L);
+      const path = () => { ctx.beginPath(); ctx.moveTo(cx, cy - h); ctx.lineTo(cx + h, cy); ctx.lineTo(cx, cy + h); ctx.lineTo(cx - h, cy); ctx.closePath(); };
+      if (settings.chOutline) { ctx.strokeStyle = ocol; ctx.lineWidth = w + 2; path(); ctx.stroke(); }
+      ctx.strokeStyle = main; ctx.lineWidth = w; path(); ctx.stroke();
+    } else if (style === "chevron") {
+      line(cx - LH, cy - gv + LV * 0.9, cx, cy - gv, w, main);
+      line(cx, cy - gv, cx + LH, cy - gv + LV * 0.9, w, main);
+      if (settings.chDot) dot(cx, cy, Math.max(1, (Number(settings.chDotSize) || 2) * k), settings.chDotColor || main);
+    } else if (style === "x") {
+      const d = g / Math.SQRT2, e = L;
+      line(cx - d - e, cy - d - e, cx - d, cy - d, w, main);
+      line(cx + d, cy + d, cx + d + e, cy + d + e, w, main);
+      line(cx + d, cy - d, cx + d + e, cy - d - e, w, main);
+      line(cx - d - e, cy + d + e, cx - d, cy + d, w, main);
+      if (settings.chDot) dot(cx, cy, Math.max(1, (Number(settings.chDotSize) || 2) * k), settings.chDotColor || main);
+    } else if (style === "t") {
+      line(cx - g - LH, cy, cx - g, cy, w, main);
+      line(cx + g, cy, cx + g + LH, cy, w, main);
+      line(cx, cy + gv, cx, cy + gv + LV, w, main);
+      outer(true);
+      if (settings.chDot) dot(cx, cy, Math.max(1, (Number(settings.chDotSize) || 2) * k), settings.chDotColor || main);
+    } else { // cross + crossdot
+      line(cx - g - LH, cy, cx - g, cy, w, main);
+      line(cx + g, cy, cx + g + LH, cy, w, main);
+      line(cx, cy - gv - LV, cx, cy - gv, w, main);
+      line(cx, cy + gv, cx, cy + gv + LV, w, main);
+      outer(true); outer(false);
+      if (style === "crossdot" || settings.chDot) dot(cx, cy, Math.max(1, (Number(settings.chDotSize) || 2) * k), settings.chDotColor || main);
+    }
+    if (settings.chFireX && chState.fireX > 0.02) {
+      ctx.globalAlpha = clamp(chState.fireX, 0, 1) * clamp(Number(settings.chOpacity) ?? 1, 0, 1);
+      const f = (Number(settings.chFireXSize) || 12) * k;
+      line(cx - f, cy - f, cx + f, cy + f, w, settings.chFlashColor);
+      line(cx + f, cy - f, cx - f, cy + f, w, settings.chFlashColor);
+    }
+    ctx.restore();
   }
 
   // ── Ambience / World FX ──
@@ -837,8 +1037,10 @@
     // With an uncapped frame rate this loop can spin at 500+ fps, and a
     // fullscreen clearRect every one of those frames alone can saturate the
     // compositor — the window stutters while game logic stays smooth.
+    const playing = isPlaying(g);
     const overlayActive =
-      (settings.keystrokes && isPlaying(g));
+      (settings.keystrokes && playing) ||
+      (settings.crosshair && (playing || settings.chInLobby));
     if (!overlayActive) {
       if (overlayDirty) {
         sizeOverlay();
@@ -855,7 +1057,8 @@
     ctx.clearRect(0, 0, size.w, size.h);
 
     const rect = { left: 0, top: 0, right: size.w, bottom: size.h, width: size.w, height: size.h };
-    if (settings.keystrokes && isPlaying(g)) drawKeystrokes(rect);
+    if (settings.keystrokes && playing) drawKeystrokes(rect);
+    if (settings.crosshair && (playing || settings.chInLobby)) drawCrosshair(rect, now, dt);
   }
 
   // ── Sakura logo ──
@@ -931,12 +1134,14 @@
     dev: '<path d="m12 2 2.4 6.6L21 11l-6.6 2.4L12 20l-2.4-6.6L3 11l6.6-2.4z"/>',
     beta: '<path d="M9 3h6M10 3v6l-5.2 9.4A2 2 0 0 0 6.6 21h10.8a2 2 0 0 0 1.8-2.6L14 9V3"/><path d="M7.5 15h9"/>',
     charms: '<svg viewBox="0 0 24 24"><path d="M12 2c1.66 0 3 .67 3 1.5V7h2v5l5 5v4L21 7c0-1.1-.9-2-2-2h-5V3.5C14 .67 13.34 2 12 2zM8 5c0-1.1.9-2 2-2h2v5c0 1.1-.9 2-2 2H8V5zm4 10c0-1.1.9-2 2-2h2v5c0-1.1-.9-2-2-2h-2v5z"/>',
-    chams: '<svg viewBox="0 0 24 24"><path d="M6 2c-3.3 0-6 2.7-6 6v10c0 3.3 2.7 6 6 6h4c3.3 0 6-2.7 6-6V8c0-3.3-2.7-6-6-6H6zm2 2v4h12V8H8zM8 4v12h8V4H8z"/>'
+    chams: '<svg viewBox="0 0 24 24"><path d="M6 2c-3.3 0-6 2.7-6 6v10c0 3.3 2.7 6 6 6h4c3.3 0 6-2.7 6-6V8c0-3.3-2.7-6-6-6H6zm2 2v4h12V8H8zM8 4v12h8V4H8z"/>',
+    cross: '<circle cx="12" cy="12" r="9"/><path d="M12 7v10M7 12h10"/>'
   };
   var CATEGORIES = [
     { id: "hud", label: "HUD", icon: ICONS.hud },
     { id: "world", label: "World", icon: ICONS.world },
-    { id: "chams", label: "Chams", icon: ICONS.chams }
+    { id: "chams", label: "Chams", icon: ICONS.chams },
+    { id: "crosshair", label: "Cross", icon: ICONS.cross }
   ];
   if (betaUnlocked) CATEGORIES.push({ id: "beta", label: "Beta", icon: ICONS.beta });
 
@@ -1216,7 +1421,8 @@
       plus: '<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M12 8v8M8 12h8"/>',
       sliders: '<path d="M4 8h10M18 8h2M4 16h4M12 16h8"/><circle cx="16" cy="8" r="2"/><circle cx="10" cy="16" r="2"/>',
       charms: '<path d="M6 21 21 6l-3-3L3 18l3 3z"/><path d="M14 5l3 3"/>',
-      chams: '<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/>'
+      chams: '<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/>',
+      target: '<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.5"/>'
     };
     var LUNAR_MODULES = [
       { tab: "hud", title: "Keystrokes", icon: "keys", get: () => settings.keystrokes, set: (v) => { settings.keystrokes = v; save(); } },
@@ -1224,6 +1430,10 @@
       { tab: "world", title: "Motion Blur", icon: "blur", get: () => settings.motionBlur, set: (v) => { settings.motionBlur = v; save(); } },
       { tab: "chams", title: "Arm Chams", icon: "charms", get: () => settings.armCharms, set: (v) => { settings.armCharms = v; save(); } },
       { tab: "chams", title: "Gun Chams", icon: "chams", get: () => settings.gunChams, set: (v) => { settings.gunChams = v; save(); } },
+      { tab: "crosshair", title: "Crosshair", icon: "target", get: () => settings.crosshair, set: (v) => { settings.crosshair = v; save(); } },
+      { tab: "crosshair", title: "Dynamics", icon: "trend", get: () => settings.chDynamic, set: (v) => { settings.chDynamic = v; save(); } },
+      { tab: "crosshair", title: "Animation", icon: "refresh", get: () => settings.chPulse || settings.chSpin || settings.chRainbow, set: (v) => { settings.chPulse = v; settings.chSpin = v; settings.chRainbow = v; save(); } },
+      { tab: "crosshair", title: "Visibility", icon: "image", toggle: null },
       { tab: "beta", title: "Interface", icon: "sliders", toggle: null }
     ];
     if (settings.uiStyle === "lunar" && betaUnlocked) return buildLunarPanel();
@@ -1285,7 +1495,7 @@
 
       // Collect minimal cards once, transplant their rows into lunar drawers
       const pool = new Map();
-      for (const c of [...cardsFor("hud"), ...cardsFor("world"), ...cardsFor("chams")]) {
+      for (const c of [...cardsFor("hud"), ...cardsFor("world"), ...cardsFor("chams"), ...cardsFor("crosshair")]) {
         const t = c.querySelector(".sk-card-title strong");
         if (t && !pool.has(t.textContent)) pool.set(t.textContent, c);
       }
@@ -1378,7 +1588,7 @@
 
       // Sidebar categories
       const catBtns = [];
-      const cats = [["all", "All"], ["hud", "HUD"], ["world", "World"], ["chams", "Chams"]];
+      const cats = [["all", "All"], ["hud", "HUD"], ["world", "World"], ["chams", "Chams"], ["crosshair", "Cross"]];
       if (betaUnlocked) cats.push(["beta", "Beta"]);
       let filter = "all";
       const applyFilter = () => {
@@ -1484,6 +1694,71 @@
             row("Glow Intensity", null, rangeField(settings.chamGlowIntensity, 0.1, 1, 0.05, (v) => { settings.chamGlowIntensity = v; save(); }))
           ])
       ];
+      if (id === "crosshair") {
+        const styles = [["cross", "Cross"], ["dot", "Dot"], ["circle", "Circle"], ["crossdot", "Cross + Dot"], ["x", "X"], ["t", "T"], ["square", "Square"], ["diamond", "Diamond"], ["chevron", "Chevron"], ["ringdot", "Ring + Dot"]];
+        const presets = [["custom", "Custom"], ["def", "Default"], ["cs", "CS 1.6"], ["val", "Valorant"], ["dot", "Dot only"], ["circ", "Circle"], ["chev", "Chevron"]];
+        return [
+          moduleCard("Crosshair", "Overlay crosshair drawn at screen center.", settings.crosshair,
+            (v) => { settings.crosshair = v; save(); }, [
+              row("Preset", null, selectField(settings.chPreset, presets, (v) => { chApplyPreset(v); rebuildPanel(); })),
+              row("Style", null, selectField(settings.chStyle, styles, (v) => { settings.chStyle = v; settings.chPreset = "custom"; save(); })),
+              row("Color", null, colorField(settings.chColor || "#ffffff", (v) => { settings.chColor = v; settings.chPreset = "custom"; save(); })),
+              row("Dot color", null, colorField(settings.chDotColor || "#ffffff", (v) => { settings.chDotColor = v; settings.chPreset = "custom"; save(); })),
+              row("Length", null, rangeField(settings.chLen, 2, 30, 0.5, (v) => { settings.chLen = v; settings.chPreset = "custom"; save(); })),
+              row("Side length", "Horizontal arms multiplier", rangeField(settings.chLenH, 0.3, 2, 0.05, (v) => { settings.chLenH = v; settings.chPreset = "custom"; save(); })),
+              row("Vertical length", "Top / bottom arms multiplier", rangeField(settings.chLenV, 0.3, 2, 0.05, (v) => { settings.chLenV = v; settings.chPreset = "custom"; save(); })),
+              row("Thickness", null, rangeField(settings.chThick, 1, 8, 0.5, (v) => { settings.chThick = v; settings.chPreset = "custom"; save(); })),
+              row("Gap", null, rangeField(settings.chGap, 0, 24, 0.5, (v) => { settings.chGap = v; settings.chPreset = "custom"; save(); })),
+              row("Vertical gap", "Top / bottom arms gap", rangeField(settings.chGapY, 0, 24, 0.5, (v) => { settings.chGapY = v; settings.chPreset = "custom"; save(); })),
+              row("Center dot", "Dot on line styles", toggleSwitch(settings.chDot, (v) => { settings.chDot = v; save(); })),
+              row("Dot size", null, rangeField(settings.chDotSize, 1, 8, 0.5, (v) => { settings.chDotSize = v; save(); })),
+              row("Outline", null, toggleSwitch(settings.chOutline, (v) => { settings.chOutline = v; save(); })),
+              row("Outline color", null, colorField(settings.chOutlineColor || "#000000", (v) => { settings.chOutlineColor = v; save(); })),
+              row("Opacity", null, rangeField(settings.chOpacity, 0.1, 1, 0.05, (v) => { settings.chOpacity = v; save(); }))
+            ]),
+          moduleCard("Dynamics", "Gap reacts to movement, firing and ADS.", settings.chDynamic,
+            (v) => { settings.chDynamic = v; save(); }, [
+              row("Move spread", null, rangeField(settings.chMoveAmt, 0, 20, 0.5, (v) => { settings.chMoveAmt = v; save(); })),
+              row("Fire kick", "Expand while shooting", toggleSwitch(settings.chFireKick, (v) => { settings.chFireKick = v; save(); })),
+              row("Kick amount", null, rangeField(settings.chKickAmt, 0, 24, 0.5, (v) => { settings.chKickAmt = v; save(); })),
+              row("Recovery", "How fast kick settles", rangeField(settings.chRecover, 1, 10, 0.5, (v) => { settings.chRecover = v; save(); })),
+              row("Expansion cap", null, rangeField(settings.chExpandCap, 0, 40, 1, (v) => { settings.chExpandCap = v; save(); })),
+              row("ADS tighten", "Contract while RMB held", toggleSwitch(settings.chAds, (v) => { settings.chAds = v; save(); })),
+              row("ADS amount", null, rangeField(settings.chAdsAmt, 0, 0.8, 0.05, (v) => { settings.chAdsAmt = v; save(); })),
+              row("Scoped size", "Size multiplier on RMB", rangeField(settings.chScopeMult, 0.5, 1.5, 0.05, (v) => { settings.chScopeMult = v; save(); })),
+              row("Crouch tighten", "Contract while Ctrl held", toggleSwitch(settings.chCtrlT, (v) => { settings.chCtrlT = v; save(); })),
+              row("Crouch amount", null, rangeField(settings.chCtrlAmt, 0, 0.8, 0.05, (v) => { settings.chCtrlAmt = v; save(); })),
+              row("Hide on RMB", null, toggleSwitch(settings.chScopeHide, (v) => { settings.chScopeHide = v; save(); })),
+              row("Outer lines", "Second set of arms", toggleSwitch(settings.chOuter, (v) => { settings.chOuter = v; save(); })),
+              row("Outer gap", null, rangeField(settings.chOuterGap, 0, 20, 0.5, (v) => { settings.chOuterGap = v; save(); })),
+              row("Outer length", null, rangeField(settings.chOuterLen, 2, 24, 0.5, (v) => { settings.chOuterLen = v; save(); }))
+            ]),
+          moduleCard("Animation", "Idle motion and fire feedback.", settings.chPulse || settings.chSpin || settings.chRainbow,
+            (v) => { settings.chPulse = v; settings.chSpin = v; settings.chRainbow = v; save(); rebuildPanel(); }, [
+              row("Breathe", "Sine scale pulse", toggleSwitch(settings.chPulse, (v) => { settings.chPulse = v; save(); })),
+              row("Breathe amount", null, rangeField(settings.chPulseAmt, 0, 0.5, 0.01, (v) => { settings.chPulseAmt = v; save(); })),
+              row("Breathe speed", null, rangeField(settings.chPulseSpeed, 0.5, 10, 0.5, (v) => { settings.chPulseSpeed = v; save(); })),
+              row("Spin", "Rotate around center", toggleSwitch(settings.chSpin, (v) => { settings.chSpin = v; save(); })),
+              row("Spin speed", "Radians / second", rangeField(settings.chSpinSpeed, -6, 6, 0.5, (v) => { settings.chSpinSpeed = v; save(); })),
+              row("Rainbow", null, toggleSwitch(settings.chRainbow, (v) => { settings.chRainbow = v; save(); })),
+              row("Rainbow speed", "Degrees / second", rangeField(settings.chRainbowSpeed, 10, 360, 10, (v) => { settings.chRainbowSpeed = v; save(); })),
+              row("Fire flash", "Flash color on shoot", toggleSwitch(settings.chFlash, (v) => { settings.chFlash = v; save(); })),
+              row("Flash color", null, colorField(settings.chFlashColor || "#ff6b9d", (v) => { settings.chFlashColor = v; save(); })),
+              row("Wobble", "Horizontal drift", toggleSwitch(settings.chWobble, (v) => { settings.chWobble = v; save(); })),
+              row("Wobble amount", null, rangeField(settings.chWobbleAmt, 0, 8, 0.5, (v) => { settings.chWobbleAmt = v; save(); })),
+              row("Fire X", "X flash on shoot", toggleSwitch(settings.chFireX, (v) => { settings.chFireX = v; save(); })),
+              row("Fire X size", null, rangeField(settings.chFireXSize, 4, 30, 1, (v) => { settings.chFireXSize = v; save(); }))
+            ]),
+          moduleCard("Visibility", "Where and when it draws.", true, null, [
+              row("Offset X", null, rangeField(settings.chOffX, -150, 150, 1, (v) => { settings.chOffX = v; save(); })),
+              row("Offset Y", null, rangeField(settings.chOffY, -150, 150, 1, (v) => { settings.chOffY = v; save(); })),
+              row("Glow", null, toggleSwitch(settings.chGlow, (v) => { settings.chGlow = v; save(); })),
+              row("Glow amount", null, rangeField(settings.chGlowAmt, 0, 30, 1, (v) => { settings.chGlowAmt = v; save(); })),
+              row("Draw in lobby", "Also outside matches", toggleSwitch(settings.chInLobby, (v) => { settings.chInLobby = v; save(); })),
+              row("Hide in menu", "Hide while this menu is open", toggleSwitch(settings.chHideMenu, (v) => { settings.chHideMenu = v; save(); }))
+            ])
+        ];
+      }
       if (id === "beta") return [interfaceCard()];
       const presets = [["custom", "Custom (manual)"], ["default", "Game default"], ["sakura", "Sakura"], ["midnight", "Midnight"], ["sunset", "Sunset"], ["neon", "Neon"], ["vivid", "Vivid"], ["cinematic", "Cinematic"], ["arctic", "Arctic"], ["void", "Void"], ["synthwave", "Synthwave"], ["noir", "Noir"], ["dream", "Dream"]];
       return [
