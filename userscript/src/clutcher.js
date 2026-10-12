@@ -160,6 +160,56 @@
     armY: 0,
     armZ: 0,
     armHideName: "",
+    // HUD extras (visual only — overlay cosmetics)
+    hudWm: false,
+    wmText: "Sakura",
+    wmFps: true,
+    wmClock: false,
+    wmKills: false,
+    wmPos: "tl",
+    wmSize: 12,
+    wmOp: 0.9,
+    wmAccent: true,
+    wmBg: true,
+    wmRainbow: false,
+    hudFps: false,
+    fpsSize: 12,
+    fpsColor: "#ffb3c6",
+    fpsBg: true,
+    fpsPos: "tr",
+    fpsGraph: false,
+    fpsGraphH: 24,
+    fpsGraphColor: "#ff6b9d",
+    fpsAvg: false,
+    hudInfo: false,
+    infoClock: true,
+    info24: false,
+    infoDate: false,
+    infoSession: true,
+    infoKills: true,
+    infoDeaths: true,
+    infoKD: true,
+    infoPos: "br",
+    infoSize: 12,
+    hudBars: false,
+    barsPos: "bl",
+    barsW: 220,
+    barsH: 14,
+    hpColor: "#7dff8a",
+    armorColor: "#7db8f0",
+    barsArmor: true,
+    barsNumbers: true,
+    barsBg: true,
+    barsLow: true,
+    barsLowAt: 30,
+    hudAmmo: false,
+    ammoSize: 20,
+    ammoPos: "br",
+    ammoReserve: true,
+    ammoLow: true,
+    ammoLowAt: 6,
+    ammoColor: "#ffffff",
+    ammoBg: true,
     // Crosshair studio (visual only — drawn on the overlay canvas)
     crosshair: false,
     chPreset: "custom",
@@ -692,6 +742,266 @@
       line(cx + f, cy - f, cx - f, cy + f, w, settings.chFlashColor);
     }
     ctx.restore();
+  }
+
+  // ── HUD extras (visual only — overlay canvas cosmetics) ──
+  // Watermark, FPS readout + graph, clock, session timer, kill/death/K-D
+  // tracker, HP/armor bars and a custom ammo counter. Kill counts come from
+  // the game's own player fields; HP/ammo text from its HUD DOM. Read-only.
+  var hudFpsS = { ema: 0, hist: [] };
+  var hudSes = { t0: 0, kills: 0, deaths: 0, wasAlive: true, lastKills: null };
+  var hpEl2 = null, armorEl = null, ammoEl = null, reserveEl = null;
+  function hudInt(el) {
+    if (!el || !el.isConnected) return null;
+    const m = /(\d+)/.exec(el.textContent || "");
+    return m ? parseInt(m[1], 10) : null;
+  }
+  function hudGet(id, cache) {
+    let el = cache.el;
+    if (!el || !el.isConnected) {
+      el = document.getElementById(id);
+      cache.el = el;
+    }
+    return el;
+  }
+  var hpCache = {}, armorCache = {}, ammoCache = {}, reserveCache = {};
+  function hudClockStr() {
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, "0");
+    if (settings.info24) return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+    const h = d.getHours() % 12 || 12;
+    return `${h}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  }
+  function hudCorner(pos, w, h, m) {
+    m = m == null ? 16 : m;
+    return [pos.endsWith("r") ? size.w - m - w : m, pos[0] === "b" ? size.h - m - h : m];
+  }
+  function hudPill(lines, pos, fs, accentCol) {
+    ctx.save();
+    ctx.font = `700 ${fs}px ui-sans-serif,system-ui,sans-serif`;
+    let tw = 0;
+    for (const p of lines) tw = Math.max(tw, ctx.measureText(p).width);
+    const pw = tw + 20, ph = lines.length * (fs + 6) + 12;
+    const [x, y] = hudCorner(pos, pw, ph);
+    ctx.fillStyle = "rgba(22,8,16,0.7)";
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x, y, pw, ph, 8);
+    else ctx.rect(x, y, pw, ph);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255,107,157,0.35)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    if (accentCol) {
+      ctx.fillStyle = accentCol;
+      ctx.fillRect(x + 8, y + 8, 3, ph - 16);
+    }
+    ctx.fillStyle = "#ffb3c6";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    lines.forEach((p, i) => ctx.fillText(p, x + (accentCol ? 16 : 10), y + 7 + i * (fs + 6)));
+    ctx.restore();
+    return ph;
+  }
+  function drawHudExtras(rect, now, dt, g) {
+    const W = rect.width, H = rect.height;
+    const playing = isPlaying(g);
+    if (dt > 0) {
+      const f = 1 / Math.max(1e-3, dt);
+      hudFpsS.ema = hudFpsS.ema ? hudFpsS.ema + (f - hudFpsS.ema) * 0.06 : f;
+      hudFpsS.hist.push(f);
+      if (hudFpsS.hist.length > 120) hudFpsS.hist.shift();
+    }
+    const pl = g && g.player;
+    if (playing) {
+      if (!hudSes.t0) {
+        hudSes.t0 = now;
+        hudSes.kills = 0;
+        hudSes.deaths = 0;
+        hudSes.wasAlive = true;
+        hudSes.lastKills = pl && isFinite(pl.kills) ? pl.kills : null;
+      }
+      if (pl && isFinite(pl.kills)) {
+        if (hudSes.lastKills == null) hudSes.lastKills = pl.kills;
+        if (pl.kills > hudSes.lastKills) hudSes.kills += pl.kills - hudSes.lastKills;
+        hudSes.lastKills = pl.kills;
+      }
+      const alive = !pl || pl.alive !== false;
+      if (hudSes.wasAlive && !alive) hudSes.deaths++;
+      hudSes.wasAlive = alive;
+    }
+    if (settings.hudWm && playing) {
+      const parts = [settings.wmText || "Sakura"];
+      if (settings.wmFps) parts.push(`${Math.round(hudFpsS.ema)} FPS`);
+      if (settings.wmClock) parts.push(hudClockStr());
+      if (settings.wmKills) parts.push(`${hudSes.kills} K`);
+      const fs = Math.max(9, Number(settings.wmSize) || 12);
+      ctx.save();
+      ctx.font = `700 ${fs}px ui-sans-serif,system-ui,sans-serif`;
+      let tw = 0;
+      for (const p of parts) tw = Math.max(tw, ctx.measureText(p).width);
+      const pw = tw + 20, ph = parts.length * (fs + 6) + 12;
+      const [x, y] = hudCorner(settings.wmPos || "tl", pw, ph);
+      ctx.globalAlpha = clamp(Number(settings.wmOp) ?? 0.9, 0, 1);
+      if (settings.wmBg !== false) {
+        ctx.fillStyle = "rgba(22,8,16,0.7)";
+        ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(x, y, pw, ph, 8);
+        else ctx.rect(x, y, pw, ph);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255,107,157,0.35)";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+      if (settings.wmAccent !== false) {
+        ctx.fillStyle = "#ff6b9d";
+        ctx.fillRect(x + 8, y + 8, 3, ph - 16);
+      }
+      ctx.fillStyle = settings.wmRainbow ? `hsl(${(now / 4) % 360} 100% 75%)` : "#ffb3c6";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      parts.forEach((p, i) => ctx.fillText(p, x + (settings.wmAccent !== false ? 16 : 10), y + 7 + i * (fs + 6)));
+      ctx.restore();
+    }
+    if (settings.hudFps && playing) {
+      const fs = Math.max(9, Number(settings.fpsSize) || 12);
+      const lines = [`${Math.round(hudFpsS.ema)} FPS`];
+      if (settings.fpsAvg && hudFpsS.hist.length) {
+        let sum = 0;
+        for (const f of hudFpsS.hist) sum += f;
+        lines.push(`avg ${Math.round(sum / hudFpsS.hist.length)}`);
+      }
+      const pos = settings.fpsPos || "tr";
+      ctx.save();
+      ctx.font = `700 ${fs}px ui-sans-serif,system-ui,sans-serif`;
+      let tw = 0;
+      for (const p of lines) tw = Math.max(tw, ctx.measureText(p).width);
+      const pw = tw + 20, ph = lines.length * (fs + 6) + 12;
+      const [x, y] = hudCorner(pos, pw, ph);
+      if (settings.fpsBg !== false) {
+        ctx.fillStyle = "rgba(22,8,16,0.7)";
+        ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(x, y, pw, ph, 8);
+        else ctx.rect(x, y, pw, ph);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255,107,157,0.35)";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+      ctx.fillStyle = settings.fpsColor || "#ffb3c6";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      lines.forEach((p, i) => ctx.fillText(p, x + 10, y + 7 + i * (fs + 6)));
+      if (settings.fpsGraph && hudFpsS.hist.length > 1) {
+        const gh = Math.max(8, Number(settings.fpsGraphH) || 24);
+        const gy = y + ph + 4;
+        ctx.strokeStyle = settings.fpsGraphColor || "rgba(255,107,157,0.9)";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        const max = Math.max(60, ...hudFpsS.hist);
+        hudFpsS.hist.forEach((f, i) => {
+          const gx = x + (i / (hudFpsS.hist.length - 1)) * pw;
+          const gyy = gy + gh - Math.min(1, f / max) * gh;
+          if (i) ctx.lineTo(gx, gyy);
+          else ctx.moveTo(gx, gyy);
+        });
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+    if (settings.hudInfo && playing) {
+      const lines = [];
+      if (settings.infoClock) lines.push(hudClockStr());
+      if (settings.infoDate) {
+        const d = new Date();
+        lines.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`);
+      }
+      if (settings.infoSession && hudSes.t0) {
+        const s = ((now - hudSes.t0) / 1000) | 0;
+        lines.push(`${String(((s / 60) | 0)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`);
+      }
+      if (settings.infoKills) lines.push(`K ${hudSes.kills} / D ${hudSes.deaths}`);
+      if (settings.infoKD) lines.push(`K/D ${(hudSes.kills / Math.max(1, hudSes.deaths)).toFixed(2)}`);
+      if (lines.length) {
+        ctx.save();
+        ctx.font = `700 ${Math.max(9, Number(settings.infoSize) || 12)}px ui-sans-serif,system-ui,sans-serif`;
+        ctx.restore();
+        hudPill(lines, settings.infoPos || "br", Math.max(9, Number(settings.infoSize) || 12), "#ff6b9d");
+      }
+    }
+    if (settings.hudBars && playing) {
+      const hp = hudInt(hudGet("hp", hpCache));
+      const armor = hudInt(hudGet("armor", armorCache));
+      if (hp != null) {
+        const w = Math.max(80, Number(settings.barsW) || 220);
+        const h = Math.max(6, Number(settings.barsH) || 14);
+        const showArmor = armor != null && settings.barsArmor !== false;
+        const rows = showArmor ? 2 : 1;
+        const ph = rows * (h + 4) + 12;
+        const [x, y] = hudCorner(settings.barsPos || "bl", w, ph);
+        ctx.save();
+        if (settings.barsBg !== false) {
+          ctx.fillStyle = "rgba(22,8,16,0.7)";
+          ctx.beginPath();
+          if (ctx.roundRect) ctx.roundRect(x, y, w, ph, 8);
+          else ctx.rect(x, y, w, ph);
+          ctx.fill();
+        }
+        const lowTh = Number(settings.barsLowAt);
+        const low = settings.barsLow !== false && hp <= (isFinite(lowTh) ? lowTh : 30);
+        const bar = (bx, by, frac, col) => {
+          ctx.fillStyle = "rgba(255,255,255,0.08)";
+          ctx.fillRect(bx, by, w - 20, h);
+          ctx.fillStyle = col;
+          ctx.fillRect(bx, by, (w - 20) * clamp(frac, 0, 1), h);
+        };
+        bar(x + 10, y + 7, hp / 100, low ? "#ff4444" : (settings.hpColor || "#7dff8a"));
+        if (showArmor) bar(x + 10, y + 7 + h + 4, armor / 100, settings.armorColor || "#7db8f0");
+        if (settings.barsNumbers !== false) {
+          ctx.fillStyle = "#fff";
+          ctx.font = `700 ${Math.max(9, h - 2)}px ui-sans-serif,system-ui,sans-serif`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(String(hp), x + 10 + (w - 20) / 2, y + 7 + h / 2);
+          if (showArmor) ctx.fillText(String(armor), x + 10 + (w - 20) / 2, y + 7 + h + 4 + h / 2);
+        }
+        ctx.restore();
+      }
+    }
+    if (settings.hudAmmo && playing) {
+      const ammo = hudInt(hudGet("ammo", ammoCache));
+      if (ammo != null) {
+        let reserve = hudInt(hudGet("reserve", reserveCache));
+        if (reserve == null) {
+          const ael = hudGet("ammo", ammoCache);
+          const all = (ael && ael.textContent || "").match(/\d+/g) || [];
+          if (all.length > 1) reserve = parseInt(all[1], 10);
+        }
+        const fs = Math.max(12, Number(settings.ammoSize) || 20);
+        const lowAt = Number(settings.ammoLowAt);
+        const low = settings.ammoLow !== false && ammo <= (isFinite(lowAt) ? lowAt : 6);
+        const main = `${ammo}`, sub = (settings.ammoReserve !== false && reserve != null) ? `/ ${reserve}` : "";
+        ctx.save();
+        ctx.font = `800 ${fs}px ui-sans-serif,system-ui,sans-serif`;
+        const tw = ctx.measureText(main + " " + sub).width;
+        const pw = tw + 24, ph = fs + 18;
+        const [x, y] = hudCorner(settings.ammoPos || "br", pw, ph);
+        if (settings.ammoBg !== false) {
+          ctx.fillStyle = "rgba(22,8,16,0.7)";
+          ctx.beginPath();
+          if (ctx.roundRect) ctx.roundRect(x, y, pw, ph, 8);
+          else ctx.rect(x, y, pw, ph);
+          ctx.fill();
+          ctx.strokeStyle = low ? "#ff4444" : "rgba(255,107,157,0.35)";
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
+        ctx.fillStyle = low ? "#ff4444" : (settings.ammoColor || "#ffffff");
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(main + (sub ? " " + sub : ""), x + pw / 2, y + ph / 2 + 1);
+        ctx.restore();
+      }
+    }
   }
 
   // ── Ambience / World FX ──
@@ -1579,7 +1889,8 @@
     const playing = isPlaying(g);
     const overlayActive =
       (settings.keystrokes && playing) ||
-      (settings.crosshair && (playing || settings.chInLobby));
+      (settings.crosshair && (playing || settings.chInLobby)) ||
+      ((settings.hudWm || settings.hudFps || settings.hudInfo || settings.hudBars || settings.hudAmmo) && playing);
     if (!overlayActive) {
       if (overlayDirty) {
         sizeOverlay();
@@ -1598,6 +1909,7 @@
     const rect = { left: 0, top: 0, right: size.w, bottom: size.h, width: size.w, height: size.h };
     if (settings.keystrokes && playing) drawKeystrokes(rect);
     if (settings.crosshair && (playing || settings.chInLobby)) drawCrosshair(rect, now, dt, g);
+    if ((settings.hudWm || settings.hudFps || settings.hudInfo || settings.hudBars || settings.hudAmmo) && playing) drawHudExtras(rect, now, dt, g);
   }
 
   // ── Sakura logo ──
@@ -2078,6 +2390,11 @@
     };
     var LUNAR_MODULES = [
       { tab: "hud", title: "Keystrokes", icon: "keys", get: () => settings.keystrokes, set: (v) => { settings.keystrokes = v; save(); } },
+      { tab: "hud", title: "Watermark", icon: "plus", get: () => settings.hudWm, set: (v) => { settings.hudWm = v; save(); } },
+      { tab: "hud", title: "FPS Counter", icon: "gauge", get: () => settings.hudFps, set: (v) => { settings.hudFps = v; save(); } },
+      { tab: "hud", title: "Clock & Session", icon: "refresh", get: () => settings.hudInfo, set: (v) => { settings.hudInfo = v; save(); } },
+      { tab: "hud", title: "Health Bars", icon: "trend", get: () => settings.hudBars, set: (v) => { settings.hudBars = v; save(); } },
+      { tab: "hud", title: "Ammo", icon: "dice", get: () => settings.hudAmmo, set: (v) => { settings.hudAmmo = v; save(); } },
       { tab: "world", title: "Ambience", icon: "globe", get: () => settings.ambience, set: (v) => { settings.ambience = v; save(); } },
       { tab: "world", title: "Motion Blur", icon: "blur", get: () => settings.motionBlur, set: (v) => { settings.motionBlur = v; save(); } },
       { tab: "chams", title: "Arm Chams", icon: "charms", get: () => settings.armCharms, set: (v) => { settings.armCharms = v; save(); } },
@@ -2330,6 +2647,68 @@
               row("Position", null, selectField(settings.ksPos, [["bl", "Bottom left"], ["br", "Bottom right"], ["ml", "Left middle"]], (v) => { settings.ksPos = v; save(); })),
               row("Size", null, rangeField(settings.ksScale, 0.6, 1.6, 0.05, (v) => { settings.ksScale = v; save(); })),
               row("Clicks per second", null, toggleSwitch(settings.ksCps, (v) => { settings.ksCps = v; save(); }))
+            ]),
+          moduleCard("Watermark", "Sakura tag with live stats.", settings.hudWm,
+            (v) => { settings.hudWm = v; save(); }, [
+              row("Text", null, textField(settings.wmText || "Sakura", 24, (v) => { settings.wmText = v; save(); })),
+              row("Show FPS", null, toggleSwitch(settings.wmFps !== false, (v) => { settings.wmFps = v; save(); })),
+              row("Show clock", null, toggleSwitch(settings.wmClock, (v) => { settings.wmClock = v; save(); })),
+              row("Show kills", null, toggleSwitch(settings.wmKills, (v) => { settings.wmKills = v; save(); })),
+              row("Position", null, selectField(settings.wmPos || "tl", [["tl", "Top left"], ["tr", "Top right"], ["bl", "Bottom left"], ["br", "Bottom right"]], (v) => { settings.wmPos = v; save(); })),
+              row("Size", null, rangeField(settings.wmSize, 9, 20, 1, (v) => { settings.wmSize = v; save(); })),
+              row("Opacity", null, rangeField(settings.wmOp ?? 0.9, 0.2, 1, 0.05, (v) => { settings.wmOp = v; save(); })),
+              row("Accent bar", null, toggleSwitch(settings.wmAccent !== false, (v) => { settings.wmAccent = v; save(); })),
+              row("Background", null, toggleSwitch(settings.wmBg !== false, (v) => { settings.wmBg = v; save(); })),
+              row("Rainbow text", null, toggleSwitch(settings.wmRainbow, (v) => { settings.wmRainbow = v; save(); }))
+            ]),
+          moduleCard("FPS Counter", "Readout with history graph.", settings.hudFps,
+            (v) => { settings.hudFps = v; save(); }, [
+              row("Size", null, rangeField(settings.fpsSize, 9, 24, 1, (v) => { settings.fpsSize = v; save(); })),
+              row("Color", null, colorField(settings.fpsColor || "#ffb3c6", (v) => { settings.fpsColor = v; save(); })),
+              row("Background", null, toggleSwitch(settings.fpsBg !== false, (v) => { settings.fpsBg = v; save(); })),
+              row("Position", null, selectField(settings.fpsPos || "tr", [["tl", "Top left"], ["tr", "Top right"], ["bl", "Bottom left"], ["br", "Bottom right"]], (v) => { settings.fpsPos = v; save(); })),
+              row("Graph", "120-frame history", toggleSwitch(settings.fpsGraph, (v) => { settings.fpsGraph = v; save(); })),
+              row("Graph height", null, rangeField(settings.fpsGraphH, 8, 60, 2, (v) => { settings.fpsGraphH = v; save(); })),
+              row("Graph color", null, colorField(settings.fpsGraphColor || "#ff6b9d", (v) => { settings.fpsGraphColor = v; save(); })),
+              row("Show average", null, toggleSwitch(settings.fpsAvg, (v) => { settings.fpsAvg = v; save(); }))
+            ]),
+          moduleCard("Clock & Session", "Time, session length and K/D.", settings.hudInfo,
+            (v) => { settings.hudInfo = v; save(); }, [
+              row("Clock", null, toggleSwitch(settings.infoClock !== false, (v) => { settings.infoClock = v; save(); })),
+              row("24-hour", null, toggleSwitch(settings.info24, (v) => { settings.info24 = v; save(); })),
+              row("Date", null, toggleSwitch(settings.infoDate, (v) => { settings.infoDate = v; save(); })),
+              row("Session timer", null, toggleSwitch(settings.infoSession !== false, (v) => { settings.infoSession = v; save(); })),
+              row("Kills / deaths", null, toggleSwitch(settings.infoKills !== false, (v) => { settings.infoKills = v; save(); })),
+              row("Deaths", null, toggleSwitch(settings.infoDeaths !== false, (v) => { settings.infoDeaths = v; save(); })),
+              row("K/D ratio", null, toggleSwitch(settings.infoKD !== false, (v) => { settings.infoKD = v; save(); })),
+              row("Position", null, selectField(settings.infoPos || "br", [["tl", "Top left"], ["tr", "Top right"], ["bl", "Bottom left"], ["br", "Bottom right"]], (v) => { settings.infoPos = v; save(); })),
+              row("Size", null, rangeField(settings.infoSize, 9, 20, 1, (v) => { settings.infoSize = v; save(); })),
+              row("Reset session", "Zero timer and counters", actionBtn("Reset", () => {
+                hudSes.t0 = 0; hudSes.kills = 0; hudSes.deaths = 0; hudSes.lastKills = null;
+              }))
+            ]),
+          moduleCard("Health Bars", "Custom HP / armor bars.", settings.hudBars,
+            (v) => { settings.hudBars = v; save(); }, [
+              row("Position", null, selectField(settings.barsPos || "bl", [["tl", "Top left"], ["tr", "Top right"], ["bl", "Bottom left"], ["br", "Bottom right"]], (v) => { settings.barsPos = v; save(); })),
+              row("Width", null, rangeField(settings.barsW, 80, 400, 10, (v) => { settings.barsW = v; save(); })),
+              row("Bar height", null, rangeField(settings.barsH, 6, 30, 1, (v) => { settings.barsH = v; save(); })),
+              row("HP color", null, colorField(settings.hpColor || "#7dff8a", (v) => { settings.hpColor = v; save(); })),
+              row("Armor color", null, colorField(settings.armorColor || "#7db8f0", (v) => { settings.armorColor = v; save(); })),
+              row("Show armor", null, toggleSwitch(settings.barsArmor !== false, (v) => { settings.barsArmor = v; save(); })),
+              row("Numbers", null, toggleSwitch(settings.barsNumbers !== false, (v) => { settings.barsNumbers = v; save(); })),
+              row("Background", null, toggleSwitch(settings.barsBg !== false, (v) => { settings.barsBg = v; save(); })),
+              row("Low HP warn", null, toggleSwitch(settings.barsLow !== false, (v) => { settings.barsLow = v; save(); })),
+              row("Warn below", null, rangeField(settings.barsLowAt ?? 30, 5, 75, 5, (v) => { settings.barsLowAt = v; save(); }))
+            ]),
+          moduleCard("Ammo", "Custom ammo counter.", settings.hudAmmo,
+            (v) => { settings.hudAmmo = v; save(); }, [
+              row("Size", null, rangeField(settings.ammoSize, 12, 40, 1, (v) => { settings.ammoSize = v; save(); })),
+              row("Position", null, selectField(settings.ammoPos || "br", [["tl", "Top left"], ["tr", "Top right"], ["bl", "Bottom left"], ["br", "Bottom right"]], (v) => { settings.ammoPos = v; save(); })),
+              row("Show reserve", null, toggleSwitch(settings.ammoReserve !== false, (v) => { settings.ammoReserve = v; save(); })),
+              row("Low ammo warn", null, toggleSwitch(settings.ammoLow !== false, (v) => { settings.ammoLow = v; save(); })),
+              row("Warn at", null, rangeField(settings.ammoLowAt ?? 6, 0, 30, 1, (v) => { settings.ammoLowAt = v; save(); })),
+              row("Color", null, colorField(settings.ammoColor || "#ffffff", (v) => { settings.ammoColor = v; save(); })),
+              row("Background", null, toggleSwitch(settings.ammoBg !== false, (v) => { settings.ammoBg = v; save(); }))
             ])
         ];
       }
