@@ -290,11 +290,7 @@
     hemiSky: "#bcd6ff",
     hemiGround: "#4a4238",
     fogCustom: false,
-    fogColor: "#888899",
-    fogNear: 10,
-    fogFar: 400,
-    fogBreathe: false,
-    fogBreatheSpd: 1,
+    fogPreset: "thick",
     rdOn: false,
     rdSize: 1,
     rdRing: "#4a4f55",
@@ -2060,6 +2056,15 @@
     restoreFog();
   }
 
+  // Curated fog configs — no sliders, just pick one.
+  var FOG_PRESETS = {
+    light:  { color: "#aab4c4", near: 30, far: 600 },
+    thick:  { color: "#9aa2b2", near: 5, far: 150 },
+    night:  { color: "#05070f", near: 10, far: 350 },
+    sakura: { color: "#e8a8c0", near: 20, far: 500 },
+    desert: { color: "#e8c88a", near: 25, far: 450 },
+    deep:   { color: "#000000", near: 2, far: 80 }
+  };
   function tickSky(g, wantSky, fogMode) {
     const scene = g?.scene;
     if (!scene) return;
@@ -2096,22 +2101,14 @@
       fog.near = 1e5;
       fog.far = 1e5 + 1;
     } else if (fogMode === "custom") {
-      const exp2 = fog.isFogExp2 || (!isFinite(fog.near) && isFinite(fog.density));
-      if (exp2) {
-        fog.density = 1.73 / Math.max(10, chNum(settings.fogFar, 400));
-        if (settings.fogBreathe) {
-          fog.density *= 1 + Math.sin(performance.now() / 1000 * chNum(settings.fogBreatheSpd, 1)) * 0.15;
-        }
+      const fp = FOG_PRESETS[settings.fogPreset] || FOG_PRESETS.thick;
+      if (fog.isFogExp2 || (!isFinite(fog.near) && isFinite(fog.density))) {
+        fog.density = 1.73 / Math.max(10, fp.far);
       } else {
-        fog.near = chNum(settings.fogNear, sky.fogOrig.near);
-        fog.far = chNum(settings.fogFar, sky.fogOrig.far);
-        if (settings.fogBreathe) {
-          const f = 1 + Math.sin(performance.now() / 1000 * chNum(settings.fogBreatheSpd, 1)) * 0.15;
-          fog.near *= f;
-          fog.far *= f;
-        }
+        fog.near = fp.near;
+        fog.far = fp.far;
       }
-      if (fog.color) fog.color.set(settings.fogColor || "#888899");
+      if (fog.color) fog.color.set(fp.color);
     } else {
       fog.near = sky.fogOrig.near;
       fog.far = sky.fogOrig.far;
@@ -4256,7 +4253,7 @@
             row("Hemi sky", null, colorField(settings.hemiSky || "#bcd6ff", (v) => { settings.hemiSky = v; save(); })),
             row("Hemi ground", null, colorField(settings.hemiGround || "#4a4238", (v) => { settings.hemiGround = v; save(); }))
           ]),
-        moduleCard("Fog Lab", "Custom fog beyond the presets. Needs Ambience.", settings.fogCustom,
+        moduleCard("Fog Lab", "Pick a fog config. Needs Ambience.", settings.fogCustom,
           (v) => {
             settings.fogCustom = v;
             settings.fogMode = v ? "custom" : "default";
@@ -4264,11 +4261,7 @@
             save();
             rebuildPanel();
           }, [
-            row("Color", null, colorField(settings.fogColor || "#888899", (v) => { settings.fogColor = v; save(); })),
-            row("Near", null, rangeField(settings.fogNear ?? 10, 1, 200, 1, (v) => { settings.fogNear = v; save(); })),
-            row("Far", null, rangeField(settings.fogFar ?? 400, 50, 2000, 10, (v) => { settings.fogFar = v; save(); })),
-            row("Breathe", "Animated density", toggleSwitch(settings.fogBreathe, (v) => { settings.fogBreathe = v; save(); })),
-            row("Breathe speed", null, rangeField(settings.fogBreatheSpd ?? 1, 0.2, 4, 0.2, (v) => { settings.fogBreatheSpd = v; save(); }))
+            row("Config", null, selectField(settings.fogPreset || "thick", [["light", "Light haze"], ["thick", "Thick fog"], ["night", "Night fog"], ["sakura", "Sakura mist"], ["desert", "Desert dust"], ["deep", "Deep dark"]], (v) => { settings.fogPreset = v; save(); }))
           ]),
         moduleCard("Radar", "Restyle the game's radar.", settings.rdOn,
           (v) => { settings.rdOn = v; save(); }, [
