@@ -173,6 +173,57 @@
     armY: 0,
     armZ: 0,
     armHideName: "",
+    // Fire FX + atmosphere (visual only — overlay canvas cosmetics)
+    atTracers: false,
+    trStyle: "line",
+    trColor: "#ff6b9d",
+    trGrad: false,
+    trColor2: "#ffb3c6",
+    trWidth: 2,
+    trLife: 0.35,
+    trOrigin: "gun",
+    trGap: 0,
+    trJitter: 6,
+    trRainbow: false,
+    trOp: 0.9,
+    trRate: 45,
+    trRandom: false,
+    mzOn: false,
+    mzColor: "#ffd9a0",
+    mzSize: 90,
+    mzDecay: 0.25,
+    mzX: 0,
+    mzY: 0,
+    mzFlicker: true,
+    mzPuff: false,
+    imOn: false,
+    imStyle: "both",
+    imColor: "#ffffff",
+    imHs: "#ff4040",
+    imSize: 12,
+    imCount: 10,
+    imTime: 0.4,
+    imGrav: 300,
+    imRing: true,
+    imFlash: false,
+    wxOn: false,
+    wxType: "petals",
+    wxCount: 80,
+    wxSize: 1,
+    wxSpeed: 1,
+    wxWind: 0.2,
+    wxOp: 0.8,
+    wxTint: "",
+    wxTwinkle: false,
+    wxLobby: false,
+    wxSwirl: false,
+    moOn: false,
+    moCount: 40,
+    moSize: 1.5,
+    moSpeed: 0.3,
+    moOp: 0.5,
+    moColor: "#ffd6e4",
+    moDrift: 12,
     // HUD extras (visual only — overlay cosmetics)
     hudWm: false,
     wmText: "Sakura",
@@ -1481,6 +1532,287 @@
     }
   }
 
+  // ── Fire FX + atmosphere (visual only — overlay canvas cosmetics) ──
+  // Tracer lines from the gun to the crosshair, muzzle light + smoke puffs,
+  // impact bursts mirroring the game's hitmarker, screen-space weather and
+  // drifting motes. Firing state comes from local input; hits from the game's
+  // hitmarker DOM. Nothing is written back.
+  function hexA(hex, a) {
+    const m = /^#?([0-9a-f]{6})$/i.exec(hex || "");
+    if (!m) return `rgba(0,0,0,${a})`;
+    const n = parseInt(m[1], 16);
+    return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+  }
+  var trLive = [], trLastShot = 0, trWasFiring = false;
+  var mzHeat = 0, mzPuffs = [];
+  var imParts = [], imRings = [], imT = 0, imHs = false, imEl = null;
+  var wxParts = [], wxKey = "";
+  var moParts = [], moKey = "";
+  function atOrigin(rect, which, ox, oy) {
+    const W = rect.width, H = rect.height;
+    let x = W / 2, y = H;
+    if (which === "bl") { x = W * 0.2; y = H; }
+    else if (which === "br") { x = W * 0.8; y = H; }
+    else if (which === "bc") { x = W / 2; y = H; }
+    else if (which === "center") { x = W / 2; y = H / 2; }
+    else { x = W / 2 + 70; y = H - 90; } // gun
+    return [x + (Number(ox) || 0), y + (Number(oy) || 0)];
+  }
+  function drawAtmoFX(rect, now, dt, g) {
+    const W = rect.width, H = rect.height, cx = W / 2, cy = H / 2;
+    const playing = isPlaying(g);
+    const firing = held.has("mouse1");
+    const firedEdge = firing && !trWasFiring;
+    trWasFiring = firing;
+    const t = now / 1000;
+    // tracers
+    if (settings.atTracers && playing) {
+      if (firing && (firedEdge || now - trLastShot > (Number(settings.trRate) ?? 45))) {
+        trLastShot = now;
+        const [ox, oy] = atOrigin(rect, settings.trOrigin || "gun");
+        const j = Number(settings.trJitter) || 0;
+        trLive.push({
+          x0: ox, y0: oy,
+          x1: cx + (j ? (Math.random() - 0.5) * 2 * j : 0),
+          y1: cy + (j ? (Math.random() - 0.5) * 2 * j : 0),
+          born: now, life: Math.max(0.05, Number(settings.trLife) || 0.35),
+          hue: settings.trRandom ? Math.random() * 360 : null
+        });
+        if (trLive.length > 24) trLive.shift();
+      }
+      const w = Math.max(0.5, Number(settings.trWidth) || 2);
+      const gap0 = Math.max(0, Number(settings.trGap) || 0);
+      for (let i = trLive.length - 1; i >= 0; i--) {
+        const tr = trLive[i];
+        const age = (now - tr.born) / 1000 / tr.life;
+        if (age >= 1) { trLive.splice(i, 1); continue; }
+        const a = (1 - age) * clamp(Number(settings.trOp) ?? 0.9, 0, 1);
+        let col = settings.trColor || "#ff6b9d";
+        if (settings.trRainbow) col = `hsl(${(t * 240) % 360} 100% 65%)`;
+        else if (tr.hue != null) col = `hsl(${tr.hue} 100% 65%)`;
+        ctx.save();
+        ctx.globalAlpha = a;
+        ctx.lineCap = "round";
+        const dx = tr.x1 - tr.x0, dy = tr.y1 - tr.y0;
+        const len = Math.hypot(dx, dy) || 1;
+        const sx = tr.x0 + (dx / len) * gap0, sy = tr.y0 + (dy / len) * gap0;
+        if (settings.trGrad && !settings.trRainbow && tr.hue == null) {
+          const gr = ctx.createLinearGradient(sx, sy, tr.x1, tr.y1);
+          gr.addColorStop(0, settings.trColor2 || "#ffb3c6");
+          gr.addColorStop(1, col);
+          ctx.strokeStyle = gr;
+        } else ctx.strokeStyle = col;
+        ctx.lineWidth = w * (1 - age * 0.6);
+        if ((settings.trStyle || "line") === "glow") { ctx.shadowColor = col; ctx.shadowBlur = 12; }
+        if ((settings.trStyle || "line") === "dots") ctx.setLineDash([2, 7]);
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(tr.x1, tr.y1);
+        ctx.stroke();
+        ctx.restore();
+      }
+    } else if (trLive.length) trLive.length = 0;
+    // muzzle light + puffs
+    if (settings.mzOn && playing) {
+      if (firing) mzHeat = Math.min(1, mzHeat + dt * 14);
+      else mzHeat = Math.max(0, mzHeat - dt / Math.max(0.05, Number(settings.mzDecay) || 0.25));
+      if (firedEdge && settings.mzPuff) {
+        const [mx, my] = atOrigin(rect, settings.trOrigin || "gun", settings.mzX, settings.mzY);
+        mzPuffs.push({ x: mx, y: my - 30, r: 6, a: 0.5 });
+      }
+      if (mzHeat > 0.02) {
+        const [mx, my] = atOrigin(rect, settings.trOrigin || "gun", settings.mzX, settings.mzY);
+        const r = (Number(settings.mzSize) || 90) * mzHeat;
+        let fl = 1;
+        if (settings.mzFlicker) fl = 0.75 + Math.random() * 0.25;
+        const gr = ctx.createRadialGradient(mx, my - 30, 0, mx, my - 30, r);
+        gr.addColorStop(0, hexA(settings.mzColor || "#ffd9a0", 0.85 * mzHeat * fl));
+        gr.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = gr;
+        ctx.fillRect(mx - r, my - 30 - r, r * 2, r * 2);
+      }
+      for (let i = mzPuffs.length - 1; i >= 0; i--) {
+        const p = mzPuffs[i];
+        p.r += dt * 60;
+        p.a -= dt * 1.2;
+        if (p.a <= 0) { mzPuffs.splice(i, 1); continue; }
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, p.a);
+        ctx.strokeStyle = "#bbbbbb";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y - p.r * 0.6, p.r, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+      if (mzPuffs.length > 12) mzPuffs.splice(0, mzPuffs.length - 12);
+    }
+    // impact bursts mirroring the game's hitmarker
+    if (!imEl || !imEl.isConnected) {
+      try { imEl = document.getElementById("hitmark"); } catch (_) { imEl = null; }
+    }
+    let pop = false, hs = false;
+    if (imEl) {
+      try {
+        pop = imEl.classList.contains("pop") || Number(imEl.style.opacity || 0) > 0.05;
+        hs = imEl.classList.contains("hs");
+      } catch (_) {}
+    }
+    if (pop && imT <= 0) { imT = 1; imHs = hs; }
+    imT = Math.max(0, imT - dt / Math.max(0.1, Number(settings.imTime) || 0.4));
+    if (settings.imOn && playing && imT > 0.01) {
+      const c = imHs ? (settings.imHs || "#ff4040") : (settings.imColor || "#ffffff");
+      const s = Number(settings.imSize) || 12;
+      const st = settings.imStyle || "both";
+      if (imParts.length === 0 && (st === "burst" || st === "both")) {
+        const n = Math.max(1, Math.round(Number(settings.imCount) || 10));
+        for (let i = 0; i < n; i++) {
+          const a = Math.random() * Math.PI * 2, sp = s * (1.5 + Math.random() * 3);
+          imParts.push({ x: cx, y: cy, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - s, life: 1 });
+        }
+      }
+      if ((st === "ring" || st === "both") && !imRings._on) {
+        imRings.push({ r: 2, a: 0.9 });
+        imRings._on = true;
+      }
+      if (settings.imFlash) {
+        ctx.fillStyle = hexA(c, imT * 0.25);
+        ctx.fillRect(0, 0, W, H);
+      }
+      ctx.save();
+      ctx.lineCap = "round";
+      const grav = Number(settings.imGrav);
+      for (let i = imParts.length - 1; i >= 0; i--) {
+        const p = imParts[i];
+        p.life -= dt / Math.max(0.1, Number(settings.imTime) || 0.4);
+        if (p.life <= 0) { imParts.splice(i, 1); continue; }
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.vy += (isFinite(grav) ? grav : 300) * dt;
+        ctx.globalAlpha = Math.max(0, p.life);
+        ctx.strokeStyle = c;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+        ctx.lineTo(p.x - p.vx * 0.03, p.y - p.vy * 0.03);
+        ctx.stroke();
+      }
+      for (let i = imRings.length - 1; i >= 0; i--) {
+        if (typeof imRings[i] !== "object") continue;
+        const r = imRings[i];
+        r.r += dt * s * 6;
+        r.a -= dt * 2.2;
+        if (r.a <= 0) { imRings.splice(i, 1); continue; }
+        ctx.globalAlpha = Math.max(0, r.a);
+        ctx.strokeStyle = c;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(cx, cy, r.r, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      if (imT <= 0.01) imRings._on = false;
+      ctx.restore();
+    }
+    if (!settings.imOn || !playing) { imParts.length = 0; imRings.length = 0; imRings._on = false; }
+    // weather
+    const wxType = settings.wxType || "petals";
+    if (settings.wxOn && (playing || settings.wxLobby)) {
+      const n = Math.max(0, Math.min(220, Math.round(Number(settings.wxCount) || 80)));
+      const key = `${wxType}|${n}`;
+      if (wxKey !== key) {
+        wxKey = key;
+        wxParts = [];
+        for (let i = 0; i < n; i++) {
+          wxParts.push({ x: Math.random(), y: Math.random(), s: Math.random(), p: Math.random() * Math.PI * 2 });
+        }
+      }
+      const size = Math.max(0.3, Number(settings.wxSize) || 1);
+      const spd = Number(settings.wxSpeed) || 1;
+      const wind = Number(settings.wxWind) || 0;
+      const op = clamp(Number(settings.wxOp) ?? 0.8, 0, 1);
+      const tint = settings.wxTint || "";
+      const tw = !!settings.wxTwinkle;
+      const swirl = !!settings.wxSwirl;
+      ctx.save();
+      for (const q of wxParts) {
+        q.y += dt * 0.03 * spd * (0.5 + q.s) * (wxType === "embers" ? -1 : 1) * (wxType === "rain" ? 6 : 1);
+        q.x += dt * 0.02 * (wind * 3 + (swirl ? Math.sin(t + q.p * 4) * 0.6 : Math.sin(t * 0.7 + q.p) * 0.15));
+        if (q.y > 1.02) { q.y = -0.02; q.x = Math.random(); }
+        if (q.y < -0.02) { q.y = 1.02; q.x = Math.random(); }
+        if (q.x > 1.02) q.x = -0.02;
+        if (q.x < -0.02) q.x = 1.02;
+        const x = q.x * W, y = q.y * H;
+        let a = op;
+        if (tw) a *= 0.45 + 0.55 * Math.abs(Math.sin(t * 2 + q.p * 5));
+        ctx.globalAlpha = a;
+        if (wxType === "rain") {
+          ctx.strokeStyle = tint || "#9fc4e8";
+          ctx.lineWidth = Math.max(1, size);
+          ctx.beginPath();
+          ctx.moveTo(x, y);
+          ctx.lineTo(x - wind * 14 * size, y - 9 * size);
+          ctx.stroke();
+        } else if (wxType === "snow") {
+          ctx.fillStyle = tint || "#ffffff";
+          ctx.beginPath();
+          ctx.arc(x, y, (0.8 + q.s * 1.6) * size, 0, Math.PI * 2);
+          ctx.fill();
+        } else if (wxType === "embers") {
+          ctx.fillStyle = tint || "#ff9a3c";
+          ctx.beginPath();
+          ctx.arc(x, y, (0.7 + q.s * 1.4) * size, 0, Math.PI * 2);
+          ctx.fill();
+        } else if (wxType === "leaves") {
+          ctx.fillStyle = tint || "#7dc46a";
+          ctx.save();
+          ctx.translate(x, y);
+          ctx.rotate(q.p + t * (0.5 + q.s));
+          ctx.beginPath();
+          ctx.ellipse(0, 0, 3.2 * size, 1.8 * size, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        } else { // petals
+          ctx.fillStyle = tint || "#ffb3c6";
+          ctx.save();
+          ctx.translate(x, y);
+          ctx.rotate(q.p + t * (0.4 + q.s * 0.8));
+          ctx.beginPath();
+          ctx.ellipse(0, 0, 3 * size, 1.7 * size, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+      }
+      ctx.restore();
+    } else if (wxKey) { wxKey = ""; wxParts = []; }
+    // motes
+    if (settings.moOn && (playing || settings.wxLobby)) {
+      const n = Math.max(0, Math.min(150, Math.round(Number(settings.moCount) || 40)));
+      const key = `motes|${n}`;
+      if (moKey !== key) {
+        moKey = key;
+        moParts = [];
+        for (let i = 0; i < n; i++) {
+          moParts.push({ x: Math.random(), y: Math.random(), s: Math.random(), p: Math.random() * Math.PI * 2 });
+        }
+      }
+      const size = Math.max(0.3, Number(settings.moSize) || 1.5);
+      const spd = Number(settings.moSpeed) || 0.3;
+      const drift = Number(settings.moDrift) ?? 12;
+      ctx.save();
+      ctx.fillStyle = settings.moColor || "#ffd6e4";
+      for (const q of moParts) {
+        q.y -= dt * 0.008 * spd * (0.4 + q.s);
+        q.x += dt * 0.004 * Math.sin(t * 0.5 + q.p) * (isFinite(drift) ? drift : 12) * 0.1;
+        if (q.y < -0.02) { q.y = 1.02; q.x = Math.random(); }
+        ctx.globalAlpha = clamp(Number(settings.moOp) ?? 0.5, 0, 1) * (0.5 + 0.5 * Math.sin(t + q.p * 3));
+        ctx.beginPath();
+        ctx.arc(q.x * W, q.y * H, (0.6 + q.s) * size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    } else if (moKey) { moKey = ""; moParts = []; }
+  }
+
   // ── Ambience / World FX ──
   var lighting = { orig: new Map(), exposure: null, list: [], scanAt: -Infinity };
   var sky = { on: false, prevBg: null, prevVisible: null, color: null, hex: null, fog: null, fogOrig: null, fogTouched: false };
@@ -2379,6 +2711,7 @@
       (settings.keystrokes && playing) ||
       (settings.crosshair && (playing || settings.chInLobby)) ||
       ((settings.hudWm || settings.hudFps || settings.hudInfo || settings.hudBars || settings.hudAmmo) && playing) ||
+      ((settings.atTracers || settings.mzOn || settings.imOn || settings.wxOn || settings.moOn) && (playing || settings.wxLobby)) ||
       (devUnlocked && settings.fpsCounter);
     if (!overlayActive) {
       if (overlayDirty) {
@@ -2399,6 +2732,7 @@
     if (settings.keystrokes && isPlaying(g)) drawKeystrokes(rect);
     if (settings.crosshair && (isPlaying(g) || settings.chInLobby)) drawCrosshair(rect, now, dt, g);
     if ((settings.hudWm || settings.hudFps || settings.hudInfo || settings.hudBars || settings.hudAmmo) && isPlaying(g)) drawHudExtras(rect, now, dt, g);
+    if ((settings.atTracers || settings.mzOn || settings.imOn || settings.wxOn || settings.moOn) && (isPlaying(g) || settings.wxLobby)) drawAtmoFX(rect, now, dt, g);
     if (devUnlocked && settings.fpsCounter) {
       drawFps(rect, now);
     }
@@ -2478,13 +2812,15 @@
     beta: '<path d="M9 3h6M10 3v6l-5.2 9.4A2 2 0 0 0 6.6 21h10.8a2 2 0 0 0 1.8-2.6L14 9V3"/><path d="M7.5 15h9"/>',
     charms: '<path d="M12 2c1.66 0 3 .67 3 1.5V7h2v5l5 5v4L21 7c0-1.1-.9-2-2-2h-5V3.5C14 .67 13.34 2 12 2zM8 5c0-1.1.9-2 2-2h2v5c0 1.1-.9 2-2 2H8V5zm4 10c0-1.1.9-2 2-2h2v5c0-1.1-.9-2-2-2h-2v5z"/>',
     chams: '<path d="M6 2c-3.3 0-6 2.7-6 6v10c0 3.3 2.7 6 6 6h4c3.3 0 6-2.7 6-6V8c0-3.3-2.7-6-6-6H6zm2 2v4h12V8H8zM8 4v12h8V4H8z"/>',
-    cross: '<circle cx="12" cy="12" r="9"/><path d="M12 7v10M7 12h10"/>'
+    cross: '<circle cx="12" cy="12" r="9"/><path d="M12 7v10M7 12h10"/>',
+    fx: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 5v14M17 5v14M3 12h3M18 12h3"/>'
   };
   var CATEGORIES = [
     { id: "hud", label: "HUD", icon: ICONS.hud },
     { id: "world", label: "World", icon: ICONS.world },
     { id: "chams", label: "Chams", icon: ICONS.chams },
-    { id: "crosshair", label: "Cross", icon: ICONS.cross }
+    { id: "crosshair", label: "Cross", icon: ICONS.cross },
+    { id: "fx", label: "FX", icon: ICONS.fx }
   ];
   if (devUnlocked) CATEGORIES.push({ id: "dev", label: "Dev", icon: ICONS.dev });
   if (betaUnlocked) CATEGORIES.push({ id: "beta", label: "Beta", icon: ICONS.beta });
@@ -2879,6 +3215,8 @@
       charms: '<path d="M6 21 21 6l-3-3L3 18l3 3z"/><path d="M14 5l3 3"/>',
       chams: '<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/>',
       target: '<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.5"/>',
+      spark: '<path d="M12 2v6M12 16v6M2 12h6M16 12h6"/><circle cx="12" cy="12" r="2.5"/>',
+      rain: '<path d="M7 15a4 4 0 1 1 1-7.9A5.5 5.5 0 0 1 18.5 9 3.5 3.5 0 0 1 17.5 16H7z"/><path d="M8 18l-1 3M12 18l-1 3M16 18l-1 3"/>',
       move: '<path d="M12 2v20M2 12h20"/><path d="M12 2 9 5M12 2l3 3M12 22l-3-3M12 22l3 3M2 12l3-3M2 12l3 3M22 12l-3-3M22 12l-3 3"/>'
     };
     var LUNAR_MODULES = [
@@ -2888,6 +3226,11 @@
       { tab: "hud", title: "Clock & Session", icon: "refresh", get: () => settings.hudInfo, set: (v) => { settings.hudInfo = v; save(); } },
       { tab: "hud", title: "Health Bars", icon: "trend", get: () => settings.hudBars, set: (v) => { settings.hudBars = v; save(); } },
       { tab: "hud", title: "Ammo", icon: "dice", get: () => settings.hudAmmo, set: (v) => { settings.hudAmmo = v; save(); } },
+      { tab: "fx", title: "Tracers", icon: "bolt", get: () => settings.atTracers, set: (v) => { settings.atTracers = v; save(); } },
+      { tab: "fx", title: "Muzzle", icon: "sun", get: () => settings.mzOn, set: (v) => { settings.mzOn = v; save(); } },
+      { tab: "fx", title: "Impact", icon: "spark", get: () => settings.imOn, set: (v) => { settings.imOn = v; save(); } },
+      { tab: "fx", title: "Weather", icon: "rain", get: () => settings.wxOn, set: (v) => { settings.wxOn = v; save(); } },
+      { tab: "fx", title: "Motes", icon: "plus", get: () => settings.moOn, set: (v) => { settings.moOn = v; save(); } },
       { tab: "world", title: "Ambience", icon: "globe", get: () => settings.ambience, set: (v) => { settings.ambience = v; save(); } },
       { tab: "world", title: "Motion Blur", icon: "blur", get: () => settings.motionBlur, set: (v) => { settings.motionBlur = v; save(); } },
       { tab: "dev", title: "Launcher", icon: "gauge", toggle: null },
@@ -2971,7 +3314,7 @@
 
       // Collect minimal cards once, transplant their rows into lunar drawers
       const pool = new Map();
-      for (const c of [...cardsFor("hud"), ...cardsFor("world"), ...cardsFor("chams"), ...cardsFor("crosshair"), ...(devUnlocked ? devCards() : [])]) {
+      for (const c of [...cardsFor("hud"), ...cardsFor("world"), ...cardsFor("chams"), ...cardsFor("crosshair"), ...cardsFor("fx"), ...(devUnlocked ? devCards() : [])]) {
         const t = c.querySelector(".sk-card-title strong");
         if (t && !pool.has(t.textContent)) pool.set(t.textContent, c);
       }
@@ -3064,7 +3407,7 @@
 
       // Sidebar categories
       const catBtns = [];
-      const cats = [["all", "All"], ["hud", "HUD"], ["world", "World"], ["chams", "Chams"], ["crosshair", "Cross"]];
+      const cats = [["all", "All"], ["hud", "HUD"], ["world", "World"], ["chams", "Chams"], ["crosshair", "Cross"], ["fx", "FX"]];
       if (devUnlocked) cats.push(["dev", "Dev"]);
       if (betaUnlocked) cats.push(["beta", "Beta"]);
       let filter = "all";
@@ -3396,6 +3739,70 @@
               row("Mirror Y", "Mirror top / bottom", toggleSwitch(settings.chMirrorY !== false, (v) => { settings.chMirrorY = v; save(); })),
               row("Pixel size", "In-game render scale", rangeField(settings.chPxScale ?? 3, 1, 6, 1, (v) => { settings.chPxScale = v; save(); })),
               note("Left-drag paints, right-drag erases.")
+            ])
+        ];
+      }
+      if (id === "fx") {
+        return [
+          moduleCard("Tracers", "Light lines from gun to crosshair.", settings.atTracers,
+            (v) => { settings.atTracers = v; save(); }, [
+              row("Style", null, selectField(settings.trStyle || "line", [["line", "Line"], ["glow", "Glow"], ["dots", "Dotted"]], (v) => { settings.trStyle = v; save(); })),
+              row("Color", null, colorField(settings.trColor || "#ff6b9d", (v) => { settings.trColor = v; save(); })),
+              row("Gradient", "Fade from second color", toggleSwitch(settings.trGrad, (v) => { settings.trGrad = v; save(); })),
+              row("Second color", "Gradient start", colorField(settings.trColor2 || "#ffb3c6", (v) => { settings.trColor2 = v; save(); })),
+              row("Width", null, rangeField(settings.trWidth, 0.5, 8, 0.5, (v) => { settings.trWidth = v; save(); })),
+              row("Lifetime", "Seconds", rangeField(settings.trLife, 0.05, 1.5, 0.05, (v) => { settings.trLife = v; save(); })),
+              row("Origin", "Where lines start", selectField(settings.trOrigin || "gun", [["gun", "Gun"], ["bc", "Bottom center"], ["bl", "Bottom left"], ["br", "Bottom right"], ["center", "Center"]], (v) => { settings.trOrigin = v; save(); })),
+              row("Start gap", "Begin away from muzzle", rangeField(settings.trGap ?? 0, 0, 120, 2, (v) => { settings.trGap = v; save(); })),
+              row("Spread", "Impact jitter px", rangeField(settings.trJitter ?? 6, 0, 40, 1, (v) => { settings.trJitter = v; save(); })),
+              row("Rainbow", null, toggleSwitch(settings.trRainbow, (v) => { settings.trRainbow = v; save(); })),
+              row("Opacity", null, rangeField(settings.trOp ?? 0.9, 0.1, 1, 0.05, (v) => { settings.trOp = v; save(); })),
+              row("Fire rate", "Ms between lines held", rangeField(settings.trRate ?? 45, 15, 200, 5, (v) => { settings.trRate = v; save(); })),
+              row("Random hue", "New color per shot", toggleSwitch(settings.trRandom, (v) => { settings.trRandom = v; save(); }))
+            ]),
+          moduleCard("Muzzle", "Light flash at the gun.", settings.mzOn,
+            (v) => { settings.mzOn = v; save(); }, [
+              row("Color", null, colorField(settings.mzColor || "#ffd9a0", (v) => { settings.mzColor = v; save(); })),
+              row("Size", null, rangeField(settings.mzSize, 20, 240, 5, (v) => { settings.mzSize = v; save(); })),
+              row("Decay", "Seconds to fade", rangeField(settings.mzDecay, 0.05, 1, 0.05, (v) => { settings.mzDecay = v; save(); })),
+              row("Offset X", null, rangeField(settings.mzX ?? 0, -200, 200, 5, (v) => { settings.mzX = v; save(); })),
+              row("Offset Y", null, rangeField(settings.mzY ?? 0, -200, 200, 5, (v) => { settings.mzY = v; save(); })),
+              row("Flicker", null, toggleSwitch(settings.mzFlicker !== false, (v) => { settings.mzFlicker = v; save(); })),
+              row("Smoke puff", "Expanding ring per shot", toggleSwitch(settings.mzPuff, (v) => { settings.mzPuff = v; save(); }))
+            ]),
+          moduleCard("Impact", "Bursts mirroring hitmarks.", settings.imOn,
+            (v) => { settings.imOn = v; save(); }, [
+              row("Style", null, selectField(settings.imStyle || "both", [["both", "Burst + Ring"], ["burst", "Burst"], ["ring", "Ring"]], (v) => { settings.imStyle = v; save(); })),
+              row("Color", null, colorField(settings.imColor || "#ffffff", (v) => { settings.imColor = v; save(); })),
+              row("Headshot color", null, colorField(settings.imHs || "#ff4040", (v) => { settings.imHs = v; save(); })),
+              row("Size", null, rangeField(settings.imSize, 4, 30, 1, (v) => { settings.imSize = v; save(); })),
+              row("Sparks", null, rangeField(settings.imCount, 1, 30, 1, (v) => { settings.imCount = v; save(); })),
+              row("Duration", "Seconds", rangeField(settings.imTime, 0.1, 1.2, 0.05, (v) => { settings.imTime = v; save(); })),
+              row("Gravity", null, rangeField(settings.imGrav ?? 300, 0, 1200, 20, (v) => { settings.imGrav = v; save(); })),
+              row("Ring", "Expanding circle", toggleSwitch(settings.imRing !== false, (v) => { settings.imRing = v; save(); })),
+              row("Flash", "Full-screen pop", toggleSwitch(settings.imFlash, (v) => { settings.imFlash = v; save(); }))
+            ]),
+          moduleCard("Weather", "Screen-space particles.", settings.wxOn,
+            (v) => { settings.wxOn = v; save(); }, [
+              row("Type", null, selectField(settings.wxType || "petals", [["petals", "Petals"], ["snow", "Snow"], ["rain", "Rain"], ["embers", "Embers"], ["leaves", "Leaves"]], (v) => { settings.wxType = v; save(); })),
+              row("Count", null, rangeField(settings.wxCount ?? 80, 0, 220, 10, (v) => { settings.wxCount = v; save(); })),
+              row("Size", null, rangeField(settings.wxSize ?? 1, 0.3, 4, 0.1, (v) => { settings.wxSize = v; save(); })),
+              row("Speed", null, rangeField(settings.wxSpeed ?? 1, 0.1, 5, 0.1, (v) => { settings.wxSpeed = v; save(); })),
+              row("Wind", "Left (-) / right (+)", rangeField(settings.wxWind ?? 0.2, -1, 1, 0.05, (v) => { settings.wxWind = v; save(); })),
+              row("Opacity", null, rangeField(settings.wxOp ?? 0.8, 0.1, 1, 0.05, (v) => { settings.wxOp = v; save(); })),
+              row("Tint", "Empty = type color", colorField(settings.wxTint || "#ffb3c6", (v) => { settings.wxTint = v; save(); })),
+              row("Twinkle", "Blink in and out", toggleSwitch(settings.wxTwinkle, (v) => { settings.wxTwinkle = v; save(); })),
+              row("Swirl", "Sway side to side", toggleSwitch(settings.wxSwirl, (v) => { settings.wxSwirl = v; save(); })),
+              row("In menu", "Also outside matches", toggleSwitch(settings.wxLobby, (v) => { settings.wxLobby = v; save(); }))
+            ]),
+          moduleCard("Motes", "Slow drifting specks.", settings.moOn,
+            (v) => { settings.moOn = v; save(); }, [
+              row("Count", null, rangeField(settings.moCount ?? 40, 0, 150, 5, (v) => { settings.moCount = v; save(); })),
+              row("Size", null, rangeField(settings.moSize ?? 1.5, 0.3, 5, 0.1, (v) => { settings.moSize = v; save(); })),
+              row("Speed", null, rangeField(settings.moSpeed ?? 0.3, 0.05, 2, 0.05, (v) => { settings.moSpeed = v; save(); })),
+              row("Opacity", null, rangeField(settings.moOp ?? 0.5, 0.1, 1, 0.05, (v) => { settings.moOp = v; save(); })),
+              row("Color", null, colorField(settings.moColor || "#ffd6e4", (v) => { settings.moColor = v; save(); })),
+              row("Drift", "Sideways sway", rangeField(settings.moDrift ?? 12, 0, 40, 1, (v) => { settings.moDrift = v; save(); }))
             ])
         ];
       }
