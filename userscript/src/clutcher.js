@@ -156,6 +156,10 @@
     vmKick: 100,
     vmBob: 100,
     vmSway: 100,
+    armX: 0,
+    armY: 0,
+    armZ: 0,
+    armHideName: "",
     // Crosshair studio (visual only — drawn on the overlay canvas)
     crosshair: false,
     chPreset: "custom",
@@ -1439,6 +1443,35 @@
                   nd.rotation.z += rz;
                 }
               }
+              // Arm-only adjust: shift the arm meshes (shoulder included) or
+              // hide ones matching the name pattern.
+              const aax = chNum(settings.armX, 0), aay = chNum(settings.armY, 0), aaz = chNum(settings.armZ, 0);
+              const pat = (settings.armHideName || "").trim().toLowerCase();
+              if (aax || aay || aaz || pat) {
+                const gg2 = getGame();
+                for (const am of vmArmList(gg2, performance.now())) {
+                  if (!am) continue;
+                  if (am.position && (aax || aay || aaz)) {
+                    am.position.x += aax;
+                    am.position.y += aay;
+                    am.position.z += aaz;
+                  }
+                  if (pat) {
+                    const nm = String((am.name || "")).toLowerCase();
+                    if (nm.includes(pat)) {
+                      if (am.visible !== false) {
+                        if (am.userData._sakPart === undefined) am.userData._sakPart = am.visible;
+                        am.visible = false;
+                      }
+                      continue;
+                    }
+                  }
+                  if (am.userData._sakPart !== undefined && !settings.armHide) {
+                    am.visible = am.userData._sakPart;
+                    delete am.userData._sakPart;
+                  }
+                }
+              }
             }
             // Last word on FOV inside the game's own update flow, in case it
             // re-syncs the viewmodel camera after our per-frame write.
@@ -1463,6 +1496,42 @@
         st.wrapped = true;
       } catch (_) {}
     }
+  }
+  // ── Arm adjust (move/hide arm meshes independently of the gun) ──
+  // The shoulder is baked into the arm meshes, so hiding by name is a guess —
+  // shifting the arms themselves always works. Resolved on the same rescan
+  // rhythm as chams; offsets apply after the game's update (no restore needed,
+  // the game rewrites positions every frame), name-hides restore themselves.
+  var vmArmCache = { list: [], key: null, at: 0 };
+  function vmArmList(g, now) {
+    const c = vmArmCache;
+    const scanMs = Math.max(500, chNum(settings.chamsScan, 2) * 1000);
+    const rig = g && g.cs2 && g.cs2.rig;
+    const vm = g && g.viewmodel;
+    const key = (rig && rig.arms ? rig.arms : 0) + "|" + (vm ? (vm.current || vm.root || 0) : 0);
+    if (c.key !== key || now - (c.at || 0) > scanMs) {
+      c.key = key;
+      c.at = now;
+      c.list = [];
+      try {
+        if (rig && rig.arms && typeof rig.arms.traverse === "function") {
+          rig.arms.traverse((o) => { if (o && o.isMesh) c.list.push(o); });
+        }
+      } catch (_) {}
+      try {
+        if (vm) {
+          for (const k of ["_lhand", "_offhand"]) {
+            const arr = vm[k];
+            if (!Array.isArray(arr)) continue;
+            for (const e of arr) {
+              const mesh = e && e.isMesh ? e : (Array.isArray(e) ? e[0] : null);
+              if (mesh && mesh.isMesh && !c.list.includes(mesh)) c.list.push(mesh);
+            }
+          }
+        }
+      } catch (_) {}
+    }
+    return c.list;
   }
   function tickChams(g, now) {
     if (!g) return;
@@ -2359,6 +2428,10 @@
             row("Kick", "Recoil kick percent", rangeField(settings.vmKick ?? 100, 0, 100, 5, (v) => { settings.vmKick = v; save(); })),
             row("Bob", "Walk bob percent", rangeField(settings.vmBob ?? 100, 0, 100, 5, (v) => { settings.vmBob = v; save(); })),
             row("Sway", "Look sway percent", rangeField(settings.vmSway ?? 100, 0, 100, 5, (v) => { settings.vmSway = v; save(); })),
+            row("Arm X", "Shift arms right (+) / left (-)", rangeField(settings.armX ?? 0, -0.3, 0.3, 0.005, (v) => { settings.armX = v; save(); })),
+            row("Arm Y", "Shift arms up (+) / down (-)", rangeField(settings.armY ?? 0, -0.3, 0.3, 0.005, (v) => { settings.armY = v; save(); })),
+            row("Arm Z", "Shift arms toward (+) / away (-)", rangeField(settings.armZ ?? 0, -0.3, 0.3, 0.005, (v) => { settings.armZ = v; save(); })),
+            row("Hide part", "Hide arm meshes by name, e.g. shoulder", textField(settings.armHideName || "", 40, (v) => { settings.armHideName = v; save(); })),
             row("Reset pose", "Zero offsets, rotation and FOV", actionBtn("Reset", () => {
               Object.assign(settings, { vmX: 0, vmY: 0, vmZ: 0, vmRX: 0, vmRY: 0, vmRZ: 0, vmFovOn: false });
               save();
