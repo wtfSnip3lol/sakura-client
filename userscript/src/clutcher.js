@@ -204,6 +204,7 @@
     wxTwinkle: false,
     wxLobby: false,
     wxSwirl: false,
+    wxMode: "screen",
     moOn: false,
     moCount: 40,
     moSize: 1.5,
@@ -1117,6 +1118,7 @@
   var mzHeat = 0, mzPuffs = [];
   var imParts = [], imRings = [], imT = 0, imHs = false, imEl = null;
   var wxParts = [], wxKey = "";
+  var wx3d = [], wx3dKey = "", wxVecCls = null, wxTmpV = null, wxTmpV2 = null;
   var moParts = [], moKey = "";
   function atOrigin(rect, which, ox, oy) {
     const W = rect.width, H = rect.height;
@@ -1286,7 +1288,108 @@
     if (!settings.imOn || !playing) { imParts.length = 0; imRings.length = 0; imRings._on = false; }
     // weather
     const wxType = settings.wxType || "petals";
-    if (settings.wxOn && (playing || settings.wxLobby)) {
+    // world-space weather: points fixed in the map, projected through the
+    // game's own camera every frame (parallax for free, nothing added to the
+    // scene, no three.js classes needed beyond the camera's own Vector3).
+    let wxDidWorld = false;
+    if (settings.wxOn && (settings.wxMode || "screen") === "world" && playing && g && g.camera) {
+      const cam = g.camera;
+      const Vec3 = wxVecCls || (wxVecCls = cam.position && cam.position.constructor);
+      if (Vec3) {
+        try { if (typeof cam.updateMatrixWorld === "function") cam.updateMatrixWorld(); } catch (_) {}
+        const n = Math.max(0, Math.min(220, Math.round(Number(settings.wxCount) || 80)));
+        const key = `w3|${wxType}|${n}`;
+        if (wx3dKey !== key) {
+          wx3dKey = key;
+          wx3d = [];
+          for (let i = 0; i < n; i++) {
+            wx3d.push({
+              x: (Math.random() - 0.5) * 44, y: Math.random() * 24 - 4, z: (Math.random() - 0.5) * 44,
+              s: Math.random(), p: Math.random() * Math.PI * 2
+            });
+          }
+        }
+        const cp = cam.position;
+        const fov = (cam.fov || 75) * Math.PI / 360;
+        const proj = H / (2 * Math.tan(fov));
+        const size = Math.max(0.3, Number(settings.wxSize) || 1);
+        const spd = Number(settings.wxSpeed) || 1;
+        const wind = Number(settings.wxWind) || 0;
+        const op = clamp(Number(settings.wxOp) ?? 0.8, 0, 1);
+        const tint = settings.wxTint || "";
+        const tw = !!settings.wxTwinkle;
+        const v = wxTmpV || (wxTmpV = new Vec3());
+        const v2 = wxTmpV2 || (wxTmpV2 = new Vec3());
+        wxDidWorld = true;
+        ctx.save();
+        for (const q of wx3d) {
+          q.y += dt * spd * (0.6 + q.s) * (wxType === "embers" ? 1.6 : -1.4) * (wxType === "rain" ? 5 : 1);
+          q.x += dt * (wind * 4 + Math.sin(t * 0.8 + q.p) * 0.4);
+          if (cp) {
+            if (q.x - cp.x > 22) q.x -= 44; else if (q.x - cp.x < -22) q.x += 44;
+            if (q.z - cp.z > 22) q.z -= 44; else if (q.z - cp.z < -22) q.z += 44;
+            if (q.y - cp.y > 14) q.y -= 24; else if (q.y - cp.y < -10) q.y += 24;
+          }
+          let sx, sy, dist;
+          try {
+            v.set(q.x, q.y, q.z).project(cam);
+            if (v.z > 1 || v.z < -1) continue;
+            sx = (v.x * 0.5 + 0.5) * W;
+            sy = (-v.y * 0.5 + 0.5) * H;
+            if (sx < -40 || sx > W + 40 || sy < -40 || sy > H + 40) continue;
+            dist = cp ? Math.hypot(q.x - cp.x, q.y - cp.y, q.z - cp.z) : 10;
+          } catch (_) { continue; }
+          const sc = (proj / Math.max(0.5, dist)) * 0.02 * size;
+          let a = op;
+          if (tw) a *= 0.45 + 0.55 * Math.abs(Math.sin(t * 2 + q.p * 5));
+          ctx.globalAlpha = a;
+          if (wxType === "rain") {
+            let ex = sx, ey = sy;
+            try {
+              v2.set(q.x - wind * 0.4, q.y + 0.9, q.z).project(cam);
+              ex = (v2.x * 0.5 + 0.5) * W;
+              ey = (-v2.y * 0.5 + 0.5) * H;
+            } catch (_) {}
+            ctx.strokeStyle = tint || "#9fc4e8";
+            ctx.lineWidth = Math.max(1, sc * 1.5);
+            ctx.beginPath();
+            ctx.moveTo(sx, sy);
+            ctx.lineTo(ex, ey);
+            ctx.stroke();
+          } else if (wxType === "snow") {
+            ctx.fillStyle = tint || "#ffffff";
+            ctx.beginPath();
+            ctx.arc(sx, sy, Math.max(0.5, (0.8 + q.s * 1.6) * sc * 1.5), 0, Math.PI * 2);
+            ctx.fill();
+          } else if (wxType === "embers") {
+            ctx.fillStyle = tint || "#ff9a3c";
+            ctx.beginPath();
+            ctx.arc(sx, sy, Math.max(0.5, (0.7 + q.s * 1.4) * sc * 1.5), 0, Math.PI * 2);
+            ctx.fill();
+          } else if (wxType === "leaves") {
+            ctx.fillStyle = tint || "#7dc46a";
+            ctx.save();
+            ctx.translate(sx, sy);
+            ctx.rotate(q.p + t * (0.5 + q.s));
+            ctx.beginPath();
+            ctx.ellipse(0, 0, 2.4 * sc, 1.3 * sc, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+          } else { // petals
+            ctx.fillStyle = tint || "#ffb3c6";
+            ctx.save();
+            ctx.translate(sx, sy);
+            ctx.rotate(q.p + t * (0.4 + q.s * 0.8));
+            ctx.beginPath();
+            ctx.ellipse(0, 0, 2.2 * sc, 1.2 * sc, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+          }
+        }
+        ctx.restore();
+      }
+    } else if (wx3dKey) { wx3dKey = ""; wx3d = []; }
+    if (settings.wxOn && !wxDidWorld && (playing || settings.wxLobby)) {
       const n = Math.max(0, Math.min(220, Math.round(Number(settings.wxCount) || 80)));
       const key = `${wxType}|${n}`;
       if (wxKey !== key) {
@@ -3503,6 +3606,7 @@
           moduleCard("Weather", "Screen-space particles.", settings.wxOn,
             (v) => { settings.wxOn = v; save(); }, [
               row("Type", null, selectField(settings.wxType || "petals", [["petals", "Petals"], ["snow", "Snow"], ["rain", "Rain"], ["embers", "Embers"], ["leaves", "Leaves"]], (v) => { settings.wxType = v; save(); })),
+              row("Placement", "Screen overlay vs in the map", selectField(settings.wxMode || "screen", [["screen", "On screen"], ["world", "In map (3D)"]], (v) => { settings.wxMode = v; save(); })),
               row("Count", null, rangeField(settings.wxCount ?? 80, 0, 220, 10, (v) => { settings.wxCount = v; save(); })),
               row("Size", null, rangeField(settings.wxSize ?? 1, 0.3, 4, 0.1, (v) => { settings.wxSize = v; save(); })),
               row("Speed", null, rangeField(settings.wxSpeed ?? 1, 0.1, 5, 0.1, (v) => { settings.wxSpeed = v; save(); })),
