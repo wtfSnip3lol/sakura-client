@@ -261,6 +261,33 @@
     ammoLowAt: 6,
     ammoColor: "#ffffff",
     ammoBg: true,
+    // Day cycle + light lab + fog lab + radar cosmetics
+    wdCycle: false,
+    wdTime: 12,
+    wdAuto: true,
+    wdSpeed: 0.25,
+    wdNight: 0.7,
+    wdBolt: false,
+    wdBoltRate: 8,
+    wdManual: false,
+    wdElev: 45,
+    wdAzim: 180,
+    hemiOn: false,
+    hemiSky: "#bcd6ff",
+    hemiGround: "#4a4238",
+    fogCustom: false,
+    fogColor: "#888899",
+    fogNear: 10,
+    fogFar: 400,
+    fogBreathe: false,
+    fogBreatheSpd: 1,
+    rdOn: false,
+    rdSize: 1,
+    rdRing: "#4a4f55",
+    rdOp: 1,
+    rdPos: "tl",
+    rdSquare: false,
+    rdHide: false,
     // Crosshair studio (visual only — drawn on the overlay canvas)
     crosshair: false,
     chPreset: "custom",
@@ -336,7 +363,27 @@
     void: { customLighting: true, lightExposure: 0.9, hemiMult: 0.9, sunMult: 0.9, customSky: true, skyColor: "#000000", fogMode: "sky", noTextures: true, texColor: "#3a3f4a", noBloomFx: true, colorGrade: true, gradeContrast: 1.2, gradeVignette: 0.6 },
     synthwave: { customLighting: true, lightExposure: 1.15, hemiMult: 1.1, sunMult: 0.7, sunTint: true, sunColor: "#ff5ec8", customSky: true, skyColor: "#2a0845", fogMode: "sky", colorGrade: true, gradeSaturation: 1.35, gradeContrast: 1.12, gradeHue: -12, gradeVignette: 0.5 },
     noir: { customLighting: true, lightExposure: 1.05, hemiMult: 0.7, sunMult: 1.3, fogMode: "off", colorGrade: true, gradeSaturation: 0, gradeContrast: 1.35, gradeBrightness: 1.02, gradeVignette: 0.7 },
-    dream: { customLighting: true, lightExposure: 1.2, hemiMult: 1.4, sunTint: true, sunColor: "#ffc2f0", customSky: true, skyColor: "#f3c6ff", fogMode: "sky", colorGrade: true, gradeSaturation: 1.15, gradeBrightness: 1.08, gradeBlur: 0.6, gradeTint: 0.25, gradeTintColor: "#ff9de6", gradeVignette: 0.3 }
+    dream: { customLighting: true, lightExposure: 1.2, hemiMult: 1.4, sunTint: true, sunColor: "#ffc2f0", customSky: true, skyColor: "#f3c6ff", fogMode: "sky", colorGrade: true, gradeSaturation: 1.15, gradeBrightness: 1.08, gradeBlur: 0.6, gradeTint: 0.25, gradeTintColor: "#ff9de6", gradeVignette: 0.3 },
+    desert: { customLighting: true, lightExposure: 1.1, hemiMult: 0.9, sunMult: 1.2, sunTint: true, sunColor: "#ffdf9e", customSky: true, skyColor: "#e8c88a", fogMode: "sky", colorGrade: true, gradeSaturation: 1.1, gradeContrast: 1.05, gradeHue: -8, gradeVignette: 0.25 },
+    volcano: { customLighting: true, lightExposure: 1.0, hemiMult: 0.5, sunMult: 1.3, sunTint: true, sunColor: "#ff5a2a", customSky: true, skyColor: "#2b0d0d", fogMode: "sky", noTextures: true, texColor: "#4a2a2a", colorGrade: true, gradeSaturation: 1.3, gradeContrast: 1.15, gradeVignette: 0.5 },
+    swamp: { customLighting: true, lightExposure: 1.0, hemiMult: 0.7, sunMult: 0.7, sunTint: true, sunColor: "#a8ff6a", customSky: true, skyColor: "#3d5a2a", fogMode: "sky", colorGrade: true, gradeSaturation: 1.1, gradeHue: -18, gradeVignette: 0.4 },
+    space: { customLighting: true, lightExposure: 0.8, hemiMult: 0.3, sunMult: 0.4, sunTint: true, sunColor: "#b49aff", customSky: true, skyColor: "#050510", fogMode: "sky", noTextures: true, texColor: "#1a1a2e", colorGrade: true, gradeSaturation: 1.2, gradeContrast: 1.1, gradeVignette: 0.55 },
+    candy: { customLighting: true, lightExposure: 1.25, hemiMult: 1.3, sunMult: 0.6, sunTint: true, sunColor: "#ff9de6", customSky: true, skyColor: "#ffd6f2", fogMode: "sky", colorGrade: true, gradeSaturation: 1.4, gradeBrightness: 1.06, gradeVignette: 0.25 },
+    matrix: { customLighting: true, lightExposure: 1.0, hemiMult: 0.8, sunMult: 0.9, sunTint: true, sunColor: "#3bff6e", customSky: true, skyColor: "#041405", fogMode: "sky", colorGrade: true, gradeSaturation: 1.2, gradeContrast: 1.15, gradeHue: -18, gradeVignette: 0.45 },
+    bloodmoon: { customLighting: true, lightExposure: 0.85, hemiMult: 0.4, sunMult: 0.9, sunTint: true, sunColor: "#ff3b3b", customSky: true, skyColor: "#1a0505", fogMode: "sky", colorGrade: true, gradeSaturation: 1.25, gradeContrast: 1.2, gradeVignette: 0.55 },
+    toxic: { customLighting: true, lightExposure: 1.1, hemiMult: 1.0, sunMult: 0.9, sunTint: true, sunColor: "#c8ff2a", customSky: true, skyColor: "#3a4a08", fogMode: "sky", colorGrade: true, gradeSaturation: 1.5, gradeContrast: 1.1, gradeVignette: 0.35 },
+    pastel: { customLighting: true, lightExposure: 1.25, hemiMult: 1.3, sunMult: 1.0, sunTint: true, sunColor: "#ffe0ec", customSky: true, skyColor: "#e8f4ff", fogMode: "sky", colorGrade: true, gradeSaturation: 1.05, gradeBrightness: 1.07, gradeBlur: 0.3, gradeVignette: 0.2 },
+    mono: { customLighting: true, lightExposure: 1.0, hemiMult: 0.8, sunMult: 1.0, fogMode: "off", colorGrade: true, gradeSaturation: 0, gradeContrast: 1.3, gradeVignette: 0.5 },
+    golden: { customLighting: true, lightExposure: 1.1, hemiMult: 0.9, sunMult: 1.3, sunTint: true, sunColor: "#ffcf6e", customSky: true, skyColor: "#ffcf8a", fogMode: "sky", colorGrade: true, gradeSaturation: 1.25, gradeContrast: 1.08, gradeHue: -8, gradeVignette: 0.3 },
+    storm: { customLighting: true, lightExposure: 0.7, hemiMult: 0.5, sunMult: 0.6, sunTint: true, sunColor: "#8fa8c8", customSky: true, skyColor: "#2a3440", fogMode: "sky", colorGrade: true, gradeSaturation: 0.8, gradeContrast: 1.2, gradeVignette: 0.5 },
+    abyss: { customLighting: true, lightExposure: 0.6, hemiMult: 0.25, sunMult: 0.35, sunTint: true, sunColor: "#4a7aff", customSky: true, skyColor: "#02030a", fogMode: "sky", noTextures: true, texColor: "#0a0f1e", colorGrade: true, gradeSaturation: 1.1, gradeContrast: 1.25, gradeVignette: 0.65 },
+    frost: { customLighting: true, lightExposure: 1.25, hemiMult: 1.4, sunMult: 1.0, sunTint: true, sunColor: "#cfeeff", customSky: true, skyColor: "#dff2ff", fogMode: "sky", colorGrade: true, gradeSaturation: 0.9, gradeBrightness: 1.06, gradeVignette: 0.25 },
+    forest: { customLighting: true, lightExposure: 1.0, hemiMult: 0.9, sunMult: 0.9, sunTint: true, sunColor: "#9fe870", customSky: true, skyColor: "#5a8a4a", fogMode: "sky", colorGrade: true, gradeSaturation: 1.15, gradeHue: -10, gradeVignette: 0.35 },
+    ember: { customLighting: true, lightExposure: 1.05, hemiMult: 0.7, sunMult: 1.2, sunTint: true, sunColor: "#ff7a3c", customSky: true, skyColor: "#3a1408", fogMode: "sky", colorGrade: true, gradeSaturation: 1.3, gradeContrast: 1.12, gradeVignette: 0.45 },
+    ghost: { customLighting: true, lightExposure: 1.15, hemiMult: 1.2, sunMult: 1.1, sunTint: true, sunColor: "#e8f4ff", customSky: true, skyColor: "#c8d8e8", fogMode: "sky", noTextures: true, texColor: "#b9c5d7", colorGrade: true, gradeSaturation: 0.5, gradeContrast: 1.05, gradeBrightness: 1.04, gradeVignette: 0.3 },
+    royal: { customLighting: true, lightExposure: 1.0, hemiMult: 0.8, sunMult: 0.8, sunTint: true, sunColor: "#b46bff", customSky: true, skyColor: "#1e0b3d", fogMode: "sky", colorGrade: true, gradeSaturation: 1.3, gradeContrast: 1.12, gradeHue: 10, gradeVignette: 0.45 },
+    copper: { customLighting: true, lightExposure: 1.05, hemiMult: 0.8, sunMult: 1.2, sunTint: true, sunColor: "#e8965a", customSky: true, skyColor: "#6b4226", fogMode: "sky", colorGrade: true, gradeSaturation: 1.2, gradeContrast: 1.1, gradeHue: -10, gradeVignette: 0.35 },
+    mint: { customLighting: true, lightExposure: 1.15, hemiMult: 1.2, sunMult: 1.0, sunTint: true, sunColor: "#a8ffd6", customSky: true, skyColor: "#d6fff0", fogMode: "sky", colorGrade: true, gradeSaturation: 1.1, gradeBrightness: 1.05, gradeVignette: 0.25 }
   };
 
   var PRESET_KEYS = [
@@ -1356,6 +1403,7 @@
     for (const [l, o] of lighting.orig) {
       l.intensity = o.i;
       if (l.color && o.color) l.color.copy(o.color);
+      if (l.groundColor && o.ground) l.groundColor.copy(o.ground);
     }
     lighting.orig.clear();
     if (lighting.exposure != null && renderer) renderer.toneMappingExposure = lighting.exposure;
@@ -1380,7 +1428,7 @@
     }
     let sun = null;
     for (const l of lighting.list) {
-      if (!lighting.orig.has(l)) lighting.orig.set(l, { i: l.intensity, color: l.color ? l.color.clone() : null });
+      if (!lighting.orig.has(l)) lighting.orig.set(l, { i: l.intensity, color: l.color ? l.color.clone() : null, ground: l.groundColor ? l.groundColor.clone() : null });
       if (l.isDirectionalLight && (!sun || lighting.orig.get(l).i > lighting.orig.get(sun).i)) sun = l;
     }
     for (const l of lighting.list) {
@@ -1388,6 +1436,10 @@
       l.intensity = o.i * (l.isDirectionalLight ? settings.sunMult : settings.hemiMult);
       if (l.color && o.color) {
         if (l === sun && settings.sunTint) l.color.set(settings.sunColor);
+        else if (l.isHemisphereLight && settings.hemiOn) {
+          l.color.set(settings.hemiSky || "#bcd6ff");
+          if (l.groundColor) l.groundColor.set(settings.hemiGround || "#4a4238");
+        }
         else l.color.copy(o.color);
       }
     }
@@ -1462,6 +1514,15 @@
     if (fogMode === "off") {
       fog.near = 1e5;
       fog.far = 1e5 + 1;
+    } else if (fogMode === "custom") {
+      fog.near = chNum(settings.fogNear, sky.fogOrig.near);
+      fog.far = chNum(settings.fogFar, sky.fogOrig.far);
+      if (fog.color) fog.color.set(settings.fogColor || "#888899");
+      if (settings.fogBreathe) {
+        const f = 1 + Math.sin(performance.now() / 1000 * chNum(settings.fogBreatheSpd, 1)) * 0.15;
+        fog.near *= f;
+        fog.far *= f;
+      }
     } else {
       fog.near = sky.fogOrig.near;
       fog.far = sky.fogOrig.far;
@@ -1469,7 +1530,7 @@
     if (fogMode === "sky") {
       const c = skyColor(scene);
       if (c && fog.color) fog.color.copy(c);
-    } else if (fog.color && sky.fogOrig.color) fog.color.copy(sky.fogOrig.color);
+    } else if (fogMode !== "custom" && fog.color && sky.fogOrig.color) fog.color.copy(sky.fogOrig.color);
   }
 
   function tickBloom(g, want) {
@@ -1537,12 +1598,168 @@
     }
   }
 
+  // ── Day cycle + sun position + radar cosmetics ──
+  // The cycle drives the EXISTING lighting settings (sun/hemi/exposure/sky)
+  // instead of touching lights itself, so it never fights tickLighting —
+  // the base values are snapshotted on enable and restored on disable.
+  var wdBase = null, wdSunLight = null, wdSunAt = 0, wdSunOrig = null, wdPosTouched = false;
+  var wdLastT = 0, wdFlash = 0, wdNextBolt = 0;
+  var WD_KEYS = [
+    [0,   { sky: "#05070f", sun: "#8fb4ff", sunI: 0.25, hemiI: 0.5, expo: 0.85 }],
+    [4.5, { sky: "#05070f", sun: "#8fb4ff", sunI: 0.25, hemiI: 0.5, expo: 0.85 }],
+    [6.5, { sky: "#e8a06c", sun: "#ffb36b", sunI: 0.8, hemiI: 0.85, expo: 0.95 }],
+    [9,   { sky: "#7fb2e5", sun: "#fff4e0", sunI: 1, hemiI: 1, expo: 1 }],
+    [16,  { sky: "#7fb2e5", sun: "#fff4e0", sunI: 1, hemiI: 1, expo: 1 }],
+    [18,  { sky: "#e8906c", sun: "#ff9a5c", sunI: 0.85, hemiI: 0.9, expo: 0.95 }],
+    [20,  { sky: "#05070f", sun: "#8fb4ff", sunI: 0.25, hemiI: 0.5, expo: 0.85 }],
+    [24,  { sky: "#05070f", sun: "#8fb4ff", sunI: 0.25, hemiI: 0.5, expo: 0.85 }]
+  ];
+  function wdAt(t) {
+    t = ((t % 24) + 24) % 24;
+    let a = WD_KEYS[0], b = WD_KEYS[WD_KEYS.length - 1];
+    for (let i = 0; i < WD_KEYS.length - 1; i++) {
+      if (t >= WD_KEYS[i][0] && t <= WD_KEYS[i + 1][0]) { a = WD_KEYS[i]; b = WD_KEYS[i + 1]; break; }
+    }
+    const f = (t - a[0]) / Math.max(1e-6, b[0] - a[0]);
+    const mix = (x, y) => x + (y - x) * f;
+    return {
+      sky: chMixHex(a[1].sky, b[1].sky, f),
+      sun: chMixHex(a[1].sun, b[1].sun, f),
+      sunI: mix(a[1].sunI, b[1].sunI),
+      hemiI: mix(a[1].hemiI, b[1].hemiI),
+      expo: mix(a[1].expo, b[1].expo)
+    };
+  }
+  function wdFindSun(g) {
+    const now = performance.now();
+    if (wdSunLight && now - wdSunAt < 2000) return wdSunLight;
+    const scene = g && g.scene;
+    if (!scene || typeof scene.traverse !== "function") return wdSunLight;
+    let best = null, bi = -Infinity;
+    try {
+      scene.traverse((o) => {
+        if (o && o.isDirectionalLight && isFinite(o.intensity) && o.intensity > bi) { bi = o.intensity; best = o; }
+      });
+    } catch (_) {}
+    if (best) {
+      if (wdSunLight !== best) {
+        wdSunLight = best;
+        try {
+          wdSunOrig = best.position ? { x: best.position.x, y: best.position.y, z: best.position.z } : null;
+        } catch (_) { wdSunOrig = null; }
+      }
+      wdSunAt = now;
+    }
+    return wdSunLight;
+  }
+  function wdPlaceSun(g, elevDeg, azimDeg) {
+    const sun = wdFindSun(g);
+    if (!sun || !sun.position) return false;
+    try {
+      const el = elevDeg * Math.PI / 180, az = azimDeg * Math.PI / 180, r = 100;
+      sun.position.set(
+        r * Math.cos(el) * Math.cos(az),
+        r * Math.sin(el),
+        r * Math.cos(el) * Math.sin(az)
+      );
+      wdPosTouched = true;
+      return true;
+    } catch (_) { return false; }
+  }
+  function wdRestoreSun() {
+    if (wdPosTouched && wdSunLight && wdSunOrig && wdSunLight.position) {
+      try { wdSunLight.position.set(wdSunOrig.x, wdSunOrig.y, wdSunOrig.z); } catch (_) {}
+    }
+    wdPosTouched = false;
+  }
+  function tickDayCycle(g, isLive) {
+    const now = performance.now();
+    const dt = Math.min(0.25, (now - (wdLastT || now)) / 1000);
+    wdLastT = now;
+    if (!isLive || !settings.wdCycle) {
+      if (wdBase) {
+        Object.assign(settings, wdBase);
+        wdBase = null;
+        save();
+      }
+      if (!settings.wdManual) wdRestoreSun();
+      else wdPlaceSun(g, chNum(settings.wdElev, 45), chNum(settings.wdAzim, 180));
+      wdFlash = 0;
+      return;
+    }
+    if (!wdBase) {
+      wdBase = {
+        sunMult: settings.sunMult, hemiMult: settings.hemiMult,
+        lightExposure: settings.lightExposure, sunTint: settings.sunTint,
+        sunColor: settings.sunColor, skyColor: settings.skyColor
+      };
+      settings.ambience = true;
+      settings.customLighting = true;
+      settings.customSky = true;
+      settings.sunTint = true;
+    }
+    if (settings.wdAuto !== false) {
+      settings.wdTime = (((Number(settings.wdTime) || 12) + dt * chNum(settings.wdSpeed, 0.25)) % 24 + 24) % 24;
+    }
+    if (settings.wdBolt) {
+      if (now >= wdNextBolt) {
+        wdFlash = 1;
+        wdNextBolt = now + (2000 + Math.random() * Math.max(1000, chNum(settings.wdBoltRate, 8) * 1000));
+      }
+    } else wdNextBolt = 0;
+    wdFlash = Math.max(0, wdFlash - dt * 5);
+    const k = wdAt(settings.wdTime);
+    const nightness = 1 - Math.max(0, Math.min(1, (k.sunI - 0.25) / 0.75));
+    const nd = chNum(settings.wdNight, 0.7) * nightness;
+    settings.sunMult = Math.max(0.05, k.sunI * (1 - nd * 0.6) + wdFlash * 3);
+    settings.hemiMult = Math.max(0.05, k.hemiI * (1 - nd * 0.6));
+    settings.lightExposure = Math.max(0.2, k.expo * (1 - nd * 0.4));
+    settings.sunColor = wdFlash > 0.02 ? chMixHex(k.sun, "#ffffff", Math.min(1, wdFlash)) : k.sun;
+    settings.skyColor = wdFlash > 0.02 ? chMixHex(k.sky, "#ffffff", Math.min(1, wdFlash * 0.5)) : k.sky;
+    const el = 90 * Math.sin(Math.PI * (chNum(settings.wdTime, 12) - 6) / 12);
+    const az = 180 + (chNum(settings.wdTime, 12) - 12) * 15;
+    wdPlaceSun(g, Math.max(-20, el), (az % 360 + 360) % 360);
+  }
+  // ── Radar cosmetics (pure CSS over the game's own #radar) ──
+  var rdStyleEl = null, rdLastCss = "###";
+  function tickRadar() {
+    const on = settings.rdOn || settings.rdHide;
+    let css = "";
+    if (on) {
+      if (settings.rdHide) css = "#radar{display:none!important}";
+      else {
+        const pos = settings.rdPos || "tl";
+        const p = pos === "tr" ? "left:auto;right:14px;top:14px;bottom:auto;" :
+                  pos === "bl" ? "left:14px;right:auto;top:auto;bottom:14px;" :
+                  pos === "br" ? "left:auto;right:14px;top:auto;bottom:14px;" :
+                  "left:14px;right:auto;top:14px;bottom:auto;";
+        css = `#radar{${p}opacity:${clamp(chNum(settings.rdOp, 1), 0.1, 1)}!important;`
+          + `border-color:${settings.rdRing || "#4a4f55"}!important;`
+          + (settings.rdSquare ? "border-radius:12px!important;" : "")
+          + `zoom:${clamp(chNum(settings.rdSize, 1), 0.5, 2)};}`;
+      }
+    }
+    if (css === rdLastCss) return;
+    rdLastCss = css;
+    if (!css) {
+      if (rdStyleEl) { rdStyleEl.remove(); rdStyleEl = null; }
+      return;
+    }
+    if (!rdStyleEl) {
+      rdStyleEl = document.createElement("style");
+      (document.head || document.documentElement).appendChild(rdStyleEl);
+    }
+    rdStyleEl.textContent = css;
+  }
+
   function worldTick(g) {
+    tickRadar();
     const isLive = g && isPlaying(g);
+    tickDayCycle(g, isLive);
     // No Bloom works standalone (dev toggle) or via ambience presets
     const noBloom = isLive && (settings.devNoBloom || (settings.ambience && settings.noBloomFx));
     tickBloom(g, noBloom);
-    const want = isLive && settings.ambience && (settings.customLighting || settings.customSky || settings.fogMode !== "default" || settings.colorGrade);
+    const want = isLive && settings.ambience && (settings.customLighting || settings.customSky || settings.fogMode !== "default" || settings.colorGrade || settings.wdCycle || settings.wdManual);
     if (!want) {
       if (lighting.orig.size || lighting.exposure != null) restoreLighting(g?.renderer);
       if (sky.on) restoreSky(g);
@@ -2724,6 +2941,7 @@
       target: '<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.5"/>',
       spark: '<path d="M12 2v6M12 16v6M2 12h6M16 12h6"/><circle cx="12" cy="12" r="2.5"/>',
       rain: '<path d="M7 15a4 4 0 1 1 1-7.9A5.5 5.5 0 0 1 18.5 9 3.5 3.5 0 0 1 17.5 16H7z"/><path d="M8 18l-1 3M12 18l-1 3M16 18l-1 3"/>',
+      radar: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><path d="M12 12l5-5"/>',
       move: '<path d="M12 2v20M2 12h20"/><path d="M12 2 9 5M12 2l3 3M12 22l-3-3M12 22l3 3M2 12l3-3M2 12l3 3M22 12l-3-3M22 12l-3 3"/>'
     };
     var LUNAR_MODULES = [
@@ -2740,6 +2958,10 @@
       { tab: "fx", title: "Motes", icon: "plus", get: () => settings.moOn, set: (v) => { settings.moOn = v; save(); } },
       { tab: "world", title: "Ambience", icon: "globe", get: () => settings.ambience, set: (v) => { settings.ambience = v; save(); } },
       { tab: "world", title: "Motion Blur", icon: "blur", get: () => settings.motionBlur, set: (v) => { settings.motionBlur = v; save(); } },
+      { tab: "world", title: "Day Cycle", icon: "sun", get: () => settings.wdCycle, set: (v) => { settings.wdCycle = v; save(); } },
+      { tab: "world", title: "Light", icon: "sliders", get: () => settings.customLighting, set: (v) => { settings.customLighting = v; save(); } },
+      { tab: "world", title: "Fog Lab", icon: "blur", get: () => settings.fogCustom, set: (v) => { settings.fogCustom = v; settings.fogMode = v ? "custom" : "default"; save(); } },
+      { tab: "world", title: "Radar", icon: "radar", get: () => settings.rdOn, set: (v) => { settings.rdOn = v; save(); } },
       { tab: "chams", title: "Arm Chams", icon: "charms", get: () => settings.armCharms, set: (v) => { settings.armCharms = v; save(); } },
       { tab: "chams", title: "Gun Chams", icon: "chams", get: () => settings.gunChams, set: (v) => { settings.gunChams = v; save(); } },
       { tab: "chams", title: "Knife Chams", icon: "dice", get: () => settings.knifeChams, set: (v) => { settings.knifeChams = v; save(); } },
@@ -3303,7 +3525,7 @@
         ];
       }
       if (id === "beta") return [interfaceCard()];
-      const presets = [["custom", "Custom (manual)"], ["default", "Game default"], ["sakura", "Sakura"], ["midnight", "Midnight"], ["sunset", "Sunset"], ["neon", "Neon"], ["vivid", "Vivid"], ["cinematic", "Cinematic"], ["arctic", "Arctic"], ["void", "Void"], ["synthwave", "Synthwave"], ["noir", "Noir"], ["dream", "Dream"]];
+      const presets = [["custom", "Custom (manual)"], ["default", "Game default"], ["sakura", "Sakura"], ["midnight", "Midnight"], ["sunset", "Sunset"], ["neon", "Neon"], ["vivid", "Vivid"], ["cinematic", "Cinematic"], ["arctic", "Arctic"], ["void", "Void"], ["synthwave", "Synthwave"], ["noir", "Noir"], ["dream", "Dream"], ["desert", "Desert"], ["volcano", "Volcano"], ["swamp", "Swamp"], ["space", "Space"], ["candy", "Candy"], ["matrix", "Matrix"], ["bloodmoon", "Blood Moon"], ["toxic", "Toxic"], ["pastel", "Pastel"], ["mono", "Mono"], ["golden", "Golden"], ["storm", "Storm"], ["abyss", "Abyss"], ["frost", "Frost"], ["forest", "Forest"], ["ember", "Ember"], ["ghost", "Ghost"], ["royal", "Royal"], ["copper", "Copper"], ["mint", "Mint"]];
       return [
         moduleCard("Ambience", "One-click world themes. Nudge any linked setting and it switches to Custom.", settings.ambience,
           (v) => { settings.ambience = v; save(); }, [
@@ -3316,6 +3538,52 @@
         moduleCard("Motion Blur", "Clean frame-blend blur that smooths fast camera movement.", settings.motionBlur,
           (v) => { settings.motionBlur = v; save(); }, [
             row("Strength", null, rangeField(settings.mbStrength, 0.1, 0.9, 0.05, (v) => { settings.mbStrength = v; save(); }))
+          ]),
+        moduleCard("Day Cycle", "Sun, sky and light follow the time of day. Needs Ambience.", settings.wdCycle,
+          (v) => {
+            settings.wdCycle = v;
+            if (v) { settings.ambience = true; settings.customLighting = true; settings.customSky = true; settings.sunTint = true; }
+            save();
+            rebuildPanel();
+          }, [
+            row("Time", "Game hour 0-24", rangeField(settings.wdTime ?? 12, 0, 24, 0.25, (v) => { settings.wdTime = v; save(); })),
+            row("Auto cycle", null, toggleSwitch(settings.wdAuto !== false, (v) => { settings.wdAuto = v; save(); })),
+            row("Speed", "Game hours / second", rangeField(settings.wdSpeed ?? 0.25, 0.05, 2, 0.05, (v) => { settings.wdSpeed = v; save(); })),
+            row("Night darkness", null, rangeField(settings.wdNight ?? 0.7, 0, 1, 0.05, (v) => { settings.wdNight = v; save(); })),
+            row("Lightning", "Storm flashes", toggleSwitch(settings.wdBolt, (v) => { settings.wdBolt = v; save(); })),
+            row("Storm rate", "Seconds between strikes", rangeField(settings.wdBoltRate ?? 8, 2, 20, 1, (v) => { settings.wdBoltRate = v; save(); })),
+            row("Golden hour", "Jump to sunset", actionBtn("17:30", () => { settings.wdTime = 17.5; save(); })),
+            row("Manual sun", "Position the sun yourself", toggleSwitch(settings.wdManual, (v) => { settings.wdManual = v; save(); })),
+            row("Elevation", "Degrees above horizon", rangeField(settings.wdElev ?? 45, -20, 90, 1, (v) => { settings.wdElev = v; save(); })),
+            row("Azimuth", "Degrees around", rangeField(settings.wdAzim ?? 180, 0, 360, 1, (v) => { settings.wdAzim = v; save(); }))
+          ]),
+        moduleCard("Light", "Direct light controls.", settings.customLighting,
+          (v) => { settings.customLighting = v; save(); rebuildPanel(); }, [
+            row("Exposure", null, rangeField(settings.lightExposure, 0.3, 2, 0.05, (v) => { settings.lightExposure = v; save(); })),
+            row("Hemi boost", "Ambient / sky light", rangeField(settings.hemiMult, 0, 2.5, 0.05, (v) => { settings.hemiMult = v; save(); })),
+            row("Sun boost", null, rangeField(settings.sunMult, 0, 2.5, 0.05, (v) => { settings.sunMult = v; save(); })),
+            row("Sun tint", null, toggleSwitch(settings.sunTint, (v) => { settings.sunTint = v; save(); })),
+            row("Sun color", null, colorField(settings.sunColor || "#ffb3c6", (v) => { settings.sunColor = v; save(); })),
+            row("Hemi colors", "Tint sky + ground light", toggleSwitch(settings.hemiOn, (v) => { settings.hemiOn = v; save(); })),
+            row("Hemi sky", null, colorField(settings.hemiSky || "#bcd6ff", (v) => { settings.hemiSky = v; save(); })),
+            row("Hemi ground", null, colorField(settings.hemiGround || "#4a4238", (v) => { settings.hemiGround = v; save(); }))
+          ]),
+        moduleCard("Fog Lab", "Custom fog beyond the presets.", settings.fogCustom,
+          (v) => { settings.fogCustom = v; settings.fogMode = v ? "custom" : "default"; save(); rebuildPanel(); }, [
+            row("Color", null, colorField(settings.fogColor || "#888899", (v) => { settings.fogColor = v; save(); })),
+            row("Near", null, rangeField(settings.fogNear ?? 10, 1, 200, 1, (v) => { settings.fogNear = v; save(); })),
+            row("Far", null, rangeField(settings.fogFar ?? 400, 50, 2000, 10, (v) => { settings.fogFar = v; save(); })),
+            row("Breathe", "Animated density", toggleSwitch(settings.fogBreathe, (v) => { settings.fogBreathe = v; save(); })),
+            row("Breathe speed", null, rangeField(settings.fogBreatheSpd ?? 1, 0.2, 4, 0.2, (v) => { settings.fogBreatheSpd = v; save(); }))
+          ]),
+        moduleCard("Radar", "Restyle the game's radar.", settings.rdOn,
+          (v) => { settings.rdOn = v; save(); }, [
+            row("Size", null, rangeField(settings.rdSize ?? 1, 0.5, 2, 0.05, (v) => { settings.rdSize = v; save(); })),
+            row("Ring color", null, colorField(settings.rdRing || "#4a4f55", (v) => { settings.rdRing = v; save(); })),
+            row("Opacity", null, rangeField(settings.rdOp ?? 1, 0.1, 1, 0.05, (v) => { settings.rdOp = v; save(); })),
+            row("Corner", null, selectField(settings.rdPos || "tl", [["tl", "Top left"], ["tr", "Top right"], ["bl", "Bottom left"], ["br", "Bottom right"]], (v) => { settings.rdPos = v; save(); })),
+            row("Square", "Rounded square dial", toggleSwitch(settings.rdSquare, (v) => { settings.rdSquare = v; save(); })),
+            row("Hide", null, toggleSwitch(settings.rdHide, (v) => { settings.rdHide = v; save(); }))
           ]),
       ];
     }
