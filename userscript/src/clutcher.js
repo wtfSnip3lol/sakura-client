@@ -137,7 +137,13 @@
     chGlow: false,
     chGlowAmt: 10,
     chInLobby: false,
-    chHideMenu: false
+    chHideMenu: false,
+    // Custom drawn crosshair (21x21 pixel grid, stored as a 0/1 string)
+    chPixels: "",
+    chPxScale: 3,
+    chDrawMode: "pixels",
+    chMirrorX: true,
+    chMirrorY: true
   };
 
   var VISUAL_PRESETS = {
@@ -375,6 +381,7 @@
   // Gap/size react to synthetic state (moving / firing / ADS), never to real
   // spread values. All pure canvas cosmetics.
   var chState = { kick: 0, flash: 0, fireX: 0 };
+  var CHDRAW_N = 21;
   function chApplyPreset(name) {
     const P = {
       def: { chStyle: "cross", chColor: "#ffffff", chDotColor: "#ffffff", chLen: 8, chThick: 2, chGap: 4, chGapY: 4, chDot: true, chDotSize: 2, chOutline: true },
@@ -503,6 +510,16 @@
       line(cx, cy + gv, cx, cy + gv + LV, w, main);
       outer(true);
       if (settings.chDot) dot(cx, cy, Math.max(1, (Number(settings.chDotSize) || 2) * k), settings.chDotColor || main);
+    } else if (style === "custom") {
+      const cN = CHDRAW_N, px = Math.max(1, Number(settings.chPxScale) || 3);
+      const gpix = settings.chPixels || "";
+      const gx0 = cx - (cN * px) / 2, gy0 = cy - (cN * px) / 2;
+      ctx.fillStyle = main;
+      for (let yy = 0; yy < cN; yy++) {
+        for (let xx = 0; xx < cN; xx++) {
+          if (gpix[yy * cN + xx] === "1") ctx.fillRect(gx0 + xx * px, gy0 + yy * px, px, px);
+        }
+      }
     } else { // cross + crossdot
       line(cx - g - LH, cy, cx - g, cy, w, main);
       line(cx + g, cy, cx + g + LH, cy, w, main);
@@ -1209,6 +1226,116 @@
     return wrap;
   }
 
+  // ── Custom crosshair drawer (pixel grid + freehand) ──
+  function chLoadGrid() {
+    const g = new Array(CHDRAW_N * CHDRAW_N).fill(0);
+    const s = settings.chPixels || "";
+    for (let i = 0; i < g.length && i < s.length; i++) g[i] = s[i] === "1" ? 1 : 0;
+    return g;
+  }
+  function chLineCells(x0, y0, x1, y1, fn) {
+    const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0);
+    const sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+    let err = dx + dy, x = x0, y = y0;
+    for (;;) {
+      fn(x, y);
+      if (x === x1 && y === y1) break;
+      const e2 = 2 * err;
+      if (e2 >= dy) { err += dy; x += sx; }
+      if (e2 <= dx) { err += dx; y += sy; }
+    }
+  }
+  function pixelEditor() {
+    const N = CHDRAW_N, CELL = 10;
+    const wrap = document.createElement("div");
+    wrap.className = "sk-draw";
+    const cv = document.createElement("canvas");
+    cv.width = N * CELL; cv.height = N * CELL;
+    cv.className = "sk-drawcv";
+    const g2d = cv.getContext("2d");
+    let grid = chLoadGrid();
+    const saveGrid = () => { settings.chPixels = grid.map((v) => v ? "1" : "0").join(""); save(); };
+    const render = () => {
+      g2d.clearRect(0, 0, cv.width, cv.height);
+      g2d.fillStyle = "#101018";
+      g2d.fillRect(0, 0, cv.width, cv.height);
+      g2d.fillStyle = settings.chColor || "#ff6b9d";
+      for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+        if (grid[y * N + x]) g2d.fillRect(x * CELL, y * CELL, CELL, CELL);
+      }
+      g2d.strokeStyle = "rgba(255,255,255,0.07)";
+      g2d.lineWidth = 1;
+      g2d.beginPath();
+      for (let i = 1; i < N; i++) {
+        g2d.moveTo(i * CELL + 0.5, 0); g2d.lineTo(i * CELL + 0.5, cv.height);
+        g2d.moveTo(0, i * CELL + 0.5); g2d.lineTo(cv.width, i * CELL + 0.5);
+      }
+      g2d.stroke();
+      g2d.strokeStyle = "rgba(255,107,157,0.4)";
+      g2d.beginPath();
+      g2d.moveTo(cv.width / 2 + 0.5, 0); g2d.lineTo(cv.width / 2 + 0.5, cv.height);
+      g2d.moveTo(0, cv.height / 2 + 0.5); g2d.lineTo(cv.width, cv.height / 2 + 0.5);
+      g2d.stroke();
+    };
+    const mirror = (x, y) => {
+      const pts = [[x, y]];
+      if (settings.chMirrorX) pts.push([N - 1 - x, y]);
+      if (settings.chMirrorY) pts.push([x, N - 1 - y]);
+      if (settings.chMirrorX && settings.chMirrorY) pts.push([N - 1 - x, N - 1 - y]);
+      return pts;
+    };
+    const inGrid = (x, y) => x >= 0 && y >= 0 && x < N && y < N;
+    const applyPts = (x, y, v) => {
+      for (const [px, py] of mirror(x, y)) if (inGrid(px, py)) grid[py * N + px] = v;
+    };
+    let down = false, erase = false, val = 1, last = null;
+    const cellOf = (e) => {
+      const r = cv.getBoundingClientRect();
+      return [
+        Math.floor((e.clientX - r.left) / r.width * N),
+        Math.floor((e.clientY - r.top) / r.height * N)
+      ];
+    };
+    cv.addEventListener("contextmenu", (e) => e.preventDefault());
+    cv.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      try { cv.setPointerCapture(e.pointerId); } catch (_) {}
+      down = true; erase = e.button === 2;
+      const [x, y] = cellOf(e);
+      last = [x, y];
+      if ((settings.chDrawMode || "pixels") === "pixels" && !erase) {
+        val = inGrid(x, y) && grid[y * N + x] ? 0 : 1;
+        applyPts(x, y, val);
+      } else {
+        val = erase ? 0 : 1;
+        applyPts(x, y, val);
+      }
+      saveGrid(); render();
+    });
+    cv.addEventListener("pointermove", (e) => {
+      if (!down) return;
+      e.preventDefault();
+      const [x, y] = cellOf(e);
+      if (last && (x !== last[0] || y !== last[1])) {
+        chLineCells(last[0], last[1], x, y, (lx, ly) => applyPts(lx, ly, val));
+        last = [x, y];
+        saveGrid(); render();
+      }
+    });
+    const up = () => { down = false; last = null; };
+    cv.addEventListener("pointerup", up);
+    cv.addEventListener("pointercancel", up);
+    const bar = document.createElement("div");
+    bar.className = "sk-drawbar";
+    const clear = document.createElement("button");
+    clear.type = "button"; clear.className = "sk-btn sk-mini"; clear.textContent = "Clear";
+    clear.onclick = () => { grid = new Array(N * N).fill(0); saveGrid(); render(); };
+    bar.appendChild(clear);
+    wrap.append(cv, bar);
+    render();
+    return wrap;
+  }
+
   function colorField(value, onChange) {
     const input = document.createElement("input");
     input.type = "color";
@@ -1434,6 +1561,7 @@
       { tab: "crosshair", title: "Dynamics", icon: "trend", get: () => settings.chDynamic, set: (v) => { settings.chDynamic = v; save(); } },
       { tab: "crosshair", title: "Animation", icon: "refresh", get: () => settings.chPulse || settings.chSpin || settings.chRainbow, set: (v) => { settings.chPulse = v; settings.chSpin = v; settings.chRainbow = v; save(); } },
       { tab: "crosshair", title: "Visibility", icon: "image", toggle: null },
+      { tab: "crosshair", title: "Custom Draw", icon: "plus", toggle: null },
       { tab: "beta", title: "Interface", icon: "sliders", toggle: null }
     ];
     if (settings.uiStyle === "lunar" && betaUnlocked) return buildLunarPanel();
@@ -1695,7 +1823,7 @@
           ])
       ];
       if (id === "crosshair") {
-        const styles = [["cross", "Cross"], ["dot", "Dot"], ["circle", "Circle"], ["crossdot", "Cross + Dot"], ["x", "X"], ["t", "T"], ["square", "Square"], ["diamond", "Diamond"], ["chevron", "Chevron"], ["ringdot", "Ring + Dot"]];
+        const styles = [["cross", "Cross"], ["dot", "Dot"], ["circle", "Circle"], ["crossdot", "Cross + Dot"], ["x", "X"], ["t", "T"], ["square", "Square"], ["diamond", "Diamond"], ["chevron", "Chevron"], ["ringdot", "Ring + Dot"], ["custom", "Custom Draw"]];
         const presets = [["custom", "Custom"], ["def", "Default"], ["cs", "CS 1.6"], ["val", "Valorant"], ["dot", "Dot only"], ["circ", "Circle"], ["chev", "Chevron"]];
         return [
           moduleCard("Crosshair", "Overlay crosshair drawn at screen center.", settings.crosshair,
@@ -1756,6 +1884,14 @@
               row("Glow amount", null, rangeField(settings.chGlowAmt, 0, 30, 1, (v) => { settings.chGlowAmt = v; save(); })),
               row("Draw in lobby", "Also outside matches", toggleSwitch(settings.chInLobby, (v) => { settings.chInLobby = v; save(); })),
               row("Hide in menu", "Hide while this menu is open", toggleSwitch(settings.chHideMenu, (v) => { settings.chHideMenu = v; save(); }))
+            ]),
+          moduleCard("Custom Draw", "Draw your own crosshair, then pick the Custom Draw style to use it.", true, null, [
+              row("Mode", "Pixels toggles cells, free draw paints strokes", selectField(settings.chDrawMode || "pixels", [["pixels", "Pixels"], ["free", "Free draw"]], (v) => { settings.chDrawMode = v; save(); })),
+              pixelEditor(),
+              row("Mirror X", "Mirror left / right", toggleSwitch(settings.chMirrorX !== false, (v) => { settings.chMirrorX = v; save(); })),
+              row("Mirror Y", "Mirror top / bottom", toggleSwitch(settings.chMirrorY !== false, (v) => { settings.chMirrorY = v; save(); })),
+              row("Pixel size", "In-game render scale", rangeField(settings.chPxScale ?? 3, 1, 6, 1, (v) => { settings.chPxScale = v; save(); })),
+              note("Left-drag paints, right-drag erases.")
             ])
         ];
       }
@@ -1929,6 +2065,10 @@
   .sk-slider::-moz-range-progress { height: 2px; background: #ff6b9d; }
   .sk-slider::-moz-range-thumb { width: 6px; height: 6px; border: 0; border-radius: 50%; background: #ff6b9d; }
   .sk-val { font-size: 11px; font-weight: 600; min-width: 28px; text-align: right; color: rgba(246,238,242,.8); }
+  .sk-draw { display: flex; flex-direction: column; gap: 8px; }
+  .sk-drawcv { width: 100%; max-width: 240px; aspect-ratio: 1; border-radius: 8px; cursor: crosshair; touch-action: none; box-shadow: inset 0 0 0 1px rgba(255,255,255,.08); }
+  .sk-drawbar { display: flex; gap: 8px; align-items: center; }
+  .sk-btn.sk-mini { padding: 5px 12px; font-size: 10.5px; }
   .sk-num { width: 90px; }
   .sk-color { width: 30px; height: 20px; padding: 0; border: 0; border-radius: 6px; background: none; cursor: pointer; }
   .sk-note { font-size: 11px; color: rgba(246,238,242,.5); padding: 2px 0; }
