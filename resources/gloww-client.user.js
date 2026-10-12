@@ -71,6 +71,8 @@
     uiStyle: "minimal",
     uiAccent: "#ff6b9d",
     uiSize: "normal",
+    menuMouse: true,
+    lockOnClose: true,
     ksFree: false,
     ksX: 0,
     ksY: 85,
@@ -2474,6 +2476,8 @@
           settings.uiSize = v; save(); rebuildPanel();
         })),
         row("Free keystrokes position", "Place with X / Y below", toggleSwitch(settings.ksFree, (v) => { settings.ksFree = v; save(); })),
+        row("Free mouse on open", "Unlock cursor without pausing", toggleSwitch(settings.menuMouse !== false, (v) => { settings.menuMouse = v; save(); })),
+        row("Re-lock on close", "Capture mouse when menu closes", toggleSwitch(settings.lockOnClose !== false, (v) => { settings.lockOnClose = v; save(); })),
         row("Keystrokes X %", null, rangeField(settings.ksX, 0, 100, 1, (v) => { settings.ksX = v; save(); })),
         row("Keystrokes Y %", null, rangeField(settings.ksY, 0, 100, 1, (v) => { settings.ksY = v; save(); })),
         row("Tip", null, note("While this menu is open, enabled HUD elements with dashed outlines can be dragged directly on screen."))
@@ -3240,6 +3244,22 @@
     hudEdit = v && settings.uiStyle === "lunar" && betaUnlocked;
     overlay.style.pointerEvents = hudEdit ? "auto" : "none";
     if (!hudEdit) { hudDrag = null; overlay.style.cursor = "default"; }
+    // Free the mouse without pausing: the game only pauses on Esc, losing
+    // pointer lock by itself just flips its input state, so exiting here
+    // leaves the match running while the cursor works the menu.
+    if (v && settings.menuMouse !== false) {
+      try { if (document.pointerLockElement) document.exitPointerLock(); } catch (_) {}
+    }
+    if (!v && settings.lockOnClose !== false && !document.pointerLockElement) {
+      try {
+        const gg = getGame();
+        const cv = (gg && gg.renderer && gg.renderer.domElement) || document.querySelector("#game canvas");
+        if (cv && typeof cv.requestPointerLock === "function") {
+          const p = cv.requestPointerLock();
+          if (p && typeof p.catch === "function") p.catch(() => {});
+        }
+      } catch (_) {}
+    }
     if (!panelEl) {
       const style = document.createElement("style");
       style.textContent = CSS;
