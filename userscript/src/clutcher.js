@@ -79,11 +79,14 @@
     charmsType: "outline",
     charmColor: "#ff6b9d",
     charmWidth: 4,
+    charmOpacity: 0.5,
     // Gun chams
     gunChams: false,
     chamType: "outline",
     chamColor: "#ff6b9d",
-    chamWidth: 4
+    chamWidth: 4,
+    chamOpacity: 0.5,
+    chamGlowIntensity: 0.6
   };
 
   var VISUAL_PRESETS = {
@@ -1467,13 +1470,16 @@
           (v) => { settings.armCharms = v; save(); }, [
             row("Cham Type", null, selectField(settings.charmsType, [["outline", "Outline"], ["glow", "Glow"], ["both", "Both"], ["wireframe", "Wireframe"]], (v) => { settings.charmsType = v; save(); })),
             row("Color", null, colorField(settings.charmColor || "#ff6b9d", (v) => { settings.charmColor = v; save(); })),
-            row("Width", null, rangeField(settings.charmWidth, 1, 10, 0.5, (v) => { settings.charmWidth = v; save(); }))
+            row("Width", null, rangeField(settings.charmWidth, 1, 10, 0.5, (v) => { settings.charmWidth = v; save(); })),
+            row("Opacity", null, rangeField(settings.charmOpacity, 0.1, 1, 0.05, (v) => { settings.charmOpacity = v; save(); }))
           ]),
         moduleCard("Gun Chams", "Weapon chams - colored weapon.", settings.gunChams,
           (v) => { settings.gunChams = v; save(); }, [
             row("Cham Type", null, selectField(settings.chamType, [["outline", "Outline"], ["glow", "Glow"], ["both", "Both"], ["wireframe", "Wireframe"]], (v) => { settings.chamType = v; save(); })),
             row("Color", null, colorField(settings.chamColor || "#ff6b9d", (v) => { settings.chamColor = v; save(); })),
-            row("Width", null, rangeField(settings.chamWidth, 1, 10, 0.5, (v) => { settings.chamWidth = v; save(); }))
+            row("Width", null, rangeField(settings.chamWidth, 1, 10, 0.5, (v) => { settings.chamWidth = v; save(); })),
+            row("Opacity", null, rangeField(settings.chamOpacity, 0.1, 1, 0.05, (v) => { settings.chamOpacity = v; save(); })),
+            row("Glow Intensity", null, rangeField(settings.chamGlowIntensity, 0.1, 1, 0.05, (v) => { settings.chamGlowIntensity = v; save(); }))
           ])
       ];
       if (id === "beta") return [interfaceCard()];
