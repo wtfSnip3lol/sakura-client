@@ -3,10 +3,9 @@
  * Loaded at runtime by dist/sakura.loader.user.js on astrastrike.fun only.
  *
  * CLEAN MODE: keyboard-only keystrokes overlay (QWER / ASDFC / Shift·Space·Ctrl)
- * with the same minimal menu as the Clutcher client (HUD + Chams tabs).
- * The overlay itself never touches the game; enabling Chams does recolor
- * viewmodel materials (same engine as the Clutcher client) and no-ops when
- * the page exposes no compatible scene. No-ops on any other host.
+ * with the same minimal menu as the Clutcher client (HUD tab only).
+ * Never touches window.game, scene, renderer, Math.random or JSON — overlay draws
+ * from local key listeners only. No-ops on any other host.
  */
 
 (() => {
@@ -17,22 +16,7 @@
   var ACCENT_HI = "#ffb3c6";
 
   // ── Settings ──
-  var DEFAULTS = {
-    keystrokes: true, ksPos: "bl", ksScale: 1,
-    // Arm chams (same keys as the Clutcher client)
-    armCharms: false,
-    charmsType: "outline",
-    charmColor: "#ff6b9d",
-    charmWidth: 4,
-    charmOpacity: 0.5,
-    // Gun chams
-    gunChams: false,
-    chamType: "outline",
-    chamColor: "#ff6b9d",
-    chamWidth: 4,
-    chamOpacity: 0.5,
-    chamGlowIntensity: 0.6
-  };
+  var DEFAULTS = { keystrokes: true, ksPos: "bl", ksScale: 1 };
   var settings = { ...DEFAULTS };
   try {
     Object.assign(settings, JSON.parse(localStorage.getItem("sakura.astra.v1") || "{}"));
@@ -131,154 +115,11 @@
     });
   }
 
-  function getGame() {
-    try { return window.game || null; } catch (_) { return null; }
-  }
-
-  // ── Chams (arm + gun viewmodel chams — same engine as the Clutcher client) ──
-  // Applies colored / glow / wireframe materials to the viewmodel arm and
-  // weapon meshes. Originals are saved on first apply and restored when the
-  // module is disabled. No-ops when the page exposes no compatible scene.
-  var chams = {
-    arm: { applied: false, root: null, meshes: [], orig: new Map() },
-    gun: { applied: false, root: null, meshes: [], orig: new Map() }
-  };
-  // three.js side constants: 0 = FrontSide, 1 = BackSide, 2 = DoubleSide
-  function chamsSaveOrig(m, origMap) {
-    if (!origMap.has(m)) {
-      origMap.set(m, {
-        color: m.color ? m.color.getHex() : null,
-        emissive: m.emissive ? m.emissive.getHex() : null,
-        emissiveIntensity: m.emissiveIntensity,
-        wireframe: m.wireframe,
-        side: m.side,
-        depthTest: m.depthTest,
-        transparent: m.transparent,
-        opacity: m.opacity
-      });
-    }
-  }
-  function chamsApplyMat(m, type, color, origMap) {
-    chamsSaveOrig(m, origMap);
-    const c = color || "#ff6b9d";
-    if (type === "outline" || type === "both") {
-      m.side = 2;                    // DoubleSide
-      m.transparent = true;
-      m.opacity = 0.45;
-      if (m.color) m.color.set(c);
-    }
-    if (type === "glow" || type === "both") {
-      if (m.emissive) m.emissive.set(c);
-      m.emissiveIntensity = 0.6;
-    }
-    if (type === "wireframe") {
-      m.wireframe = true;
-      if (m.color) m.color.set(c);
-    }
-  }
-  function chamsRestore(state) {
-    for (const mesh of state.meshes) {
-      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-      for (const m of mats) {
-        const orig = state.orig.get(m);
-        if (!orig) continue;
-        if (m.color && orig.color != null) m.color.set(orig.color);
-        if (m.emissive && orig.emissive != null) m.emissive.set(orig.emissive);
-        m.emissiveIntensity = orig.emissiveIntensity;
-        m.wireframe = orig.wireframe;
-        m.side = orig.side;
-        m.depthTest = orig.depthTest;
-        m.transparent = orig.transparent;
-        m.opacity = orig.opacity;
-        state.orig.delete(m);
-      }
-    }
-    state.meshes.length = 0;
-  }
-  function chamsCollect(root, store, filter) {
-    store.length = 0;
-    if (!root || typeof root.traverse !== "function") return;
-    if (!filter) {
-      root.traverse((o) => { if (o && o.isMesh) store.push(o); });
-    } else {
-      root.traverse((o) => { if (o && o.isMesh && filter(o)) store.push(o); });
-    }
-  }
-  // CS2 rig: rig.arms (gloves/agent) and rig.gun (weapon) are separate.
-  // Simple viewmodel: arms live in the _lhand / _offhand child meshes,
-  // everything else on viewmodel.current is the weapon.
-  function chamsTargets(g) {
-    const rig = g && g.cs2 && g.cs2.rig;
-    const vm = g && g.viewmodel;
-    if (rig) {
-      return {
-        armRoot: rig.arms || null,
-        gunRoot: rig.gun || null,
-        armFilter: null,
-        gunFilter: null
-      };
-    }
-    if (vm && vm.current) {
-      const armSet = new Set();
-      if (Array.isArray(vm._lhand)) for (const m of vm._lhand) armSet.add(m);
-      if (Array.isArray(vm._offhand)) for (const m of vm._offhand) armSet.add(m);
-      return {
-        armRoot: vm.current,
-        gunRoot: vm.current,
-        armFilter: (m) => armSet.has(m),
-        gunFilter: (m) => !armSet.has(m)
-      };
-    }
-    return { armRoot: null, gunRoot: null, armFilter: null, gunFilter: null };
-  }
-  function tickChams(g) {
-    if (!g) return;
-    const t = chamsTargets(g);
-    const arm = chams.arm, gun = chams.gun;
-
-    // ── Arm chams ──
-    if (settings.armCharms && t.armRoot) {
-      if (arm.root !== t.armRoot) {
-        if (arm.applied) chamsRestore(arm);
-        chamsCollect(t.armRoot, arm.meshes, t.armFilter);
-        arm.root = t.armRoot;
-      }
-      for (const mesh of arm.meshes) {
-        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-        for (const m of mats) chamsApplyMat(m, settings.charmsType, settings.charmColor, arm.orig);
-      }
-      arm.applied = true;
-    } else if (arm.applied) {
-      chamsRestore(arm);
-      arm.applied = false;
-      arm.root = null;
-    }
-
-    // ── Gun chams ──
-    if (settings.gunChams && t.gunRoot) {
-      if (gun.root !== t.gunRoot) {
-        if (gun.applied) chamsRestore(gun);
-        chamsCollect(t.gunRoot, gun.meshes, t.gunFilter);
-        gun.root = t.gunRoot;
-      }
-      for (const mesh of gun.meshes) {
-        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-        for (const m of mats) chamsApplyMat(m, settings.chamType, settings.chamColor, gun.orig);
-      }
-      gun.applied = true;
-    } else if (gun.applied) {
-      chamsRestore(gun);
-      gun.applied = false;
-      gun.root = null;
-    }
-  }
-
   function loop() {
     requestAnimationFrame(loop);
     sizeOverlay();
     syncLayers();
     ctx.clearRect(0, 0, size.w, size.h);
-    tickChams(getGame());
     if (!settings.keystrokes) return;
     drawKeystrokes({ left: 0, top: 0, right: size.w, bottom: size.h, width: size.w, height: size.h });
   }
@@ -350,13 +191,11 @@
   try { uiState = JSON.parse(localStorage.getItem("sakura.ui.v1") || "{}"); } catch (_) {}
 
   var ICONS = {
-    hud: '<rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M7 9h6M7 13h10M7 16h4"/>',
-    chams: '<path d="M6 2c-3.3 0-6 2.7-6 6v10c0 3.3 2.7 6 6 6h4c3.3 0 6-2.7 6-6V8c0-3.3-2.7-6-6-6H6zm2 2v4h12V8H8zM8 4v12h8V4H8z"/>'
+    hud: '<rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M7 9h6M7 13h10M7 16h4"/>'
   };
-  // Clean mode menu: HUD + Chams — no World FX, no Dev hooks.
+  // Clean mode: HUD tab only — no World FX, no Dev hooks.
   var CATEGORIES = [
-    { id: "hud", label: "HUD", icon: ICONS.hud },
-    { id: "chams", label: "Chams", icon: ICONS.chams }
+    { id: "hud", label: "HUD", icon: ICONS.hud }
   ];
 
   function ico(path, cls = "") {
@@ -412,15 +251,6 @@
     wrap.style.setProperty("--p", ((value - min) / (max - min) * 100) + "%");
     wrap.append(input, val);
     return wrap;
-  }
-
-  function colorField(value, onChange) {
-    const input = document.createElement("input");
-    input.type = "color";
-    input.className = "sk-color";
-    input.value = /^#[0-9a-f]{6}$/i.test(value) ? value : "#ff6b9d";
-    input.oninput = () => onChange(input.value);
-    return input;
   }
 
   function row(label, hint, ctl) {
@@ -554,23 +384,6 @@
             ])
         ];
       }
-      if (id === "chams") return [
-        moduleCard("Arm Chams", "Viewmodel arm chams - colored arms.", settings.armCharms,
-          (v) => { settings.armCharms = v; save(); }, [
-            row("Cham Type", null, selectField(settings.charmsType, [["outline", "Outline"], ["glow", "Glow"], ["both", "Both"], ["wireframe", "Wireframe"]], (v) => { settings.charmsType = v; save(); })),
-            row("Color", null, colorField(settings.charmColor || "#ff6b9d", (v) => { settings.charmColor = v; save(); })),
-            row("Width", null, rangeField(settings.charmWidth, 1, 10, 0.5, (v) => { settings.charmWidth = v; save(); })),
-            row("Opacity", null, rangeField(settings.charmOpacity, 0.1, 1, 0.05, (v) => { settings.charmOpacity = v; save(); }))
-          ]),
-        moduleCard("Gun Chams", "Weapon chams - colored weapon.", settings.gunChams,
-          (v) => { settings.gunChams = v; save(); }, [
-            row("Cham Type", null, selectField(settings.chamType, [["outline", "Outline"], ["glow", "Glow"], ["both", "Both"], ["wireframe", "Wireframe"]], (v) => { settings.chamType = v; save(); })),
-            row("Color", null, colorField(settings.chamColor || "#ff6b9d", (v) => { settings.chamColor = v; save(); })),
-            row("Width", null, rangeField(settings.chamWidth, 1, 10, 0.5, (v) => { settings.chamWidth = v; save(); })),
-            row("Opacity", null, rangeField(settings.chamOpacity, 0.1, 1, 0.05, (v) => { settings.chamOpacity = v; save(); })),
-            row("Glow Intensity", null, rangeField(settings.chamGlowIntensity, 0.1, 1, 0.05, (v) => { settings.chamGlowIntensity = v; save(); }))
-          ])
-      ];
       return [];
     }
 
@@ -712,7 +525,6 @@
   .sk-slider::-moz-range-progress { height: 2px; background: #ff6b9d; }
   .sk-slider::-moz-range-thumb { width: 6px; height: 6px; border: 0; border-radius: 50%; background: #ff6b9d; }
   .sk-val { font-size: 11px; font-weight: 600; min-width: 28px; text-align: right; color: rgba(246,238,242,.8); }
-  .sk-color { width: 30px; height: 20px; padding: 0; border: 0; border-radius: 6px; background: none; cursor: pointer; }
   .sk-num { width: 90px; }
   .sk-note { font-size: 11px; color: rgba(246,238,242,.5); padding: 2px 0; }
   .sk-note.err { color: #ff7a93; }

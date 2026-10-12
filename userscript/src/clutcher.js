@@ -1214,7 +1214,9 @@
       coin: '<circle cx="12" cy="12" r="8"/><path d="M9 10h6M9 14h6"/>',
       dice: '<rect x="4" y="4" width="16" height="16" rx="4"/><circle cx="9" cy="9" r="1.2"/><circle cx="15" cy="9" r="1.2"/><circle cx="9" cy="15" r="1.2"/><circle cx="15" cy="15" r="1.2"/>',
       plus: '<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M12 8v8M8 12h8"/>',
-      sliders: '<path d="M4 8h10M18 8h2M4 16h4M12 16h8"/><circle cx="16" cy="8" r="2"/><circle cx="10" cy="16" r="2"/>'
+      sliders: '<path d="M4 8h10M18 8h2M4 16h4M12 16h8"/><circle cx="16" cy="8" r="2"/><circle cx="10" cy="16" r="2"/>',
+      charms: '<path d="M6 21 21 6l-3-3L3 18l3 3z"/><path d="M14 5l3 3"/>',
+      chams: '<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/>'
     };
     var LUNAR_MODULES = [
       { tab: "hud", title: "Keystrokes", icon: "keys", get: () => settings.keystrokes, set: (v) => { settings.keystrokes = v; save(); } },
@@ -1283,7 +1285,7 @@
 
       // Collect minimal cards once, transplant their rows into lunar drawers
       const pool = new Map();
-      for (const c of [...cardsFor("hud"), ...cardsFor("world")]) {
+      for (const c of [...cardsFor("hud"), ...cardsFor("world"), ...cardsFor("chams")]) {
         const t = c.querySelector(".sk-card-title strong");
         if (t && !pool.has(t.textContent)) pool.set(t.textContent, c);
       }
@@ -1376,7 +1378,7 @@
 
       // Sidebar categories
       const catBtns = [];
-      const cats = [["all", "All"], ["hud", "HUD"], ["world", "World"]];
+      const cats = [["all", "All"], ["hud", "HUD"], ["world", "World"], ["chams", "Chams"]];
       if (betaUnlocked) cats.push(["beta", "Beta"]);
       let filter = "all";
       const applyFilter = () => {
