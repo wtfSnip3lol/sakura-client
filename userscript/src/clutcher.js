@@ -142,6 +142,57 @@
     chInLobby: false,
     chHideMenu: false,
     chHideGame: true,
+    // Screen FX studio (visual only — overlay canvas cosmetics)
+    fxEnable: false,
+    fxGrain: false,
+    fxGrainAmt: 0.18,
+    fxGrainAnim: true,
+    fxScan: false,
+    fxScanGap: 3,
+    fxScanOp: 0.25,
+    fxScanDrift: false,
+    fxDust: false,
+    fxDustN: 40,
+    fxVig: false,
+    fxVigAmt: 0.5,
+    fxVigColor: "#000000",
+    fxLetter: false,
+    fxLetterSize: 8,
+    fxFrame: false,
+    fxFrameColor: "#ff6b9d",
+    fxFrameTh: 2,
+    fxFrameGlow: false,
+    fxDmgFlash: true,
+    fxDmgColor: "#ff2222",
+    fxDmgTime: 0.6,
+    fxLowHp: true,
+    fxLowHpTh: 30,
+    fxLowHpColor: "#ff2222",
+    fxLowHpSpd: 4,
+    fxHealFlash: false,
+    fxHealColor: "#33ff77",
+    fxTint: false,
+    fxTintColor: "#ff6b9d",
+    fxTintOp: 0.08,
+    fxTopShade: false,
+    fxBotShade: false,
+    fxShadeAmt: 0.35,
+    fxNight: false,
+    fxNightAmt: 0.25,
+    fxFireGlow: false,
+    fxFireColor: "#ff6b9d",
+    fxFireAmt: 0.5,
+    fxAdsShade: false,
+    fxAdsAmt: 0.5,
+    fxScope: false,
+    fxScopeColor: "#111111",
+    fxScopeTh: 3,
+    fxHitmark: false,
+    fxHmStyle: "x",
+    fxHmColor: "#ffffff",
+    fxHmHs: "#ff4040",
+    fxHmSize: 12,
+    fxHmTime: 0.35,
     // Custom drawn crosshair (21x21 pixel grid, stored as a 0/1 string)
     chPixels: "",
     chPxScale: 3,
@@ -619,6 +670,233 @@
       line(cx + f, cy - f, cx - f, cy + f, w, settings.chFlashColor);
     }
     ctx.restore();
+  }
+
+  // ── Screen FX studio (visual only — overlay canvas cosmetics) ──
+  // Grain / scanlines / dust / vignette / letterbox / frame / tint /
+  // damage flash / low-HP pulse / fire glow / ADS shade / custom scope /
+  // hitmarker mirror. HP + hitmarker state are read from the game's own HUD
+  // DOM, the scope flag from window.game. Nothing is written back.
+  var fxNoise = null;
+  var hpEl = null, hitEl = null, lastHp = null, dmgFlashT = 0, healT = 0, hmT = 0, hmHs = false;
+  function hexA(hex, a) {
+    const m = /^#?([0-9a-f]{6})$/i.exec(hex || "");
+    if (!m) return `rgba(0,0,0,${a})`;
+    const n = parseInt(m[1], 16);
+    return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+  }
+  function fxNoiseTile() {
+    if (fxNoise) return fxNoise;
+    const c = document.createElement("canvas");
+    c.width = c.height = 128;
+    const x = c.getContext("2d");
+    const d = x.createImageData(128, 128);
+    for (let i = 0; i < d.data.length; i += 4) {
+      const v = (Math.random() * 255) | 0;
+      d.data[i] = d.data[i + 1] = d.data[i + 2] = v;
+      d.data[i + 3] = 255;
+    }
+    x.putImageData(d, 0, 0);
+    fxNoise = c;
+    return c;
+  }
+  function fxEdgeGlow(c, a) {
+    const W = size.w, H = size.h, cx = W / 2, cy = H / 2;
+    const rad = Math.hypot(W, H) / 2;
+    const gr = ctx.createRadialGradient(cx, cy, rad * 0.45, cx, cy, rad);
+    gr.addColorStop(0, "rgba(0,0,0,0)");
+    gr.addColorStop(1, hexA(c, a));
+    ctx.fillStyle = gr;
+    ctx.fillRect(0, 0, W, H);
+  }
+  function drawScreenFX(rect, now, dt, g) {
+    const W = rect.width, H = rect.height, cx = W / 2, cy = H / 2;
+    const playing = isPlaying(g);
+    if (settings.fxGrain) {
+      const a = clamp(Number(settings.fxGrainAmt) || 0, 0, 0.6);
+      if (a > 0.005) {
+        ctx.save();
+        ctx.globalAlpha = a;
+        const step = settings.fxGrainAnim ? 90 : 0;
+        const f = step ? ((now / step) | 0) : 0;
+        const ox = (f * 37) % 128, oy = (f * 53) % 128;
+        ctx.translate(-ox, -oy);
+        ctx.fillStyle = ctx.createPattern(fxNoiseTile(), "repeat");
+        ctx.fillRect(ox, oy, W + 128, H + 128);
+        ctx.restore();
+      }
+    }
+    if (settings.fxScan) {
+      const sp = Math.max(2, Math.round(Number(settings.fxScanGap) || 3));
+      ctx.save();
+      ctx.globalAlpha = clamp(Number(settings.fxScanOp) ?? 0.25, 0, 1);
+      ctx.fillStyle = "#000";
+      let y0 = 0;
+      if (settings.fxScanDrift) y0 = -(((now / 40) | 0) % (sp * 2));
+      for (let y = y0; y < H; y += sp * 2) ctx.fillRect(0, y, W, Math.max(1, (sp / 2) | 0));
+      ctx.restore();
+    }
+    if (settings.fxDust) {
+      const n = Math.max(0, Math.round(Number(settings.fxDustN) || 0));
+      if (n > 0) {
+        ctx.save();
+        ctx.fillStyle = "rgba(0,0,0,0.35)";
+        let seed = 1337;
+        const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+        for (let i = 0; i < n; i++) {
+          const x = rnd() * W, y = rnd() * H, r = 0.6 + rnd() * 1.8;
+          ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.restore();
+      }
+    }
+    if (settings.fxVig) {
+      const a = clamp(Number(settings.fxVigAmt) || 0, 0, 1);
+      if (a > 0.005) {
+        const rad = Math.hypot(W, H) / 2;
+        const gr = ctx.createRadialGradient(cx, cy, rad * 0.45, cx, cy, rad);
+        gr.addColorStop(0, "rgba(0,0,0,0)");
+        gr.addColorStop(1, hexA(settings.fxVigColor || "#000000", a));
+        ctx.fillStyle = gr;
+        ctx.fillRect(0, 0, W, H);
+      }
+    }
+    if (settings.fxLetter) {
+      const h = H * clamp(Number(settings.fxLetterSize) || 0, 0, 20) / 100;
+      if (h > 0.5) {
+        ctx.fillStyle = "#000";
+        ctx.fillRect(0, 0, W, h);
+        ctx.fillRect(0, H - h, W, h);
+      }
+    }
+    if (settings.fxFrame) {
+      const w = Math.max(1, Number(settings.fxFrameTh) || 2);
+      ctx.save();
+      if (settings.fxFrameGlow) { ctx.shadowColor = settings.fxFrameColor || "#ff6b9d"; ctx.shadowBlur = 18; }
+      ctx.strokeStyle = settings.fxFrameColor || "#ff6b9d";
+      ctx.lineWidth = w;
+      ctx.strokeRect(w / 2, w / 2, W - w, H - w);
+      ctx.restore();
+    }
+    if (settings.fxTint) {
+      ctx.fillStyle = hexA(settings.fxTintColor || "#ff6b9d", clamp(Number(settings.fxTintOp) ?? 0.08, 0, 0.5));
+      ctx.fillRect(0, 0, W, H);
+    }
+    if (settings.fxTopShade || settings.fxBotShade) {
+      const sh = clamp(Number(settings.fxShadeAmt) ?? 0.35, 0, 0.8);
+      let gr = null;
+      if (settings.fxTopShade && settings.fxBotShade) {
+        gr = ctx.createLinearGradient(0, 0, 0, H);
+        gr.addColorStop(0, `rgba(0,0,0,${sh})`);
+        gr.addColorStop(0.25, "rgba(0,0,0,0)");
+        gr.addColorStop(0.75, "rgba(0,0,0,0)");
+        gr.addColorStop(1, `rgba(0,0,0,${sh})`);
+      } else if (settings.fxTopShade) {
+        gr = ctx.createLinearGradient(0, 0, 0, H * 0.35);
+        gr.addColorStop(0, `rgba(0,0,0,${sh})`);
+        gr.addColorStop(1, "rgba(0,0,0,0)");
+      } else {
+        gr = ctx.createLinearGradient(0, H * 0.65, 0, H);
+        gr.addColorStop(0, "rgba(0,0,0,0)");
+        gr.addColorStop(1, `rgba(0,0,0,${sh})`);
+      }
+      ctx.fillStyle = gr;
+      ctx.fillRect(0, 0, W, H);
+    }
+    if (settings.fxNight) {
+      ctx.fillStyle = `rgba(0,0,12,${clamp(Number(settings.fxNightAmt) ?? 0.25, 0, 0.7)})`;
+      ctx.fillRect(0, 0, W, H);
+    }
+    if (!hpEl || !hpEl.isConnected) hpEl = document.getElementById("hp");
+    let hp = null;
+    if (hpEl) {
+      const m = /(\d+)/.exec(hpEl.textContent || "");
+      if (m) hp = parseInt(m[1], 10);
+    }
+    if (hp != null) {
+      if (lastHp != null && hp < lastHp && settings.fxDmgFlash) dmgFlashT = 1;
+      if (lastHp != null && hp > lastHp && settings.fxHealFlash) healT = 1;
+      lastHp = hp;
+    }
+    dmgFlashT = Math.max(0, dmgFlashT - dt / Math.max(0.2, Number(settings.fxDmgTime) || 0.6));
+    healT = Math.max(0, healT - dt / Math.max(0.2, Number(settings.fxDmgTime) || 0.6));
+    if (dmgFlashT > 0.01 && settings.fxDmgFlash) {
+      ctx.fillStyle = hexA(settings.fxDmgColor || "#ff2222", dmgFlashT * 0.35);
+      ctx.fillRect(0, 0, W, H);
+    }
+    if (healT > 0.01 && settings.fxHealFlash) {
+      ctx.fillStyle = hexA(settings.fxHealColor || "#33ff77", healT * 0.22);
+      ctx.fillRect(0, 0, W, H);
+    }
+    const lowTh = Number(settings.fxLowHpTh);
+    if (settings.fxLowHp && hp != null && hp <= (isFinite(lowTh) ? lowTh : 30) && playing) {
+      const p = Math.sin(now / 1000 * (Number(settings.fxLowHpSpd) || 4)) * 0.5 + 0.5;
+      const rad = Math.hypot(W, H) / 2;
+      const gr = ctx.createRadialGradient(cx, cy, rad * 0.4, cx, cy, rad);
+      gr.addColorStop(0, "rgba(0,0,0,0)");
+      gr.addColorStop(1, hexA(settings.fxLowHpColor || "#ff2222", 0.12 + p * 0.22));
+      ctx.fillStyle = gr;
+      ctx.fillRect(0, 0, W, H);
+    }
+    if (settings.fxFireGlow && held.has("mouse1")) {
+      fxEdgeGlow(settings.fxFireColor || "#ff6b9d", clamp(Number(settings.fxFireAmt) ?? 0.5, 0, 1));
+    }
+    if (settings.fxAdsShade && held.has("mouse3")) {
+      fxEdgeGlow("#000000", clamp(Number(settings.fxAdsAmt) ?? 0.5, 0, 0.9));
+    }
+    const scoped = !!(g && (g.scoped || (g.weapons && g.weapons.scopeLevel > 0)));
+    if (settings.fxScope && scoped && playing) {
+      const r = Math.min(W, H) * 0.42;
+      const gap = r * 0.12;
+      ctx.save();
+      ctx.fillStyle = "#000";
+      ctx.beginPath();
+      ctx.rect(0, 0, W, H);
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fill("evenodd");
+      ctx.strokeStyle = settings.fxScopeColor || "#111111";
+      ctx.lineWidth = Math.max(2, Number(settings.fxScopeTh) || 3);
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(cx - r, cy); ctx.lineTo(cx - gap, cy);
+      ctx.moveTo(cx + gap, cy); ctx.lineTo(cx + r, cy);
+      ctx.moveTo(cx, cy - r); ctx.lineTo(cx, cy - gap);
+      ctx.moveTo(cx, cy + gap); ctx.lineTo(cx, cy + r);
+      ctx.stroke();
+      ctx.restore();
+    }
+    if (!hitEl || !hitEl.isConnected) hitEl = document.getElementById("hitmark");
+    if (hitEl) {
+      let pop = false;
+      try { pop = hitEl.classList.contains("pop") || Number(hitEl.style.opacity || 0) > 0.05; } catch (_) {}
+      if (pop && hmT <= 0) { hmT = 1; try { hmHs = hitEl.classList.contains("hs"); } catch (_) { hmHs = false; } }
+    }
+    hmT = Math.max(0, hmT - dt / Math.max(0.1, Number(settings.fxHmTime) || 0.35));
+    if (settings.fxHitmark && hmT > 0.01 && playing) {
+      const s = (Number(settings.fxHmSize) || 12) * (1 + hmT * 0.45);
+      const c = hmHs ? (settings.fxHmHs || "#ff4040") : (settings.fxHmColor || "#ffffff");
+      ctx.save();
+      ctx.globalAlpha = clamp(hmT, 0, 1);
+      ctx.lineCap = "round";
+      const st = settings.fxHmStyle || "x";
+      if (st === "dot") {
+        ctx.fillStyle = c;
+        ctx.beginPath(); ctx.arc(cx, cy, Math.max(1.5, s * 0.25), 0, Math.PI * 2); ctx.fill();
+      } else if (st === "circle") {
+        ctx.strokeStyle = c; ctx.lineWidth = 2.5;
+        ctx.beginPath(); ctx.arc(cx, cy, Math.max(2, s), 0, Math.PI * 2); ctx.stroke();
+      } else {
+        ctx.strokeStyle = c; ctx.lineWidth = 2.5;
+        const o = s * 0.45, e = s * 1.1;
+        ctx.beginPath();
+        ctx.moveTo(cx - o - e, cy - o - e); ctx.lineTo(cx - o, cy - o);
+        ctx.moveTo(cx + o, cy + o); ctx.lineTo(cx + o + e, cy + o + e);
+        ctx.moveTo(cx + o, cy - o); ctx.lineTo(cx + o + e, cy - o - e);
+        ctx.moveTo(cx - o - e, cy + o + e); ctx.lineTo(cx - o, cy + o);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
   }
 
   // ── Ambience / World FX ──
@@ -1142,7 +1420,8 @@
     const playing = isPlaying(g);
     const overlayActive =
       (settings.keystrokes && playing) ||
-      (settings.crosshair && (playing || settings.chInLobby));
+      (settings.crosshair && (playing || settings.chInLobby)) ||
+      (settings.fxEnable && playing);
     if (!overlayActive) {
       if (overlayDirty) {
         sizeOverlay();
@@ -1161,6 +1440,7 @@
     const rect = { left: 0, top: 0, right: size.w, bottom: size.h, width: size.w, height: size.h };
     if (settings.keystrokes && playing) drawKeystrokes(rect);
     if (settings.crosshair && (playing || settings.chInLobby)) drawCrosshair(rect, now, dt, g);
+    if (settings.fxEnable && playing) drawScreenFX(rect, now, dt, g);
   }
 
   // ── Sakura logo ──
@@ -1237,13 +1517,15 @@
     beta: '<path d="M9 3h6M10 3v6l-5.2 9.4A2 2 0 0 0 6.6 21h10.8a2 2 0 0 0 1.8-2.6L14 9V3"/><path d="M7.5 15h9"/>',
     charms: '<svg viewBox="0 0 24 24"><path d="M12 2c1.66 0 3 .67 3 1.5V7h2v5l5 5v4L21 7c0-1.1-.9-2-2-2h-5V3.5C14 .67 13.34 2 12 2zM8 5c0-1.1.9-2 2-2h2v5c0 1.1-.9 2-2 2H8V5zm4 10c0-1.1.9-2 2-2h2v5c0-1.1-.9-2-2-2h-2v5z"/>',
     chams: '<svg viewBox="0 0 24 24"><path d="M6 2c-3.3 0-6 2.7-6 6v10c0 3.3 2.7 6 6 6h4c3.3 0 6-2.7 6-6V8c0-3.3-2.7-6-6-6H6zm2 2v4h12V8H8zM8 4v12h8V4H8z"/>',
-    cross: '<circle cx="12" cy="12" r="9"/><path d="M12 7v10M7 12h10"/>'
+    cross: '<circle cx="12" cy="12" r="9"/><path d="M12 7v10M7 12h10"/>',
+    fx: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 5v14M17 5v14M3 12h3M18 12h3"/>'
   };
   var CATEGORIES = [
     { id: "hud", label: "HUD", icon: ICONS.hud },
     { id: "world", label: "World", icon: ICONS.world },
     { id: "chams", label: "Chams", icon: ICONS.chams },
-    { id: "crosshair", label: "Cross", icon: ICONS.cross }
+    { id: "crosshair", label: "Cross", icon: ICONS.cross },
+    { id: "fx", label: "FX", icon: ICONS.fx }
   ];
   if (betaUnlocked) CATEGORIES.push({ id: "beta", label: "Beta", icon: ICONS.beta });
 
@@ -1634,7 +1916,12 @@
       sliders: '<path d="M4 8h10M18 8h2M4 16h4M12 16h8"/><circle cx="16" cy="8" r="2"/><circle cx="10" cy="16" r="2"/>',
       charms: '<path d="M6 21 21 6l-3-3L3 18l3 3z"/><path d="M14 5l3 3"/>',
       chams: '<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/>',
-      target: '<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.5"/>'
+      target: '<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.5"/>',
+      film: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 5v14M17 5v14"/>',
+      frame: '<rect x="4" y="4" width="16" height="16" rx="2"/>',
+      drop: '<path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11z"/>',
+      glow: '<circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>',
+      scope: '<circle cx="12" cy="12" r="8"/><path d="M12 1v6M12 17v6M1 12h6M17 12h6"/>'
     };
     var LUNAR_MODULES = [
       { tab: "hud", title: "Keystrokes", icon: "keys", get: () => settings.keystrokes, set: (v) => { settings.keystrokes = v; save(); } },
@@ -1647,6 +1934,13 @@
       { tab: "crosshair", title: "Animation", icon: "refresh", get: () => settings.chPulse || settings.chSpin || settings.chRainbow, set: (v) => { settings.chPulse = v; settings.chSpin = v; settings.chRainbow = v; save(); } },
       { tab: "crosshair", title: "Visibility", icon: "image", toggle: null },
       { tab: "crosshair", title: "Custom Draw", icon: "plus", toggle: null },
+      { tab: "fx", title: "Film & Texture", icon: "film", get: () => settings.fxEnable, set: (v) => { settings.fxEnable = v; save(); } },
+      { tab: "fx", title: "Vignette & Frame", icon: "frame", get: () => settings.fxVig || settings.fxLetter || settings.fxFrame, set: (v) => { settings.fxVig = v; settings.fxLetter = v; settings.fxFrame = v; save(); } },
+      { tab: "fx", title: "Damage & HP", icon: "drop", get: () => settings.fxDmgFlash || settings.fxLowHp || settings.fxHealFlash, set: (v) => { settings.fxDmgFlash = v; settings.fxLowHp = v; settings.fxHealFlash = v; save(); } },
+      { tab: "fx", title: "Light & Tint", icon: "glow", get: () => settings.fxTint || settings.fxTopShade || settings.fxBotShade || settings.fxNight, set: (v) => { settings.fxTint = v; settings.fxTopShade = v; settings.fxBotShade = v; settings.fxNight = v; save(); } },
+      { tab: "fx", title: "Fire & ADS", icon: "bolt", get: () => settings.fxFireGlow || settings.fxAdsShade, set: (v) => { settings.fxFireGlow = v; settings.fxAdsShade = v; save(); } },
+      { tab: "fx", title: "Scope", icon: "scope", get: () => settings.fxScope, set: (v) => { settings.fxScope = v; save(); } },
+      { tab: "fx", title: "Hitmarker", icon: "target", get: () => settings.fxHitmark, set: (v) => { settings.fxHitmark = v; save(); } },
       { tab: "beta", title: "Interface", icon: "sliders", toggle: null }
     ];
     if (settings.uiStyle === "lunar" && betaUnlocked) return buildLunarPanel();
@@ -1708,7 +2002,7 @@
 
       // Collect minimal cards once, transplant their rows into lunar drawers
       const pool = new Map();
-      for (const c of [...cardsFor("hud"), ...cardsFor("world"), ...cardsFor("chams"), ...cardsFor("crosshair")]) {
+      for (const c of [...cardsFor("hud"), ...cardsFor("world"), ...cardsFor("chams"), ...cardsFor("crosshair"), ...cardsFor("fx")]) {
         const t = c.querySelector(".sk-card-title strong");
         if (t && !pool.has(t.textContent)) pool.set(t.textContent, c);
       }
@@ -1801,7 +2095,7 @@
 
       // Sidebar categories
       const catBtns = [];
-      const cats = [["all", "All"], ["hud", "HUD"], ["world", "World"], ["chams", "Chams"], ["crosshair", "Cross"]];
+      const cats = [["all", "All"], ["hud", "HUD"], ["world", "World"], ["chams", "Chams"], ["crosshair", "Cross"], ["fx", "FX"]];
       if (betaUnlocked) cats.push(["beta", "Beta"]);
       let filter = "all";
       const applyFilter = () => {
@@ -1981,6 +2275,78 @@
               row("Mirror Y", "Mirror top / bottom", toggleSwitch(settings.chMirrorY !== false, (v) => { settings.chMirrorY = v; save(); })),
               row("Pixel size", "In-game render scale", rangeField(settings.chPxScale ?? 3, 1, 6, 1, (v) => { settings.chPxScale = v; save(); })),
               note("Left-drag paints, right-drag erases.")
+            ])
+        ];
+      }
+      if (id === "fx") {
+        return [
+          moduleCard("Film & Texture", "Animated grain, scanlines and dust over the screen.", settings.fxEnable,
+            (v) => { settings.fxEnable = v; save(); }, [
+              row("Film grain", null, toggleSwitch(settings.fxGrain, (v) => { settings.fxGrain = v; save(); })),
+              row("Grain amount", null, rangeField(settings.fxGrainAmt, 0, 0.5, 0.01, (v) => { settings.fxGrainAmt = v; save(); })),
+              row("Animated grain", "Flicker the noise", toggleSwitch(settings.fxGrainAnim !== false, (v) => { settings.fxGrainAnim = v; save(); })),
+              row("Scanlines", null, toggleSwitch(settings.fxScan, (v) => { settings.fxScan = v; save(); })),
+              row("Line spacing", null, rangeField(settings.fxScanGap, 2, 8, 1, (v) => { settings.fxScanGap = v; save(); })),
+              row("Line opacity", null, rangeField(settings.fxScanOp ?? 0.25, 0, 1, 0.05, (v) => { settings.fxScanOp = v; save(); })),
+              row("Line drift", "Scroll the lines", toggleSwitch(settings.fxScanDrift, (v) => { settings.fxScanDrift = v; save(); })),
+              row("Dust spots", "Static film dust", toggleSwitch(settings.fxDust, (v) => { settings.fxDust = v; save(); })),
+              row("Dust count", null, rangeField(settings.fxDustN ?? 40, 0, 150, 5, (v) => { settings.fxDustN = v; save(); }))
+            ]),
+          moduleCard("Vignette & Frame", "Edges, bars and sakura frame.", settings.fxVig || settings.fxLetter || settings.fxFrame,
+            (v) => { settings.fxVig = v; settings.fxLetter = v; settings.fxFrame = v; save(); rebuildPanel(); }, [
+              row("Vignette", null, toggleSwitch(settings.fxVig, (v) => { settings.fxVig = v; save(); })),
+              row("Vignette amount", null, rangeField(settings.fxVigAmt, 0, 1, 0.05, (v) => { settings.fxVigAmt = v; save(); })),
+              row("Vignette color", null, colorField(settings.fxVigColor || "#000000", (v) => { settings.fxVigColor = v; save(); })),
+              row("Letterbox", "Cinematic bars", toggleSwitch(settings.fxLetter, (v) => { settings.fxLetter = v; save(); })),
+              row("Bar size", "Percent of height", rangeField(settings.fxLetterSize, 0, 20, 0.5, (v) => { settings.fxLetterSize = v; save(); })),
+              row("Frame", "Border around screen", toggleSwitch(settings.fxFrame, (v) => { settings.fxFrame = v; save(); })),
+              row("Frame color", null, colorField(settings.fxFrameColor || "#ff6b9d", (v) => { settings.fxFrameColor = v; save(); })),
+              row("Frame thickness", null, rangeField(settings.fxFrameTh, 1, 8, 1, (v) => { settings.fxFrameTh = v; save(); })),
+              row("Frame glow", null, toggleSwitch(settings.fxFrameGlow, (v) => { settings.fxFrameGlow = v; save(); }))
+            ]),
+          moduleCard("Damage & HP", "Flashes and pulse driven by your HP readout.", settings.fxDmgFlash || settings.fxLowHp,
+            (v) => { settings.fxDmgFlash = v; settings.fxLowHp = v; save(); rebuildPanel(); }, [
+              row("Damage flash", "Flash when HP drops", toggleSwitch(settings.fxDmgFlash !== false, (v) => { settings.fxDmgFlash = v; save(); })),
+              row("Damage color", null, colorField(settings.fxDmgColor || "#ff2222", (v) => { settings.fxDmgColor = v; save(); })),
+              row("Flash duration", "Seconds", rangeField(settings.fxDmgTime, 0.2, 2, 0.1, (v) => { settings.fxDmgTime = v; save(); })),
+              row("Low HP pulse", null, toggleSwitch(settings.fxLowHp !== false, (v) => { settings.fxLowHp = v; save(); })),
+              row("Low HP at", "HP threshold", rangeField(settings.fxLowHpTh ?? 30, 5, 75, 5, (v) => { settings.fxLowHpTh = v; save(); })),
+              row("Low HP color", null, colorField(settings.fxLowHpColor || "#ff2222", (v) => { settings.fxLowHpColor = v; save(); })),
+              row("Pulse speed", null, rangeField(settings.fxLowHpSpd, 1, 12, 0.5, (v) => { settings.fxLowHpSpd = v; save(); })),
+              row("Heal flash", "Flash when HP rises", toggleSwitch(settings.fxHealFlash, (v) => { settings.fxHealFlash = v; save(); })),
+              row("Heal color", null, colorField(settings.fxHealColor || "#33ff77", (v) => { settings.fxHealColor = v; save(); }))
+            ]),
+          moduleCard("Light & Tint", "Washes, shades and night grade.", settings.fxTint || settings.fxTopShade || settings.fxBotShade || settings.fxNight,
+            (v) => { settings.fxTint = v; settings.fxTopShade = v; settings.fxBotShade = v; settings.fxNight = v; save(); rebuildPanel(); }, [
+              row("Tint", "Full-screen color wash", toggleSwitch(settings.fxTint, (v) => { settings.fxTint = v; save(); })),
+              row("Tint color", null, colorField(settings.fxTintColor || "#ff6b9d", (v) => { settings.fxTintColor = v; save(); })),
+              row("Tint opacity", null, rangeField(settings.fxTintOp ?? 0.08, 0, 0.5, 0.01, (v) => { settings.fxTintOp = v; save(); })),
+              row("Top shade", "Darken the top", toggleSwitch(settings.fxTopShade, (v) => { settings.fxTopShade = v; save(); })),
+              row("Bottom shade", "Darken the bottom", toggleSwitch(settings.fxBotShade, (v) => { settings.fxBotShade = v; save(); })),
+              row("Shade amount", null, rangeField(settings.fxShadeAmt ?? 0.35, 0, 0.8, 0.05, (v) => { settings.fxShadeAmt = v; save(); })),
+              row("Night", "Darken everything", toggleSwitch(settings.fxNight, (v) => { settings.fxNight = v; save(); })),
+              row("Night amount", null, rangeField(settings.fxNightAmt ?? 0.25, 0, 0.7, 0.05, (v) => { settings.fxNightAmt = v; save(); }))
+            ]),
+          moduleCard("Fire & ADS", "Edge light while shooting or aiming.", settings.fxFireGlow || settings.fxAdsShade,
+            (v) => { settings.fxFireGlow = v; settings.fxAdsShade = v; save(); rebuildPanel(); }, [
+              row("Fire glow", "Glow edges while shooting", toggleSwitch(settings.fxFireGlow, (v) => { settings.fxFireGlow = v; save(); })),
+              row("Fire color", null, colorField(settings.fxFireColor || "#ff6b9d", (v) => { settings.fxFireColor = v; save(); })),
+              row("Fire amount", null, rangeField(settings.fxFireAmt ?? 0.5, 0, 1, 0.05, (v) => { settings.fxFireAmt = v; save(); })),
+              row("ADS shade", "Darken edges on RMB", toggleSwitch(settings.fxAdsShade, (v) => { settings.fxAdsShade = v; save(); })),
+              row("ADS amount", null, rangeField(settings.fxAdsAmt ?? 0.5, 0, 0.9, 0.05, (v) => { settings.fxAdsAmt = v; save(); }))
+            ]),
+          moduleCard("Scope", "Custom scope overlay when actually scoped.", settings.fxScope,
+            (v) => { settings.fxScope = v; save(); }, [
+              row("Scope ring color", null, colorField(settings.fxScopeColor || "#111111", (v) => { settings.fxScopeColor = v; save(); })),
+              row("Ring thickness", null, rangeField(settings.fxScopeTh, 2, 10, 1, (v) => { settings.fxScopeTh = v; save(); }))
+            ]),
+          moduleCard("Hitmarker", "Styled hitmarker mirroring the game's.", settings.fxHitmark,
+            (v) => { settings.fxHitmark = v; save(); }, [
+              row("Style", null, selectField(settings.fxHmStyle || "x", [["x", "X"], ["dot", "Dot"], ["circle", "Circle"]], (v) => { settings.fxHmStyle = v; save(); })),
+              row("Color", null, colorField(settings.fxHmColor || "#ffffff", (v) => { settings.fxHmColor = v; save(); })),
+              row("Headshot color", "Mirrors the game's red", colorField(settings.fxHmHs || "#ff4040", (v) => { settings.fxHmHs = v; save(); })),
+              row("Size", null, rangeField(settings.fxHmSize, 6, 30, 1, (v) => { settings.fxHmSize = v; save(); })),
+              row("Duration", "Seconds", rangeField(settings.fxHmTime, 0.1, 1, 0.05, (v) => { settings.fxHmTime = v; save(); }))
             ])
         ];
       }
