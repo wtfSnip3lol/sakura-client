@@ -80,6 +80,27 @@
     charmColor: "#ff6b9d",
     charmWidth: 4,
     charmOpacity: 0.5,
+    charmColor2: "#ffb3c6",
+    charmTwoTone: false,
+    charmGlow: 0.6,
+    charmRainbow: false,
+    charmRainbowSpd: 60,
+    charmPulse: false,
+    charmPulseSpd: 3,
+    charmPulseAmt: 0.4,
+    charmShimmer: false,
+    charmFull: false,
+    charmMetal: false,
+    charmFlat: false,
+    charmXray: false,
+    charmBright: 1,
+    charmPreset: "custom",
+    charmCandy: false,
+    charmCandySpd: 2,
+    charmFire: false,
+    charmFireCol: "#ffffff",
+    charmGhost: false,
+    charmBack: false,
     // Gun chams
     gunChams: false,
     chamType: "outline",
@@ -87,6 +108,37 @@
     chamWidth: 4,
     chamOpacity: 0.5,
     chamGlowIntensity: 0.6,
+    chamColor2: "#ffb3c6",
+    chamTwoTone: false,
+    chamRainbow: false,
+    chamRainbowSpd: 60,
+    chamPulse: false,
+    chamPulseSpd: 3,
+    chamPulseAmt: 0.4,
+    chamShimmer: false,
+    chamFull: false,
+    chamMetal: false,
+    chamFlat: false,
+    chamXray: false,
+    chamBright: 1,
+    chamPreset: "custom",
+    chamCandy: false,
+    chamCandySpd: 2,
+    chamFire: false,
+    chamFireCol: "#ffffff",
+    chamGhost: false,
+    chamBack: false,
+    // Knife chams (best-effort name match on the weapon meshes)
+    knifeChams: false,
+    knifeType: "outline",
+    knifeColor: "#ff6b9d",
+    knifeOpacity: 0.5,
+    knifeRainbow: false,
+    // Chams behaviour
+    chamsScan: 2,
+    chamsMatchOnly: true,
+    gunHide: false,
+    armHide: false,
     // Crosshair studio (visual only — drawn on the overlay canvas)
     crosshair: false,
     chPreset: "custom",
@@ -984,9 +1036,58 @@
   // and weapon meshes. Originals are saved on first apply and restored
   // when the module is disabled, so the game keeps working untouched.
   var chams = {
-    arm: { applied: false, root: null, meshes: [], orig: new Map() },
-    gun: { applied: false, root: null, meshes: [], orig: new Map() }
+    arm: { applied: false, root: null, meshes: [], orig: new Map(), scannedAt: 0 },
+    gun: { applied: false, root: null, meshes: [], orig: new Map(), scannedAt: 0 },
+    knife: { applied: false, root: null, meshes: [], orig: new Map(), scannedAt: 0 }
   };
+  function chNum(v, d) { const n = Number(v); return isFinite(n) ? n : d; }
+  function chHexRgb(hex) {
+    const m = /^#?([0-9a-f]{6})$/i.exec(hex || "");
+    if (!m) return [255, 107, 157];
+    const n = parseInt(m[1], 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+  function chHexo(rgb) {
+    const c = (v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0");
+    return "#" + c(rgb[0]) + c(rgb[1]) + c(rgb[2]);
+  }
+  function chMixHex(a, b, f) {
+    const A = chHexRgb(a), B = chHexRgb(b);
+    return chHexo([A[0] + (B[0] - A[0]) * f, A[1] + (B[1] - A[1]) * f, A[2] + (B[2] - A[2]) * f]);
+  }
+  function chBrightHex(hex, m) {
+    const c = chHexRgb(hex);
+    return chHexo([c[0] * m, c[1] * m, c[2] * m]);
+  }
+  // Per-frame animated base color for a side's options.
+  function chamsFrameColor(o, now) {
+    const base = o.color || "#ff6b9d";
+    if (o.rainbow) {
+      const h = ((now / 1000) * chNum(o.rainbowSpd, 60)) % 360;
+      return `hsl(${h},100%,60%)`;
+    }
+    if (o.candy && o.color2) {
+      const f = Math.sin(now / 1000 * chNum(o.candySpd, 2) * Math.PI * 2) * 0.5 + 0.5;
+      return chMixHex(base, o.color2, f);
+    }
+    return base;
+  }
+  // Resolve per-side options from settings by key prefix ("charm", "cham", "knife").
+  function chamsOpts(prefix, glowKey) {
+    const v = (k) => settings[prefix + k];
+    return {
+      type: v("Type"), color: v("Color"), color2: v("Color2"),
+      twoTone: v("TwoTone"), opacity: v("Opacity"), width: v("Width"),
+      glow: glowKey ? settings[glowKey] : v("Glow"),
+      rainbow: v("Rainbow"), rainbowSpd: v("RainbowSpd"),
+      pulse: v("Pulse"), pulseSpd: v("PulseSpd"), pulseAmt: v("PulseAmt"),
+      shimmer: v("Shimmer"), full: v("Full"), metal: v("Metal"),
+      flat: v("Flat"), xray: v("Xray"), bright: v("Bright"),
+      candy: v("Candy"), candySpd: v("CandySpd"),
+      fire: v("Fire"), fireCol: v("FireCol"),
+      ghost: v("Ghost"), back: v("Back")
+    };
+  }
   // three.js side constants: 0 = FrontSide, 1 = BackSide, 2 = DoubleSide
   function chamsSaveOrig(m, origMap) {
     if (!origMap.has(m)) {
@@ -997,47 +1098,168 @@
         wireframe: m.wireframe,
         side: m.side,
         depthTest: m.depthTest,
+        depthWrite: m.depthWrite,
         transparent: m.transparent,
-        opacity: m.opacity
+        opacity: m.opacity,
+        flatShading: m.flatShading,
+        metalness: ("metalness" in m) ? m.metalness : null,
+        roughness: ("roughness" in m) ? m.roughness : null,
+        polygonOffset: m.polygonOffset,
+        polygonOffsetFactor: m.polygonOffsetFactor
       });
     }
   }
-  function chamsApplyMat(m, type, color, origMap) {
-    chamsSaveOrig(m, origMap);
-    const c = color || "#ff6b9d";
+  // o: resolved side options (see chamsOpts); firing: mouse1 held (fire flash).
+  function chamsApplyMat(m, state, o, now, firing) {
+    if (!m) return;
+    chamsSaveOrig(m, state.orig);
+    const oo = state.orig.get(m);
+    const bright = Math.max(0.2, Math.min(2, chNum(o.bright, 1)));
+    const base = chBrightHex(chamsFrameColor(o, now), bright);
+    const emCol = o.twoTone && o.color2 ? chBrightHex(o.color2, bright) : base;
+    const op = Math.max(0.05, Math.min(1, chNum(o.opacity, 0.45)));
+    let emis = chNum(o.glow, 0.6);
+    if (o.pulse) emis += Math.sin(now / 1000 * chNum(o.pulseSpd, 3) * Math.PI * 2) * chNum(o.pulseAmt, 0.4);
+    emis = Math.max(0, emis);
+    const type = o.type || "outline";
+    const shim = o.shimmer ? 0.55 + 0.45 * Math.sin(now / 1000 * chNum(o.pulseSpd, 3) * Math.PI * 2) : 1;
     if (type === "outline" || type === "both") {
-      m.side = 2;                    // DoubleSide
+      m.side = o.back ? 1 : 2;       // BackSide hollow look, else DoubleSide
       m.transparent = true;
-      m.opacity = 0.45;
-      if (m.color) m.color.set(c);
+      m.opacity = op * shim;
+      if (m.color) m.color.set(o.full ? "#ffffff" : base);
+    } else {
+      m.transparent = true;
+      m.opacity = op * shim;
     }
     if (type === "glow" || type === "both") {
-      if (m.emissive) m.emissive.set(c);
-      m.emissiveIntensity = 0.6;
+      if (m.emissive) m.emissive.set(firing && o.fire ? (o.fireCol || "#ffffff") : emCol);
+      m.emissiveIntensity = emis + (o.full ? 0.7 : 0);
+    } else if (o.fire && firing && m.emissive) {
+      m.emissive.set(o.fireCol || "#ffffff");
+      m.emissiveIntensity = Math.max(emis, 0.9);
     }
     if (type === "wireframe") {
       m.wireframe = true;
-      if (m.color) m.color.set(c);
+      if (m.color) m.color.set(o.full ? "#ffffff" : base);
     }
+    if (o.metal && "metalness" in m) { m.metalness = 0.9; m.roughness = 0.25; }
+    else if ("metalness" in m && oo.metalness != null) { m.metalness = oo.metalness; m.roughness = oo.roughness; }
+    if (m.flatShading !== undefined) {
+      if (o.flat && m.userData._sakFlat !== true) {
+        m.userData._sakFlat = true;
+        m.flatShading = true;
+        m.needsUpdate = true;
+      } else if (!o.flat && m.userData._sakFlat) {
+        m.userData._sakFlat = false;
+        m.flatShading = oo.flatShading;
+        m.needsUpdate = true;
+      }
+    }
+    m.depthTest = o.xray ? false : oo.depthTest;
+    m.depthWrite = o.ghost ? false : oo.depthWrite;
+    if (chNum(o.width, 0) > 0) {
+      m.polygonOffset = true;
+      m.polygonOffsetFactor = -chNum(o.width, 0);
+    } else {
+      m.polygonOffset = oo.polygonOffset;
+      m.polygonOffsetFactor = oo.polygonOffsetFactor;
+    }
+  }
+  function chamsRestoreMat(state, m) {
+    const orig = state.orig.get(m);
+    if (!orig || !m) return;
+    try {
+      if (m.color && orig.color != null) m.color.set(orig.color);
+      if (m.emissive && orig.emissive != null) m.emissive.set(orig.emissive);
+      m.emissiveIntensity = orig.emissiveIntensity;
+      m.wireframe = orig.wireframe;
+      m.side = orig.side;
+      m.depthTest = orig.depthTest;
+      m.depthWrite = orig.depthWrite;
+      m.transparent = orig.transparent;
+      m.opacity = orig.opacity;
+      if ("metalness" in m && orig.metalness != null) {
+        m.metalness = orig.metalness;
+        m.roughness = orig.roughness;
+      }
+      if (m.polygonOffset !== undefined) {
+        m.polygonOffset = orig.polygonOffset;
+        m.polygonOffsetFactor = orig.polygonOffsetFactor;
+      }
+      if (m.userData && m.userData._sakFlat) {
+        m.userData._sakFlat = false;
+        m.flatShading = orig.flatShading;
+        m.needsUpdate = true;
+      }
+    } catch (_) {}
+    state.orig.delete(m);
   }
   function chamsRestore(state) {
     for (const mesh of state.meshes) {
       const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-      for (const m of mats) {
-        const orig = state.orig.get(m);
-        if (!orig) continue;
-        if (m.color && orig.color != null) m.color.set(orig.color);
-        if (m.emissive && orig.emissive != null) m.emissive.set(orig.emissive);
-        m.emissiveIntensity = orig.emissiveIntensity;
-        m.wireframe = orig.wireframe;
-        m.side = orig.side;
-        m.depthTest = orig.depthTest;
-        m.transparent = orig.transparent;
-        m.opacity = orig.opacity;
-        state.orig.delete(m);
-      }
+      for (const m of mats) chamsRestoreMat(state, m);
+      try {
+        if (mesh.userData._sakRO) { mesh.userData._sakRO = 0; mesh.renderOrder = 0; }
+        if (mesh.userData._sakVis !== undefined) {
+          mesh.visible = mesh.userData._sakVis;
+          delete mesh.userData._sakVis;
+        }
+      } catch (_) {}
     }
     state.meshes.length = 0;
+  }
+  // Re-collect without flicker: restore only materials that vanished.
+  function chamsRecollect(state, root, filter) {
+    const tmp = [];
+    chamsCollect(root, tmp, filter);
+    const seen = new Set();
+    for (const mesh of tmp) {
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const m of mats) if (m) seen.add(m);
+    }
+    for (const m of [...state.orig.keys()]) if (!seen.has(m)) chamsRestoreMat(state, m);
+    state.meshes = tmp;
+  }
+  function chamsSide(state, root, filter, enable, opts, hide, now, firing) {
+    const scanMs = Math.max(250, chNum(settings.chamsScan, 2) * 1000);
+    if ((enable || hide) && root) {
+      if (state.root !== root || now - (state.scannedAt || 0) > scanMs) {
+        if (state.applied && state.root === root) chamsRecollect(state, root, filter);
+        else {
+          if (state.applied) chamsRestore(state);
+          chamsCollect(root, state.meshes, filter);
+        }
+        state.root = root;
+        state.scannedAt = now;
+      }
+      for (const mesh of state.meshes) {
+        if (opts.xray) {
+          if (mesh.userData._sakRO !== 999) { mesh.userData._sakRO = 999; mesh.renderOrder = 999; }
+        } else if (mesh.userData._sakRO) {
+          mesh.userData._sakRO = 0;
+          mesh.renderOrder = 0;
+        }
+        if (hide) {
+          if (mesh.visible !== false) {
+            if (mesh.userData._sakVis === undefined) mesh.userData._sakVis = mesh.visible;
+            mesh.visible = false;
+          }
+          continue;
+        } else if (mesh.userData._sakVis !== undefined) {
+          mesh.visible = mesh.userData._sakVis;
+          delete mesh.userData._sakVis;
+        }
+        if (!enable) continue;
+        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const m of mats) chamsApplyMat(m, state, opts, now, firing);
+      }
+      state.applied = true;
+    } else if (state.applied) {
+      chamsRestore(state);
+      state.applied = false;
+      state.root = null;
+    }
   }
   function chamsCollect(root, store, filter) {
     store.length = 0;
@@ -1075,46 +1297,24 @@
     }
     return { armRoot: null, gunRoot: null, armFilter: null, gunFilter: null };
   }
-  function tickChams(g) {
+  function tickChams(g, now) {
     if (!g) return;
+    const firing = held.has("mouse1");
     const t = chamsTargets(g);
-    const arm = chams.arm, gun = chams.gun;
-
-    // ── Arm chams ──
-    if (settings.armCharms && t.armRoot) {
-      if (arm.root !== t.armRoot) {
-        if (arm.applied) chamsRestore(arm);
-        chamsCollect(t.armRoot, arm.meshes, t.armFilter);
-        arm.root = t.armRoot;
-      }
-      for (const mesh of arm.meshes) {
-        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-        for (const m of mats) chamsApplyMat(m, settings.charmsType, settings.charmColor, arm.orig);
-      }
-      arm.applied = true;
-    } else if (arm.applied) {
-      chamsRestore(arm);
-      arm.applied = false;
-      arm.root = null;
-    }
-
-    // ── Gun chams ──
-    if (settings.gunChams && t.gunRoot) {
-      if (gun.root !== t.gunRoot) {
-        if (gun.applied) chamsRestore(gun);
-        chamsCollect(t.gunRoot, gun.meshes, t.gunFilter);
-        gun.root = t.gunRoot;
-      }
-      for (const mesh of gun.meshes) {
-        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-        for (const m of mats) chamsApplyMat(m, settings.chamType, settings.chamColor, gun.orig);
-      }
-      gun.applied = true;
-    } else if (gun.applied) {
-      chamsRestore(gun);
-      gun.applied = false;
-      gun.root = null;
-    }
+    const matchOk = !settings.chamsMatchOnly || isPlaying(g);
+    chamsSide(chams.arm, t.armRoot, t.armFilter,
+      settings.armCharms && matchOk, chamsOpts("charm"), settings.armHide, now, firing);
+    chamsSide(chams.gun, t.gunRoot, t.gunFilter,
+      settings.gunChams && matchOk, chamsOpts("cham", "chamGlowIntensity"), settings.gunHide, now, firing);
+    chamsSide(chams.knife, t.gunRoot,
+      (m) => {
+        if (t.gunFilter && !t.gunFilter(m)) return false;
+        const mn = (m.name || "") + " " + (Array.isArray(m.material)
+          ? m.material.map((x) => x && x.name).join(" ")
+          : ((m.material && m.material.name) || ""));
+        return /knife/i.test(mn);
+      },
+      settings.knifeChams && matchOk, chamsOpts("knife"), false, now, firing);
   }
 
   // ── Main loop ──
@@ -1129,7 +1329,7 @@
     if (!g) return;
 
     worldTick(g);
-    tickChams(g);
+    tickChams(g, now);
     tickGameCrosshair();
     tickMotionBlur(g);
 
@@ -1642,6 +1842,8 @@
       { tab: "world", title: "Motion Blur", icon: "blur", get: () => settings.motionBlur, set: (v) => { settings.motionBlur = v; save(); } },
       { tab: "chams", title: "Arm Chams", icon: "charms", get: () => settings.armCharms, set: (v) => { settings.armCharms = v; save(); } },
       { tab: "chams", title: "Gun Chams", icon: "chams", get: () => settings.gunChams, set: (v) => { settings.gunChams = v; save(); } },
+      { tab: "chams", title: "Knife Chams", icon: "dice", get: () => settings.knifeChams, set: (v) => { settings.knifeChams = v; save(); } },
+      { tab: "chams", title: "Viewmodel", icon: "gauge", get: () => !settings.gunHide || !settings.armHide, set: (v) => { settings.gunHide = !v; settings.armHide = !v; save(); } },
       { tab: "crosshair", title: "Crosshair", icon: "target", get: () => settings.crosshair, set: (v) => { settings.crosshair = v; save(); } },
       { tab: "crosshair", title: "Dynamics", icon: "trend", get: () => settings.chDynamic, set: (v) => { settings.chDynamic = v; save(); } },
       { tab: "crosshair", title: "Animation", icon: "refresh", get: () => settings.chPulse || settings.chSpin || settings.chRainbow, set: (v) => { settings.chPulse = v; settings.chSpin = v; settings.chRainbow = v; save(); } },
@@ -1895,16 +2097,80 @@
           (v) => { settings.armCharms = v; save(); }, [
             row("Cham Type", null, selectField(settings.charmsType, [["outline", "Outline"], ["glow", "Glow"], ["both", "Both"], ["wireframe", "Wireframe"]], (v) => { settings.charmsType = v; save(); })),
             row("Color", null, colorField(settings.charmColor || "#ff6b9d", (v) => { settings.charmColor = v; save(); })),
-            row("Width", null, rangeField(settings.charmWidth, 1, 10, 0.5, (v) => { settings.charmWidth = v; save(); })),
-            row("Opacity", null, rangeField(settings.charmOpacity, 0.1, 1, 0.05, (v) => { settings.charmOpacity = v; save(); }))
+            row("Width", "Depth push toward camera", rangeField(settings.charmWidth, 0, 10, 0.5, (v) => { settings.charmWidth = v; save(); })),
+            row("Opacity", null, rangeField(settings.charmOpacity, 0.05, 1, 0.05, (v) => { settings.charmOpacity = v; save(); })),
+            row("Preset", null, selectField(settings.charmPreset || "custom", [["custom", "Custom"], ["sakura", "Sakura"], ["red", "Red"], ["green", "Green"], ["blue", "Blue"], ["gold", "Gold"], ["white", "White"], ["cyan", "Cyan"]], (v) => {
+              const C = { sakura: "#ff6b9d", red: "#ff3b3b", green: "#3bff6e", blue: "#3b8bff", gold: "#ffcf3b", white: "#ffffff", cyan: "#3be8ff" };
+              settings.charmPreset = v;
+              if (C[v]) settings.charmColor = C[v];
+              save();
+            })),
+            row("Second color", "Glow / candy target", colorField(settings.charmColor2 || "#ffb3c6", (v) => { settings.charmColor2 = v; save(); })),
+            row("Two-tone", "Emissive uses second color", toggleSwitch(settings.charmTwoTone, (v) => { settings.charmTwoTone = v; save(); })),
+            row("Glow", null, rangeField(settings.charmGlow ?? 0.6, 0, 2, 0.1, (v) => { settings.charmGlow = v; save(); })),
+            row("Rainbow", "Animated hue cycle", toggleSwitch(settings.charmRainbow, (v) => { settings.charmRainbow = v; save(); })),
+            row("Rainbow speed", "Degrees / second", rangeField(settings.charmRainbowSpd, 10, 360, 10, (v) => { settings.charmRainbowSpd = v; save(); })),
+            row("Pulse", "Breathe the glow", toggleSwitch(settings.charmPulse, (v) => { settings.charmPulse = v; save(); })),
+            row("Pulse speed", null, rangeField(settings.charmPulseSpd, 0.5, 10, 0.5, (v) => { settings.charmPulseSpd = v; save(); })),
+            row("Pulse amount", null, rangeField(settings.charmPulseAmt ?? 0.4, 0, 1.5, 0.05, (v) => { settings.charmPulseAmt = v; save(); })),
+            row("Shimmer", "Breathe the opacity", toggleSwitch(settings.charmShimmer, (v) => { settings.charmShimmer = v; save(); })),
+            row("Candy", "Morph between both colors", toggleSwitch(settings.charmCandy, (v) => { settings.charmCandy = v; save(); })),
+            row("Candy speed", "Morphs / second", rangeField(settings.charmCandySpd, 0.2, 8, 0.2, (v) => { settings.charmCandySpd = v; save(); })),
+            row("Fullbright", "Ignore scene lighting", toggleSwitch(settings.charmFull, (v) => { settings.charmFull = v; save(); })),
+            row("Metallic", "Chrome-like finish", toggleSwitch(settings.charmMetal, (v) => { settings.charmMetal = v; save(); })),
+            row("Flat", "Faceted low-poly look", toggleSwitch(settings.charmFlat, (v) => { settings.charmFlat = v; save(); })),
+            row("X-ray", "Draw on top of walls", toggleSwitch(settings.charmXray, (v) => { settings.charmXray = v; save(); })),
+            row("Ghost", "No depth write", toggleSwitch(settings.charmGhost, (v) => { settings.charmGhost = v; save(); })),
+            row("Backside", "Hollow inside-out look", toggleSwitch(settings.charmBack, (v) => { settings.charmBack = v; save(); })),
+            row("Brightness", null, rangeField(settings.charmBright ?? 1, 0.2, 2, 0.05, (v) => { settings.charmBright = v; save(); })),
+            row("Fire flash", "Flash color while shooting", toggleSwitch(settings.charmFire, (v) => { settings.charmFire = v; save(); })),
+            row("Fire color", null, colorField(settings.charmFireCol || "#ffffff", (v) => { settings.charmFireCol = v; save(); }))
           ]),
         moduleCard("Gun Chams", "Weapon chams - colored weapon.", settings.gunChams,
           (v) => { settings.gunChams = v; save(); }, [
             row("Cham Type", null, selectField(settings.chamType, [["outline", "Outline"], ["glow", "Glow"], ["both", "Both"], ["wireframe", "Wireframe"]], (v) => { settings.chamType = v; save(); })),
             row("Color", null, colorField(settings.chamColor || "#ff6b9d", (v) => { settings.chamColor = v; save(); })),
-            row("Width", null, rangeField(settings.chamWidth, 1, 10, 0.5, (v) => { settings.chamWidth = v; save(); })),
-            row("Opacity", null, rangeField(settings.chamOpacity, 0.1, 1, 0.05, (v) => { settings.chamOpacity = v; save(); })),
-            row("Glow Intensity", null, rangeField(settings.chamGlowIntensity, 0.1, 1, 0.05, (v) => { settings.chamGlowIntensity = v; save(); }))
+            row("Width", "Depth push toward camera", rangeField(settings.chamWidth, 0, 10, 0.5, (v) => { settings.chamWidth = v; save(); })),
+            row("Opacity", null, rangeField(settings.chamOpacity, 0.05, 1, 0.05, (v) => { settings.chamOpacity = v; save(); })),
+            row("Glow Intensity", null, rangeField(settings.chamGlowIntensity, 0, 2, 0.1, (v) => { settings.chamGlowIntensity = v; save(); })),
+            row("Preset", null, selectField(settings.chamPreset || "custom", [["custom", "Custom"], ["sakura", "Sakura"], ["red", "Red"], ["green", "Green"], ["blue", "Blue"], ["gold", "Gold"], ["white", "White"], ["cyan", "Cyan"]], (v) => {
+              const C = { sakura: "#ff6b9d", red: "#ff3b3b", green: "#3bff6e", blue: "#3b8bff", gold: "#ffcf3b", white: "#ffffff", cyan: "#3be8ff" };
+              settings.chamPreset = v;
+              if (C[v]) settings.chamColor = C[v];
+              save();
+            })),
+            row("Second color", "Glow / candy target", colorField(settings.chamColor2 || "#ffb3c6", (v) => { settings.chamColor2 = v; save(); })),
+            row("Two-tone", "Emissive uses second color", toggleSwitch(settings.chamTwoTone, (v) => { settings.chamTwoTone = v; save(); })),
+            row("Rainbow", "Animated hue cycle", toggleSwitch(settings.chamRainbow, (v) => { settings.chamRainbow = v; save(); })),
+            row("Rainbow speed", "Degrees / second", rangeField(settings.chamRainbowSpd, 10, 360, 10, (v) => { settings.chamRainbowSpd = v; save(); })),
+            row("Pulse", "Breathe the glow", toggleSwitch(settings.chamPulse, (v) => { settings.chamPulse = v; save(); })),
+            row("Pulse speed", null, rangeField(settings.chamPulseSpd, 0.5, 10, 0.5, (v) => { settings.chamPulseSpd = v; save(); })),
+            row("Pulse amount", null, rangeField(settings.chamPulseAmt ?? 0.4, 0, 1.5, 0.05, (v) => { settings.chamPulseAmt = v; save(); })),
+            row("Shimmer", "Breathe the opacity", toggleSwitch(settings.chamShimmer, (v) => { settings.chamShimmer = v; save(); })),
+            row("Candy", "Morph between both colors", toggleSwitch(settings.chamCandy, (v) => { settings.chamCandy = v; save(); })),
+            row("Candy speed", "Morphs / second", rangeField(settings.chamCandySpd, 0.2, 8, 0.2, (v) => { settings.chamCandySpd = v; save(); })),
+            row("Fullbright", "Ignore scene lighting", toggleSwitch(settings.chamFull, (v) => { settings.chamFull = v; save(); })),
+            row("Metallic", "Chrome-like finish", toggleSwitch(settings.chamMetal, (v) => { settings.chamMetal = v; save(); })),
+            row("Flat", "Faceted low-poly look", toggleSwitch(settings.chamFlat, (v) => { settings.chamFlat = v; save(); })),
+            row("X-ray", "Draw on top of walls", toggleSwitch(settings.chamXray, (v) => { settings.chamXray = v; save(); })),
+            row("Ghost", "No depth write", toggleSwitch(settings.chamGhost, (v) => { settings.chamGhost = v; save(); })),
+            row("Backside", "Hollow inside-out look", toggleSwitch(settings.chamBack, (v) => { settings.chamBack = v; save(); })),
+            row("Brightness", null, rangeField(settings.chamBright ?? 1, 0.2, 2, 0.05, (v) => { settings.chamBright = v; save(); })),
+            row("Fire flash", "Flash color while shooting", toggleSwitch(settings.chamFire, (v) => { settings.chamFire = v; save(); })),
+            row("Fire color", null, colorField(settings.chamFireCol || "#ffffff", (v) => { settings.chamFireCol = v; save(); }))
+          ]),
+        moduleCard("Knife Chams", "Best-effort match on knife meshes.", settings.knifeChams,
+          (v) => { settings.knifeChams = v; save(); }, [
+            row("Cham Type", null, selectField(settings.knifeType || "outline", [["outline", "Outline"], ["glow", "Glow"], ["both", "Both"], ["wireframe", "Wireframe"]], (v) => { settings.knifeType = v; save(); })),
+            row("Color", null, colorField(settings.knifeColor || "#ff6b9d", (v) => { settings.knifeColor = v; save(); })),
+            row("Opacity", null, rangeField(settings.knifeOpacity ?? 0.5, 0.05, 1, 0.05, (v) => { settings.knifeOpacity = v; save(); })),
+            row("Rainbow", "Animated hue cycle", toggleSwitch(settings.knifeRainbow, (v) => { settings.knifeRainbow = v; save(); }))
+          ]),
+        moduleCard("Viewmodel", "Visibility and update behaviour.", true, null, [
+            row("Hide weapon", "Hide the gun meshes", toggleSwitch(settings.gunHide, (v) => { settings.gunHide = v; save(); })),
+            row("Hide arms", "Hide the arm meshes", toggleSwitch(settings.armHide, (v) => { settings.armHide = v; save(); })),
+            row("Match only", "Restores everything outside matches", toggleSwitch(settings.chamsMatchOnly !== false, (v) => { settings.chamsMatchOnly = v; save(); })),
+            row("Rescan", "Recheck meshes every N seconds", rangeField(settings.chamsScan ?? 2, 0.5, 10, 0.5, (v) => { settings.chamsScan = v; save(); }))
           ])
       ];
       if (id === "crosshair") {
