@@ -3143,11 +3143,13 @@
       if (betaUnlocked && !pool.has("Interface")) pool.set("Interface", interfaceCard());
       const defs = LUNAR_MODULES.filter((d) => d.tab !== "dev");
       const cards = new Map();
+      const catBtns = [];
       const paintCounts = () => {
-        for (const [id, el, n] of catBtns) {
-          const list = defs.filter((d) => id === "all" || d.tab === id);
+        for (const e of catBtns) {
+          const tabs = e.kids ? e.kids : [e.id];
+          const list = e.id === "all" ? defs : defs.filter((d) => tabs.includes(d.tab));
           const on = list.filter((d) => !d.get || d.get()).length;
-          n.textContent = `${on}/${list.length}`;
+          e.n.textContent = `${on}/${list.length}`;
         }
       };
       for (const def of defs) {
@@ -3227,11 +3229,24 @@
         save();
       }));
 
-      // Sidebar categories
-      const catBtns = [];
-      const cats = [["all", "All"], ["hud", "HUD"], ["world", "World"], ["chams", "Chams"], ["crosshair", "Cross"], ["fx", "FX"]];
-      if (betaUnlocked) cats.push(["beta", "Beta"]);
+      // Sidebar: main tabs with pop-out subtabs
+      const NAV = [
+        { id: "all", label: "All" },
+        { id: "hud", label: "HUD" },
+        {
+          id: "visuals", label: "Visuals",
+          children: [["world", "World"], ["chams", "Chams"], ["crosshair", "Cross"], ["fx", "FX"]]
+        },
+        {
+          id: "system", label: "System",
+          children: [...(betaUnlocked ? [["beta", "Beta"]] : [])]
+        }
+      ];
+      for (let i = NAV.length - 1; i >= 0; i--) {
+        if (NAV[i].children && !NAV[i].children.length) NAV.splice(i, 1);
+      }
       let filter = "all";
+      let openMain = null;
       const applyFilter = () => {
         const q = search.value.trim().toLowerCase();
         for (const def of defs) {
@@ -3242,23 +3257,70 @@
           el.style.display = tabOk && qOk ? "" : "none";
         }
       };
-      for (const [id, label] of cats) {
-        const b = document.createElement("button");
-        b.type = "button";
-        b.className = "ln-cat" + (id === "all" ? " active" : "");
-        const lab = document.createElement("span");
-        lab.textContent = label;
+      const setActive = () => {
+        for (const e of catBtns) {
+          if (e.parent) {
+            e.el.classList.toggle("active", filter === e.id);
+            e.el.style.display = openMain === e.parent ? "" : "none";
+          } else {
+            const inMain = e.kids && e.kids.some((kid) => kid === filter);
+            e.el.classList.toggle("active", filter === e.id || (inMain && openMain === e.id));
+            e.el.classList.toggle("open", openMain === e.id && !!e.kids);
+          }
+        }
+      };
+      const selectFilter = (id, main) => {
+        filter = id;
+        if (main !== undefined) openMain = main;
+        setActive();
+        applyFilter();
+      };
+      const mkCount = () => {
         const n = document.createElement("span");
         n.className = "n";
+        return n;
+      };
+      for (const item of NAV) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "ln-cat" + (item.id === "all" ? " active" : "");
+        const lab = document.createElement("span");
+        lab.textContent = item.label;
+        const n = mkCount();
         b.append(lab, n);
-        b.onclick = () => {
-          filter = id;
-          for (const [, el] of catBtns) el.classList.toggle("active", el === b);
-          applyFilter();
-        };
-        side.appendChild(b);
-        catBtns.push([id, b, n]);
+        const kids = item.children && item.children.length ? item.children.map(([kid]) => kid) : null;
+        if (kids) {
+          b.classList.add("has-sub");
+          const caret = document.createElement("span");
+          caret.className = "caret";
+          caret.innerHTML = '<svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>';
+          b.appendChild(caret);
+          b.onclick = () => {
+            const stay = kids.some((kid) => kid === filter) ? filter : kids[0];
+            selectFilter(stay, item.id);
+          };
+          side.appendChild(b);
+          catBtns.push({ id: item.id, el: b, n, kids, parent: null });
+          for (const [kid, klabel] of item.children) {
+            const sb = document.createElement("button");
+            sb.type = "button";
+            sb.className = "ln-sub";
+            sb.style.display = "none";
+            const slab = document.createElement("span");
+            slab.textContent = klabel;
+            const sn = mkCount();
+            sb.append(slab, sn);
+            sb.onclick = () => selectFilter(kid, item.id);
+            side.appendChild(sb);
+            catBtns.push({ id: kid, el: sb, n: sn, kids: null, parent: item.id });
+          }
+        } else {
+          b.onclick = () => selectFilter(item.id, null);
+          side.appendChild(b);
+          catBtns.push({ id: item.id, el: b, n, kids: null, parent: null });
+        }
       }
+      setActive();
       paintCounts();
       search.oninput = applyFilter;
 
@@ -3929,6 +3991,16 @@
   .ln-cat:hover { background: rgba(255,255,255,.05); color: #fff; }
   .ln-cat.active { background: rgba(255,255,255,.08); color: #fff; box-shadow: inset 2px 0 0 var(--acc, #ff6b9d); }
   .ln-cat .n { margin-left: auto; font-size: 10px; opacity: .5; }
+  .ln-cat.has-sub .caret { margin-left: auto; width: 14px; height: 14px; display: grid; place-items: center; opacity: .5; transition: transform .2s; flex: none; }
+  .ln-cat.has-sub .n { margin-left: 0; }
+  .ln-cat.has-sub .caret svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+  .ln-cat.open .caret { transform: rotate(90deg); opacity: 1; }
+  .ln-sub { display: flex; align-items: center; gap: 8px; width: calc(100% - 14px); margin: 1px 0 1px 14px; padding: 6px 10px;
+    border: 0; border-left: 2px solid rgba(255,255,255,.1); border-radius: 0 8px 8px 0; background: transparent;
+    color: rgba(255,255,255,.55); font-size: 12px; font-weight: 600; cursor: pointer; text-align: left; }
+  .ln-sub:hover { color: #fff; background: rgba(255,255,255,.04); }
+  .ln-sub.active { color: #fff; border-left-color: var(--acc, #ff6b9d); background: rgba(255,255,255,.06); }
+  .ln-sub .n { margin-left: auto; font-size: 10px; opacity: .5; }
   .ln-grid { flex: 1; min-width: 0; overflow-y: auto; display: grid;
     grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; padding: 12px; align-content: start; }
   .ln-grid::-webkit-scrollbar, .ln-settings::-webkit-scrollbar { width: 8px; }
