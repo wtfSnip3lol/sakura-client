@@ -675,6 +675,144 @@
 
   // ── Feature engine: rendering (HUD + world visuals) ──
 
+  // ── Chams (arm + gun viewmodel chams) ─────────────────────────────
+  // Applies colored / glow / wireframe materials to the viewmodel arm
+  // and weapon meshes. Originals are saved on first apply and restored
+  // when the module is disabled, so the game keeps working untouched.
+  var chams = {
+    arm: { applied: false, root: null, meshes: [], orig: new Map() },
+    gun: { applied: false, root: null, meshes: [], orig: new Map() }
+  };
+  // three.js side constants: 0 = FrontSide, 1 = BackSide, 2 = DoubleSide
+  function chamsSaveOrig(m, origMap) {
+    if (!origMap.has(m)) {
+      origMap.set(m, {
+        color: m.color ? m.color.getHex() : null,
+        emissive: m.emissive ? m.emissive.getHex() : null,
+        emissiveIntensity: m.emissiveIntensity,
+        wireframe: m.wireframe,
+        side: m.side,
+        depthTest: m.depthTest,
+        transparent: m.transparent,
+        opacity: m.opacity
+      });
+    }
+  }
+  function chamsApplyMat(m, type, color, origMap) {
+    chamsSaveOrig(m, origMap);
+    const c = color || "#ff6b9d";
+    if (type === "outline" || type === "both") {
+      m.side = 2;                    // DoubleSide
+      m.transparent = true;
+      m.opacity = 0.45;
+      if (m.color) m.color.set(c);
+    }
+    if (type === "glow" || type === "both") {
+      if (m.emissive) m.emissive.set(c);
+      m.emissiveIntensity = 0.6;
+    }
+    if (type === "wireframe") {
+      m.wireframe = true;
+      if (m.color) m.color.set(c);
+    }
+  }
+  function chamsRestore(state) {
+    for (const mesh of state.meshes) {
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const m of mats) {
+        const orig = state.orig.get(m);
+        if (!orig) continue;
+        if (m.color && orig.color != null) m.color.set(orig.color);
+        if (m.emissive && orig.emissive != null) m.emissive.set(orig.emissive);
+        m.emissiveIntensity = orig.emissiveIntensity;
+        m.wireframe = orig.wireframe;
+        m.side = orig.side;
+        m.depthTest = orig.depthTest;
+        m.transparent = orig.transparent;
+        m.opacity = orig.opacity;
+        state.orig.delete(m);
+      }
+    }
+    state.meshes.length = 0;
+  }
+  function chamsCollect(root, store, filter) {
+    store.length = 0;
+    if (!root || typeof root.traverse !== "function") return;
+    if (!filter) {
+      root.traverse((o) => { if (o && o.isMesh) store.push(o); });
+    } else {
+      root.traverse((o) => { if (o && o.isMesh && filter(o)) store.push(o); });
+    }
+  }
+  // CS2 rig: rig.arms (gloves/agent) and rig.gun (weapon) are separate.
+  // Simple viewmodel: arms live in the _lhand / _offhand child meshes,
+  // everything else on viewmodel.current is the weapon.
+  function chamsTargets(g) {
+    const rig = g && g.cs2 && g.cs2.rig;
+    const vm = g && g.viewmodel;
+    if (rig) {
+      return {
+        armRoot: rig.arms || null,
+        gunRoot: rig.gun || null,
+        armFilter: null,
+        gunFilter: null
+      };
+    }
+    if (vm && vm.current) {
+      const armSet = new Set();
+      if (Array.isArray(vm._lhand)) for (const m of vm._lhand) armSet.add(m);
+      if (Array.isArray(vm._offhand)) for (const m of vm._offhand) armSet.add(m);
+      return {
+        armRoot: vm.current,
+        gunRoot: vm.current,
+        armFilter: (m) => armSet.has(m),
+        gunFilter: (m) => !armSet.has(m)
+      };
+    }
+    return { armRoot: null, gunRoot: null, armFilter: null, gunFilter: null };
+  }
+  function tickChams(g) {
+    if (!g) return;
+    const t = chamsTargets(g);
+    const arm = chams.arm, gun = chams.gun;
+
+    // ── Arm chams ──
+    if (settings.armCharms && t.armRoot) {
+      if (arm.root !== t.armRoot) {
+        if (arm.applied) chamsRestore(arm);
+        chamsCollect(t.armRoot, arm.meshes, t.armFilter);
+        arm.root = t.armRoot;
+      }
+      for (const mesh of arm.meshes) {
+        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const m of mats) chamsApplyMat(m, settings.charmsType, settings.charmColor, arm.orig);
+      }
+      arm.applied = true;
+    } else if (arm.applied) {
+      chamsRestore(arm);
+      arm.applied = false;
+      arm.root = null;
+    }
+
+    // ── Gun chams ──
+    if (settings.gunChams && t.gunRoot) {
+      if (gun.root !== t.gunRoot) {
+        if (gun.applied) chamsRestore(gun);
+        chamsCollect(t.gunRoot, gun.meshes, t.gunFilter);
+        gun.root = t.gunRoot;
+      }
+      for (const mesh of gun.meshes) {
+        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const m of mats) chamsApplyMat(m, settings.chamType, settings.chamColor, gun.orig);
+      }
+      gun.applied = true;
+    } else if (gun.applied) {
+      chamsRestore(gun);
+      gun.applied = false;
+      gun.root = null;
+    }
+  }
+
   // ── Main loop ──
   var loopLast = 0;
   var overlayDirty = false;
@@ -687,6 +825,7 @@
     if (!g) return;
 
     worldTick(g);
+    tickChams(g);
     tickMotionBlur(g);
 
     const inMatch = liveMatch(g);
