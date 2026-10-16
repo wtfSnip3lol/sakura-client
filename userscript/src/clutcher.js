@@ -1154,6 +1154,116 @@
     else { x = W / 2 + 70; y = H - 90; } // gun
     return [x + (Number(ox) || 0), y + (Number(oy) || 0)];
   }
+  // ── Real in-map weather: a THREE.Points cloud living in the scene ──
+  // Particle classes are harvested once from the game's own scene objects
+  // (no THREE namespace needed): clone its material for soft round points,
+  // build our own positions. Depth-tested like everything else, follows the
+  // player, removed + disposed on disable. Falls back to projection below.
+  var wx3dScene = null, wx3dObj = null, wx3dKey = "", wx3dCls = null;
+  function harvestPoints3D(scene) {
+    if (wx3dCls) return wx3dCls;
+    try {
+      let found = null;
+      scene.traverse((o) => { if (!found && o && o.isPoints) found = o; });
+      if (!found || !found.geometry || !found.material) return null;
+      const attrs = found.geometry.attributes || {};
+      const attr = attrs.position || attrs[Object.keys(attrs)[0]];
+      if (!attr || !found.constructor || !found.geometry.constructor || !attr.constructor) return null;
+      wx3dCls = {
+        Points: found.constructor,
+        Geo: found.geometry.constructor,
+        Attr: attr.constructor,
+        baseMat: found.material
+      };
+      return wx3dCls;
+    } catch (_) { return null; }
+  }
+  function wxRemove3D() {
+    try {
+      if (wx3dObj && wx3dScene) {
+        try { wx3dScene.remove(wx3dObj); } catch (_) {}
+        try { wx3dObj.geometry && wx3dObj.geometry.dispose && wx3dObj.geometry.dispose(); } catch (_) {}
+        try {
+          if (wx3dObj.material && wx3dObj.material.dispose) {
+            const same = wx3dCls && wx3dCls.baseMat && wx3dObj.material === wx3dCls.baseMat;
+            if (!same) wx3dObj.material.dispose();
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+    wx3dObj = null;
+    wx3dScene = null;
+    wx3dKey = "";
+  }
+  function tickWeather3D(g, dt, now) {
+    try {
+      const scene = g && g.scene;
+      if (!scene) return false;
+      if (wx3dScene && wx3dScene !== scene) wxRemove3D();
+      const C = harvestPoints3D(scene);
+      if (!C) return false;
+      const type = settings.wxType || "petals";
+      const n = Math.max(0, Math.min(220, Math.round(Number(settings.wxCount) || 80)));
+      const key = `${type}|${n}|${settings.wxTint || ""}|${settings.wxSize || 1}|${settings.wxOp ?? 0.8}`;
+      if (!wx3dObj || wx3dKey !== key) {
+        wxRemove3D();
+        if (!n) return false;
+        const geo = new C.Geo();
+        const arr = new Float32Array(n * 3);
+        for (let i = 0; i < n; i++) {
+          arr[i * 3] = (Math.random() - 0.5) * 44;
+          arr[i * 3 + 1] = Math.random() * 24 - 4;
+          arr[i * 3 + 2] = (Math.random() - 0.5) * 44;
+        }
+        const attr = new C.Attr(arr, 3);
+        if (typeof geo.setAttribute === "function") geo.setAttribute("position", attr);
+        else if (typeof geo.addAttribute === "function") geo.addAttribute("position", attr);
+        else return false;
+        const mat = C.baseMat.clone();
+        const tintMap = { snow: "#ffffff", rain: "#9fc4e8", embers: "#ff9a3c", leaves: "#7dc46a", petals: "#ffb3c6" };
+        try {
+          if (mat.color && typeof mat.color.set === "function") mat.color.set(settings.wxTint || tintMap[type] || "#ffb3c6");
+          mat.transparent = true;
+          mat.opacity = clamp(Number(settings.wxOp) ?? 0.8, 0, 1);
+          if ("size" in mat) mat.size = (type === "rain" ? 0.14 : 0.09) * Math.max(0.3, Number(settings.wxSize) || 1);
+          mat.depthWrite = false;
+        } catch (_) {}
+        const obj = new C.Points(geo, mat);
+        try {
+          obj.frustumCulled = false;
+          if (obj.renderOrder !== undefined) obj.renderOrder = 5;
+        } catch (_) {}
+        scene.add(obj);
+        wx3dObj = obj;
+        wx3dScene = scene;
+        wx3dKey = key;
+      }
+      const p = g.player;
+      if (p && wx3dObj && wx3dObj.position) {
+        try { wx3dObj.position.set(p.x, (p.y || 0) + 4, p.z); } catch (_) {}
+      }
+      const pos = wx3dObj.geometry && wx3dObj.geometry.attributes && wx3dObj.geometry.attributes.position;
+      if (!pos || !pos.array) return true;
+      const arr = pos.array;
+      const spd = Number(settings.wxSpeed) || 1;
+      const wind = Number(settings.wxWind) || 0;
+      const fall = (type === "embers" ? 2 : type === "rain" ? 22 : 1.4) * spd;
+      const rise = type === "embers";
+      for (let i = 0; i < arr.length; i += 3) {
+        const wob = ((i / 3) % 10) / 14;
+        arr[i + 1] += (rise ? fall : -fall) * dt * (0.6 + wob);
+        arr[i] += (wind * 3 + Math.sin(now / 1000 * 0.8 + i) * 0.4) * dt;
+        if (arr[i + 1] > 20) arr[i + 1] -= 24;
+        else if (arr[i + 1] < -4) arr[i + 1] += 24;
+        if (arr[i] > 22) arr[i] -= 44;
+        else if (arr[i] < -22) arr[i] += 44;
+        if (arr[i + 2] > 22) arr[i + 2] -= 44;
+        else if (arr[i + 2] < -22) arr[i + 2] += 44;
+      }
+      pos.needsUpdate = true;
+      return true;
+    } catch (_) { return false; }
+  }
   function drawAtmoFX(rect, now, dt, g) {
     const W = rect.width, H = rect.height, cx = W / 2, cy = H / 2;
     const playing = isPlaying(g);
@@ -1312,11 +1422,15 @@
     if (!settings.imOn || !playing) { imParts.length = 0; imRings.length = 0; imRings._on = false; }
     // weather
     const wxType = settings.wxType || "petals";
-    // world-space weather: points fixed in the map, projected through the
-    // game's own camera every frame (parallax for free, nothing added to the
-    // scene, no three.js classes needed beyond the camera's own Vector3).
+    // world-space weather: real THREE.Points in the map when harvestable,
+    // otherwise the projection fallback below (still parallax-correct).
     let wxDidWorld = false;
-    if (settings.wxOn && (settings.wxMode || "screen") === "world" && playing && g && g.camera) {
+    if (settings.wxOn && (settings.wxMode || "screen") === "world" && playing && g && g.scene) {
+      wxDidWorld = tickWeather3D(g, dt, now);
+    } else {
+      wxRemove3D();
+    }
+    if (!wxDidWorld && settings.wxOn && (settings.wxMode || "screen") === "world" && playing && g && g.camera) {
       const cam = g.camera;
       const Vec3 = wxVecCls || (wxVecCls = cam.position && cam.position.constructor);
       if (Vec3) {
