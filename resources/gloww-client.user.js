@@ -1816,6 +1816,7 @@
   var imParts = [], imRings = [], imT = 0, imHs = false, imEl = null;
   var wxParts = [], wxKey = "";
   var wx3d = [], wx3dKey = "", wxVecCls = null, wxTmpV = null, wxTmpV2 = null;
+  var wxm = [], wxmKey = "";
   var moParts = [], moKey = "";
   function atOrigin(rect, which, ox, oy) {
     const W = rect.width, H = rect.height;
@@ -1855,6 +1856,10 @@
         if (cands.length < 5 && o && o.isPoints && o.geometry && o.material) cands.push(o);
       });
       const score = (o) => {
+        // Shader materials need their own uniforms/attributes — our plain
+        // positions would render garbage (or nothing) while reporting success
+        // and blocking every fallback. Skip them entirely.
+        if (o.material.isShaderMaterial || o.material.isRawShaderMaterial) return -1;
         const attrs = o.geometry.attributes || {};
         const attr = attrs.position || attrs[Object.keys(attrs)[0]];
         if (!attr || !attr.array) return -1;
@@ -2236,6 +2241,111 @@
         ctx.restore();
       }
     } else if (wx3dKey) { wx3dKey = ""; wx3d = []; }
+    // manual 3D fallback: world-anchored points projected with pure math.
+    // Needs only player pos + yaw/pitch (which the game always exposes) —
+    // no camera object, no three.js. Same parallax, no depth testing.
+    if (!wxDidWorld && settings.wxOn && (settings.wxMode || "screen") === "world" && playing) {
+      const pl = g && g.player;
+      if (pl && [pl.x, pl.y, pl.z, pl.yaw, pl.pitch].every((v) => isFinite(v))) {
+        const n = Math.max(0, Math.min(220, Math.round(Number(settings.wxCount) || 80)));
+        const key = `m3|${wxType}|${n}`;
+        if (wxmKey !== key) {
+          wxmKey = key;
+          wxm = [];
+          for (let i = 0; i < n; i++) {
+            wxm.push({
+              x: (Math.random() - 0.5) * 44, y: Math.random() * 24 - 4, z: (Math.random() - 0.5) * 44,
+              s: Math.random(), p: Math.random() * Math.PI * 2
+            });
+          }
+        }
+        if (wxm.length) {
+          const yaw = pl.yaw, pitch = pl.pitch;
+          const cp2 = Math.cos(pitch), sp2 = Math.sin(pitch);
+          const sy = Math.sin(yaw), cy = Math.cos(yaw);
+          const Fx = -sy * cp2, Fy = sp2, Fz = -cy * cp2;
+          const Rx = cy, Ry = 0, Rz = -sy;
+          const Ux = Ry * Fz - Rz * Fy, Uy = Rz * Fx - Rx * Fz, Uz = Rx * Fy - Ry * Fx;
+          const eyeH = isFinite(pl.eyeH) ? pl.eyeH : 1.6;
+          const ex = pl.x, ey = pl.y + eyeH, ez = pl.z;
+          const fov2 = (((g.camera && g.camera.fov) || 75) * Math.PI / 360);
+          const focal = (H / 2) / Math.tan(fov2);
+          const size = Math.max(0.3, Number(settings.wxSize) || 1);
+          const spd = Number(settings.wxSpeed) || 1;
+          const wind = Number(settings.wxWind) || 0;
+          const op = clamp(Number(settings.wxOp) ?? 0.8, 0, 1);
+          const tint = settings.wxTint || "";
+          const tw = !!settings.wxTwinkle;
+          const projM = (wx, wy, wz) => {
+            const dx = wx - ex, dy = wy - ey, dz = wz - ez;
+            const zc = dx * Fx + dy * Fy + dz * Fz;
+            if (zc < 0.3) return null;
+            return [
+              W / 2 + (dx * Rx + dy * Ry + dz * Rz) / zc * focal,
+              H / 2 - (dx * Ux + dy * Uy + dz * Uz) / zc * focal,
+              Math.hypot(dx, dy, dz)
+            ];
+          };
+          wxDidWorld = true;
+          wxSetBackend("manual 3d");
+          ctx.save();
+          for (const q of wxm) {
+            q.y += dt * spd * (0.6 + q.s) * (wxType === "embers" ? 1.6 : -1.4) * (wxType === "rain" ? 5 : 1);
+            q.x += dt * (wind * 4 + Math.sin(t * 0.8 + q.p) * 0.4);
+            if (q.x - ex > 22) q.x -= 44; else if (q.x - ex < -22) q.x += 44;
+            if (q.z - ez > 22) q.z -= 44; else if (q.z - ez < -22) q.z += 44;
+            if (q.y - ey > 14) q.y -= 24; else if (q.y - ey < -10) q.y += 24;
+            const pr = projM(q.x, q.y, q.z);
+            if (!pr) continue;
+            const [sx, sy, dist] = pr;
+            if (sx < -40 || sx > W + 40 || sy < -40 || sy > H + 40) continue;
+            const sc = (focal / Math.max(0.5, dist)) * 0.02 * size;
+            let a = op;
+            if (tw) a *= 0.45 + 0.55 * Math.abs(Math.sin(t * 2 + q.p * 5));
+            ctx.globalAlpha = a;
+            if (wxType === "rain") {
+              const pr2 = projM(q.x - wind * 0.4, q.y + 0.9, q.z);
+              ctx.strokeStyle = tint || "#9fc4e8";
+              ctx.lineWidth = Math.max(1, sc * 1.5);
+              ctx.beginPath();
+              ctx.moveTo(sx, sy);
+              if (pr2) ctx.lineTo(pr2[0], pr2[1]);
+              else ctx.lineTo(sx, sy - 8 * size);
+              ctx.stroke();
+            } else if (wxType === "snow") {
+              ctx.fillStyle = tint || "#ffffff";
+              ctx.beginPath();
+              ctx.arc(sx, sy, Math.max(0.5, (0.8 + q.s * 1.6) * sc * 1.5), 0, Math.PI * 2);
+              ctx.fill();
+            } else if (wxType === "embers") {
+              ctx.fillStyle = tint || "#ff9a3c";
+              ctx.beginPath();
+              ctx.arc(sx, sy, Math.max(0.5, (0.7 + q.s * 1.4) * sc * 1.5), 0, Math.PI * 2);
+              ctx.fill();
+            } else if (wxType === "leaves") {
+              ctx.fillStyle = tint || "#7dc46a";
+              ctx.save();
+              ctx.translate(sx, sy);
+              ctx.rotate(q.p + t * (0.5 + q.s));
+              ctx.beginPath();
+              ctx.ellipse(0, 0, 2.4 * sc, 1.3 * sc, 0, 0, Math.PI * 2);
+              ctx.fill();
+              ctx.restore();
+            } else { // petals
+              ctx.fillStyle = tint || "#ffb3c6";
+              ctx.save();
+              ctx.translate(sx, sy);
+              ctx.rotate(q.p + t * (0.4 + q.s * 0.8));
+              ctx.beginPath();
+              ctx.ellipse(0, 0, 2.2 * sc, 1.2 * sc, 0, 0, Math.PI * 2);
+              ctx.fill();
+              ctx.restore();
+            }
+          }
+          ctx.restore();
+        }
+      } else if (wxmKey) { wxmKey = ""; wxm = []; }
+    }
     if (settings.wxOn && !wxDidWorld && (playing || settings.wxLobby)) {
       wxSetBackend("screen");
       const n = Math.max(0, Math.min(220, Math.round(Number(settings.wxCount) || 80)));
