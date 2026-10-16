@@ -1341,15 +1341,42 @@
   // build our own positions. Depth-tested like everything else, follows the
   // player, removed + disposed on disable. Falls back to projection below.
   var wx3dScene = null, wx3dObj = null, wx3dKey = "", wx3dCls = null;
+  var wxBackendTxt = "", wxStatusElV = null;
+  function wxSetBackend(t) {
+    if (t === wxBackendTxt) return;
+    wxBackendTxt = t;
+    try { if (wxStatusElV && wxStatusElV.isConnected) wxStatusElV.textContent = t; } catch (_) {}
+  }
+  function wxStatusEl() {
+    const s = document.createElement("span");
+    s.className = "sk-val";
+    s.style.minWidth = "90px";
+    s.textContent = wxBackendTxt || "—";
+    wxStatusElV = s;
+    return s;
+  }
   function harvestPoints3D(scene) {
     if (wx3dCls) return wx3dCls;
     try {
-      let found = null;
-      scene.traverse((o) => { if (!found && o && o.isPoints) found = o; });
-      if (!found || !found.geometry || !found.material) return null;
+      const cands = [];
+      scene.traverse((o) => {
+        if (cands.length < 5 && o && o.isPoints && o.geometry && o.material) cands.push(o);
+      });
+      const score = (o) => {
+        const attrs = o.geometry.attributes || {};
+        const attr = attrs.position || attrs[Object.keys(attrs)[0]];
+        if (!attr || !attr.array) return -1;
+        let s = 0;
+        if (attr.isBufferAttribute && !attr.isInstancedBufferAttribute && !attr.isInterleavedBufferAttribute) s += 2;
+        if (o.material.isPointsMaterial) s += 2;
+        return s;
+      };
+      cands.sort((a, b) => score(b) - score(a));
+      const found = cands.length && score(cands[0]) >= 0 ? cands[0] : null;
+      if (!found) return null;
       const attrs = found.geometry.attributes || {};
       const attr = attrs.position || attrs[Object.keys(attrs)[0]];
-      if (!attr || !found.constructor || !found.geometry.constructor || !attr.constructor) return null;
+      if (!found.constructor || !found.geometry.constructor || !attr.constructor) return null;
       wx3dCls = {
         Points: found.constructor,
         Geo: found.geometry.constructor,
@@ -1406,7 +1433,10 @@
           if (mat.color && typeof mat.color.set === "function") mat.color.set(settings.wxTint || tintMap[type] || "#ffb3c6");
           mat.transparent = true;
           mat.opacity = clamp(Number(settings.wxOp) ?? 0.8, 0, 1);
-          if ("size" in mat) mat.size = (type === "rain" ? 0.14 : 0.09) * Math.max(0.3, Number(settings.wxSize) || 1);
+          // World-sized points need attenuation; a harvested screen-space
+          // material would otherwise render sub-pixel dots.
+          try { mat.sizeAttenuation = true; } catch (_) {}
+          if ("size" in mat) mat.size = (type === "rain" ? 0.16 : 0.11) * Math.max(0.3, Number(settings.wxSize) || 1);
           mat.depthWrite = false;
         } catch (_) {}
         const obj = new C.Points(geo, mat);
@@ -1420,8 +1450,12 @@
         wx3dKey = key;
       }
       const p = g.player;
-      if (p && wx3dObj && wx3dObj.position) {
-        try { wx3dObj.position.set(p.x, (p.y || 0) + 4, p.z); } catch (_) {}
+      const cam = g.camera;
+      const fx = (p && isFinite(p.x)) ? p.x : (cam && cam.position ? cam.position.x : 0);
+      const fy = (p && isFinite(p.y)) ? p.y : (cam && cam.position ? cam.position.y : 2);
+      const fz = (p && isFinite(p.z)) ? p.z : (cam && cam.position ? cam.position.z : 0);
+      if (wx3dObj && wx3dObj.position) {
+        try { wx3dObj.position.set(fx, fy + 4, fz); } catch (_) {}
       }
       const pos = wx3dObj.geometry && wx3dObj.geometry.attributes && wx3dObj.geometry.attributes.position;
       if (!pos || !pos.array) return true;
@@ -1442,6 +1476,7 @@
         else if (arr[i + 2] < -22) arr[i + 2] += 44;
       }
       pos.needsUpdate = true;
+      wxSetBackend("3d points");
       return true;
     } catch (_) { return false; }
   }
@@ -1640,6 +1675,7 @@
         const v = wxTmpV || (wxTmpV = new Vec3());
         const v2 = wxTmpV2 || (wxTmpV2 = new Vec3());
         wxDidWorld = true;
+        wxSetBackend("projection");
         ctx.save();
         for (const q of wx3d) {
           q.y += dt * spd * (0.6 + q.s) * (wxType === "embers" ? 1.6 : -1.4) * (wxType === "rain" ? 5 : 1);
@@ -1709,6 +1745,7 @@
       }
     } else if (wx3dKey) { wx3dKey = ""; wx3d = []; }
     if (settings.wxOn && !wxDidWorld && (playing || settings.wxLobby)) {
+      wxSetBackend("screen");
       const n = Math.max(0, Math.min(220, Math.round(Number(settings.wxCount) || 80)));
       const key = `${wxType}|${n}`;
       if (wxKey !== key) {
@@ -4247,6 +4284,7 @@
             (v) => { settings.wxOn = v; save(); }, [
               row("Type", null, selectField(settings.wxType || "petals", [["petals", "Petals"], ["snow", "Snow"], ["rain", "Rain"], ["embers", "Embers"], ["leaves", "Leaves"]], (v) => { settings.wxType = v; save(); })),
               row("Placement", "Screen overlay vs in the map", selectField(settings.wxMode || "screen", [["screen", "On screen"], ["world", "In map (3D)"]], (v) => { settings.wxMode = v; save(); })),
+              row("Engine", "Live backend", wxStatusEl()),
               row("Count", null, rangeField(settings.wxCount ?? 80, 0, 220, 10, (v) => { settings.wxCount = v; save(); })),
               row("Size", null, rangeField(settings.wxSize ?? 1, 0.3, 4, 0.1, (v) => { settings.wxSize = v; save(); })),
               row("Speed", null, rangeField(settings.wxSpeed ?? 1, 0.1, 5, 0.1, (v) => { settings.wxSpeed = v; save(); })),
