@@ -480,9 +480,19 @@ function createWindow() {
     win.webContents.on("did-finish-load", () => {
       const url = win.webContents.getURL();
       if (!game.navOk.test(url)) return;
-      const src = payloadSource(game.payload || "gloww-client.user.js");
-      if (!src) return console.warn(`Sakura payload not found: ${game.payload}`);
-      win.webContents.executeJavaScript(src, true).catch(err => console.warn("Sakura injection failed:", err));
+      // Skip re-injection when a live client is already running in the page
+      // (fresh heartbeat < 5s); otherwise a second copy would fight over
+      // materials/DOM and flicker.
+      win.webContents.executeJavaScript("Date.now()-((window.__sakuraBeat||0))", true).then((age) => {
+        if (age < 5000) return console.info("Sakura payload already live — skipping re-injection.");
+        const src = payloadSource(game.payload || "gloww-client.user.js");
+        if (!src) return console.warn(`Sakura payload not found: ${game.payload}`);
+        win.webContents.executeJavaScript(src, true).catch(err => console.warn("Sakura injection failed:", err));
+      }).catch(() => {
+        const src = payloadSource(game.payload || "gloww-client.user.js");
+        if (!src) return console.warn(`Sakura payload not found: ${game.payload}`);
+        win.webContents.executeJavaScript(src, true).catch(err => console.warn("Sakura injection failed:", err));
+      });
     });
   }
 

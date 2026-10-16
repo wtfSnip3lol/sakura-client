@@ -11,6 +11,17 @@
 (() => {
   "use strict";
   if (!/(^|\.)astrastrike\.fun$/.test(location.hostname || "")) return;
+  // Single instance (see Clutcher payload): newest wins, loser self-terminates.
+  var SAKURA_ID = "sakura-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+  try {
+    if (window.__sakuraTakeover && window.__sakuraTakeover !== SAKURA_ID) {
+      const dupeUi = document.getElementById("sakura-ui");
+      if (dupeUi) dupeUi.remove();
+      const dupeCv = document.getElementById("sakura-overlay");
+      if (dupeCv) dupeCv.remove();
+    }
+    window.__sakuraTakeover = SAKURA_ID;
+  } catch (_) {}
 
   var ACCENT = "#ff6b9d";
   var ACCENT_HI = "#ffb3c6";
@@ -41,6 +52,7 @@
 
   // ── Overlay canvas ──
   var overlay = document.createElement("canvas");
+  overlay.id = "sakura-overlay";
   overlay.style.cssText = "position:fixed;inset:0;width:100vw;height:100vh;z-index:2147483646;pointer-events:none";
   var ctx = overlay.getContext("2d");
   document.body.appendChild(overlay);
@@ -116,6 +128,10 @@
   }
 
   function loop() {
+    try {
+      if (window.__sakuraTakeover !== SAKURA_ID) return;
+      window.__sakuraBeat = Date.now();
+    } catch (_) {}
     requestAnimationFrame(loop);
     sizeOverlay();
     syncLayers();

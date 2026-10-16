@@ -11,6 +11,17 @@
 // ==/UserScript==
 
 (() => {
+  // Single instance: newest wins, loser drops DOM + self-terminates its loop.
+  var SAKURA_ID = "sakura-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+  try {
+    if (window.__sakuraTakeover && window.__sakuraTakeover !== SAKURA_ID) {
+      const dupeUi = document.getElementById("sakura-ui");
+      if (dupeUi) dupeUi.remove();
+      const dupeCv = document.getElementById("sakura-overlay");
+      if (dupeCv) dupeCv.remove();
+    }
+    window.__sakuraTakeover = SAKURA_ID;
+  } catch (_) {}
   var TAU = Math.PI * 2;
   var clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
   var safe = (fn, fallback) => {
@@ -1000,6 +1011,7 @@
 
   // ── Overlay ──
   var overlay = document.createElement("canvas");
+  overlay.id = "sakura-overlay";
   overlay.style.cssText = "position:fixed;inset:0;width:100vw;height:100vh;z-index:2147483646;pointer-events:none";
   var ctx = overlay.getContext("2d");
   var vignetteEl = document.createElement("div");
@@ -3509,6 +3521,10 @@
   var loopLast = 0;
   var overlayDirty = false;
   function loop(now) {
+    try {
+      if (window.__sakuraTakeover !== SAKURA_ID) return;
+      window.__sakuraBeat = Date.now();
+    } catch (_) {}
     requestAnimationFrame(loop);
     const dt = Math.min(0.1, (now - (loopLast || now)) / 1000);
     loopLast = now;
