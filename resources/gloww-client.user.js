@@ -2244,9 +2244,37 @@
       expo: mix(a[1].expo, b[1].expo)
     };
   }
+  function wdAdoptSun(best, now) {
+    if (wdSunLight !== best) {
+      wdSunLight = best;
+      try {
+        wdSunOrig = best.position ? { x: best.position.x, y: best.position.y, z: best.position.z } : null;
+      } catch (_) { wdSunOrig = null; }
+    }
+    wdSunAt = now;
+  }
   function wdFindSun(g) {
     const now = performance.now();
     if (wdSunLight && now - wdSunAt < 2000) return wdSunLight;
+    // Reuse the lighting module's fresh scan when available — halves scene
+    // traverses (a full traverse every 2s can hitch frames).
+    if (now - lighting.scanAt < 2500 && lighting.list && lighting.list.length) {
+      let best = null, bi = -Infinity;
+      for (const o of lighting.list) {
+        if (o && o.isDirectionalLight) {
+          let inten = o.intensity;
+          try {
+            const base = lighting.orig.get(o);
+            if (base && isFinite(base.i)) inten = base.i;
+          } catch (_) {}
+          if (isFinite(inten) && inten > bi) { bi = inten; best = o; }
+        }
+      }
+      if (best) {
+        wdAdoptSun(best, now);
+        return wdSunLight;
+      }
+    }
     const scene = g && g.scene;
     if (!scene || typeof scene.traverse !== "function") return wdSunLight;
     let best = null, bi = -Infinity;
@@ -2255,15 +2283,7 @@
         if (o && o.isDirectionalLight && isFinite(o.intensity) && o.intensity > bi) { bi = o.intensity; best = o; }
       });
     } catch (_) {}
-    if (best) {
-      if (wdSunLight !== best) {
-        wdSunLight = best;
-        try {
-          wdSunOrig = best.position ? { x: best.position.x, y: best.position.y, z: best.position.z } : null;
-        } catch (_) { wdSunOrig = null; }
-      }
-      wdSunAt = now;
-    }
+    if (best) wdAdoptSun(best, now);
     return wdSunLight;
   }
   function wdPlaceSun(g, elevDeg, azimDeg) {
@@ -2918,8 +2938,45 @@
   // ── Viewmodel pose (position / rotation offsets + camera FOV + motion) ──
   // Offsets are applied inside a wrapper around the game's own viewmodel
   // update, so they land after its per-frame positioning (order-safe) and are
-  // removed cleanly with the original function when toggled off.
+  // removed cleanly with the original function when toggled off. FOV writes
+  // are coalesced (change / weapon-switch / 1s re-assert) so we never fight
+  // the game's own camera sync every frame.
   var vmStore = new WeakMap();
+  var vmFovCache = { want: null, for: null, at: 0 };
+  function vmScopedNow() {
+    try {
+      const gg = getGame();
+      return !!(gg && (gg.scoped || (gg.weapons && gg.weapons.scopeLevel > 0)));
+    } catch (_) { return false; }
+  }
+  function vmEnforceFov(vm, st, now) {
+    const cur = (vm && vm.current) || null;
+    if (!settings.vmFovOn) {
+      // Toggle flipped off mid-session: take back only our own write.
+      if (st && st.fov != null && vmFovCache.for === cur && vmFovCache.want != null) {
+        try {
+          const cam = vm && vm.camera;
+          if (cam && cam.fov === vmFovCache.want) {
+            cam.fov = st.fov;
+            if (typeof cam.updateProjectionMatrix === "function") cam.updateProjectionMatrix();
+          }
+        } catch (_) {}
+        vmFovCache = { want: null, for: null, at: 0 };
+      }
+      return;
+    }
+    if (vmScopedNow()) return; // scoped: the game owns the zoom, don't fight it
+    const fov = Math.max(30, Math.min(120, chNum(settings.vmFov, st && st.fov != null ? st.fov : 70)));
+    if (vmFovCache.want === fov && vmFovCache.for === cur && now - (vmFovCache.at || 0) < 1000) return;
+    try {
+      const cam = vm && vm.camera;
+      if (cam && typeof cam.updateProjectionMatrix === "function") {
+        cam.fov = fov;
+        cam.updateProjectionMatrix();
+        vmFovCache = { want: fov, for: cur, at: now };
+      }
+    } catch (_) {}
+  }
   function tickViewmodel(g) {
     const vm = g && g.viewmodel;
     if (!vm) return;
@@ -2937,6 +2994,7 @@
         } catch (_) {}
         try { vmStore.delete(vm); } catch (_) {}
       }
+      vmFovCache = { want: null, for: null, at: 0 };
       return;
     }
     if (!st) {
@@ -2964,17 +3022,8 @@
         if (isFinite(vm._sway.y)) vm._sway.y *= sway;
       }
     } catch (_) {}
-    // Viewmodel camera FOV.
-    try {
-      const cam = vm.camera;
-      if (settings.vmFovOn && cam && typeof cam.updateProjectionMatrix === "function") {
-        const fov = Math.max(30, Math.min(120, chNum(settings.vmFov, st.fov ?? 70)));
-        if (Math.abs(cam.fov - fov) > 0.01) {
-          cam.fov = fov;
-          cam.updateProjectionMatrix();
-        }
-      }
-    } catch (_) {}
+    // Viewmodel camera FOV (coalesced — see vmEnforceFov).
+    try { vmEnforceFov(vm, st, performance.now()); } catch (_) {}
     // Post-update offsets (viewmodel node + cs2 rig nodes, set fresh so
     // weapon switches and rig swaps keep working). Only when the game
     // exposes an update function to wrap.
@@ -3042,18 +3091,7 @@
             }
             // Last word on FOV inside the game's own update flow, in case it
             // re-syncs the viewmodel camera after our per-frame write.
-            if (settings.vmFovOn) {
-              try {
-                const cam2 = vm.camera;
-                if (cam2 && typeof cam2.updateProjectionMatrix === "function") {
-                  const f2 = Math.max(30, Math.min(120, chNum(settings.vmFov, 70)));
-                  if (cam2.fov !== f2) {
-                    cam2.fov = f2;
-                    cam2.updateProjectionMatrix();
-                  }
-                }
-              } catch (_) {}
-            }
+            try { vmEnforceFov(vm, st, performance.now()); } catch (_) {}
           } catch (_) {}
           return r;
         };
