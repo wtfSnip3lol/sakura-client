@@ -68,7 +68,7 @@
     devNoBloom: false,
     fpsCounter: false,
     // Beta (Lunar-style UI) — unlocked from the launcher, no code
-    uiStyle: "minimal",
+    uiStyle: "lunar",
     uiAccent: "#ff6b9d",
     uiSize: "normal",
     menuMouse: true,
@@ -275,6 +275,34 @@
     ammoLowAt: 6,
     ammoColor: "#ffffff",
     ammoBg: true,
+    // Game-native cosmetics (drive the game's own HUD, restore on disable)
+    gxOn: false,
+    gxPreset: "custom",
+    gxColor: "#3cff5a",
+    gxAlpha: 1,
+    gxLen: 6,
+    gxThick: 2,
+    gxGap: 3,
+    gxDot: false,
+    gxOutline: true,
+    gxOutw: 1,
+    gxStyle: 0,
+    gxSniper: 2,
+    gcTeam: false,
+    gcCT: "#7db8f0",
+    gcT: "#eabe54",
+    dcOn: false,
+    dcOp: 0.6,
+    dcColor: "",
+    dcAccent: "",
+    ghOn: false,
+    ghColor: "#ffffff",
+    ghHs: "#ff4040",
+    ghSize: 1,
+    daOn: false,
+    daColor: "#e0342c",
+    mnOn: false,
+    mnColor: "",
     // Day cycle + light lab + fog lab + radar cosmetics
     wdCycle: false,
     wdTime: 12,
@@ -902,7 +930,7 @@
   var devUnlocked = launchFlags.dev === true;
   var betaUnlocked = launchFlags.beta === true;
   try { betaUnlocked = betaUnlocked || localStorage.getItem("sakura.beta.v1") === "1"; } catch (_) {}
-  if (!betaUnlocked && settings.uiStyle === "lunar") { settings.uiStyle = "minimal"; save(); }
+  if (!betaUnlocked) { betaUnlocked = true; try { localStorage.setItem("sakura.beta.v1", "1"); } catch (_) {} }
 
   // ── Input handling ──
   var held = new Set();
@@ -2338,6 +2366,100 @@
     rdStyleEl.textContent = css;
   }
 
+  // ── Game-native cosmetics: drive the game's own HUD objects + CSS ──
+  // The game keeps its crosshair in hud.xh (len/thick/gap/alpha/outline/dot,
+  // color index 5 = custom r/g/b) applied via hud.applyCrosshair(). We snapshot
+  // it on enable, write our values while enabled, and restore on disable.
+  // Team colors / death / hitmarker / arcs / money go through one <style> tag.
+  var gameXhBase = null, gxLastKey = "";
+  function gameHud() {
+    try {
+      const g = getGame();
+      return g && g.hud ? g.hud : null;
+    } catch (_) { return null; }
+  }
+  function tickGameXh() {
+    let xh = null, hud = null;
+    try {
+      hud = gameHud();
+      xh = hud && hud.xh ? hud.xh : null;
+    } catch (_) { xh = null; }
+    if (!settings.gxOn || !xh || !hud) {
+      if (gameXhBase) {
+        try {
+          const h2 = gameHud();
+          if (h2 && h2.xh) {
+            Object.assign(h2.xh, gameXhBase);
+            if (typeof h2.applyCrosshair === "function") h2.applyCrosshair();
+          }
+        } catch (_) {}
+        gameXhBase = null;
+        gxLastKey = "";
+      }
+      return;
+    }
+    if (!gameXhBase) {
+      try { gameXhBase = { ...xh }; } catch (_) { gameXhBase = null; }
+    }
+    try {
+      const c = chHexRgb(settings.gxColor || "#3cff5a");
+      xh.color = 5;
+      xh.r = c[0]; xh.g = c[1]; xh.b = c[2];
+      xh.alpha = Math.round(clamp(chNum(settings.gxAlpha, 1), 0, 1) * 255);
+      xh.len = chNum(settings.gxLen, xh.len);
+      xh.thick = Math.max(1, Math.round(chNum(settings.gxThick, xh.thick)));
+      xh.gap = chNum(settings.gxGap, xh.gap);
+      if ("dot" in xh) xh.dot = settings.gxDot ? 1 : 0;
+      if ("outline" in xh) xh.outline = settings.gxOutline === false ? 0 : 1;
+      if ("outw" in xh) xh.outw = chNum(settings.gxOutw, xh.outw);
+      if ("style" in xh) xh.style = settings.gxStyle ? 1 : 0;
+      if ("sniper" in xh) xh.sniper = Math.max(1, Math.round(chNum(settings.gxSniper, xh.sniper)));
+      const key = [xh.color, xh.r, xh.g, xh.b, xh.alpha, xh.len, xh.thick, xh.gap,
+        xh.dot, xh.outline, xh.outw, xh.style, xh.sniper].join("|");
+      if (key !== gxLastKey && typeof hud.applyCrosshair === "function") {
+        gxLastKey = key;
+        hud.applyCrosshair();
+      }
+    } catch (_) {}
+  }
+  var gameCssEl = null, gameCssLast = "###";
+  function tickGameCss() {
+    let css = "";
+    if (settings.gcTeam) {
+      if (settings.gcCT) css += `:root{--ct:${settings.gcCT}!important;}`;
+      if (settings.gcT) css += `:root{--t:${settings.gcT}!important;}`;
+    }
+    if (settings.dcOn) {
+      css += `#deathov{opacity:${clamp(chNum(settings.dcOp, 0.6), 0, 1)}!important;}`;
+      if (settings.dcColor) {
+        css += `#deathov{background:radial-gradient(circle at 50% 50%,${hexA(settings.dcColor, 0.25)} 0%,${hexA(settings.dcColor, 0.55)} 70%,${hexA(settings.dcColor, 0.75)} 100%)!important;}`;
+      }
+      if (settings.dcAccent) css += `#killcard{border-top-color:${settings.dcAccent}!important;}`;
+    }
+    if (settings.ghOn) {
+      css += `#hitmark .hm{background:${settings.ghColor || "#ffffff"}!important;}`;
+      css += `#hitmark.hs .hm{background:${settings.ghHs || "#ff4040"}!important;}`;
+      css += `#hitmarkwrap{scale:${clamp(chNum(settings.ghSize, 1), 0.5, 2)};}`;
+    }
+    if (settings.daOn && settings.daColor) {
+      css += `.dmgarc{border-top-color:${hexA(settings.daColor, 0.9)}!important;}`;
+    }
+    if (settings.mnOn && settings.mnColor) {
+      css += `#money{color:${settings.mnColor}!important;}`;
+    }
+    if (css === gameCssLast) return;
+    gameCssLast = css;
+    if (!css) {
+      if (gameCssEl) { gameCssEl.remove(); gameCssEl = null; }
+      return;
+    }
+    if (!gameCssEl) {
+      gameCssEl = document.createElement("style");
+      (document.head || document.documentElement).appendChild(gameCssEl);
+    }
+    gameCssEl.textContent = css;
+  }
+
   function worldTick(g) {
     tickRadar();
     const isLive = g && isPlaying(g);
@@ -3024,6 +3146,8 @@
     tickChams(g, now);
     tickViewmodel(g);
     tickGameCrosshair();
+    tickGameXh();
+    tickGameCss();
     tickMotionBlur(g);
 
     const inMatch = liveMatch(g);
@@ -3139,14 +3263,16 @@
     charms: '<path d="M12 2c1.66 0 3 .67 3 1.5V7h2v5l5 5v4L21 7c0-1.1-.9-2-2-2h-5V3.5C14 .67 13.34 2 12 2zM8 5c0-1.1.9-2 2-2h2v5c0 1.1-.9 2-2 2H8V5zm4 10c0-1.1.9-2 2-2h2v5c0-1.1-.9-2-2-2h-2v5z"/>',
     chams: '<path d="M6 2c-3.3 0-6 2.7-6 6v10c0 3.3 2.7 6 6 6h4c3.3 0 6-2.7 6-6V8c0-3.3-2.7-6-6-6H6zm2 2v4h12V8H8zM8 4v12h8V4H8z"/>',
     cross: '<circle cx="12" cy="12" r="9"/><path d="M12 7v10M7 12h10"/>',
-    fx: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 5v14M17 5v14M3 12h3M18 12h3"/>'
+    fx: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 5v14M17 5v14M3 12h3M18 12h3"/>',
+    game: '<rect x="2" y="7" width="20" height="10" rx="5"/><path d="M7 11h.01M17 11h.01M10 9.5v3M8.5 11h3"/>'
   };
   var CATEGORIES = [
     { id: "hud", label: "HUD", icon: ICONS.hud },
     { id: "world", label: "World", icon: ICONS.world },
     { id: "chams", label: "Chams", icon: ICONS.chams },
     { id: "crosshair", label: "Cross", icon: ICONS.cross },
-    { id: "fx", label: "FX", icon: ICONS.fx }
+    { id: "fx", label: "FX", icon: ICONS.fx },
+    { id: "game", label: "Game", icon: ICONS.game }
   ];
   if (devUnlocked) CATEGORIES.push({ id: "dev", label: "Dev", icon: ICONS.dev });
   if (betaUnlocked) CATEGORIES.push({ id: "beta", label: "Beta", icon: ICONS.beta });
@@ -3503,7 +3629,7 @@
 
     function interfaceCard() {
       return moduleCard("Interface", "Beta: Lunar-style menu theme and HUD layout.", true, null, [
-        row("Menu style", "Lunar is the Beta look", selectField(settings.uiStyle, [["minimal", "Minimal (Sakura)"], ["lunar", "Lunar (Beta)"]], (v) => {
+        row("Menu style", "Lunar is the main look", selectField(settings.uiStyle, [["minimal", "Minimal (Sakura)"], ["lunar", "Lunar"]], (v) => {
           settings.uiStyle = v; save(); rebuildPanel();
         })),
         row("Accent", "Applies to the Lunar menu", colorField(settings.uiAccent, (v) => {
@@ -3553,6 +3679,12 @@
       { tab: "hud", title: "Clock & Session", icon: "refresh", get: () => settings.hudInfo, set: (v) => { settings.hudInfo = v; save(); } },
       { tab: "hud", title: "Health Bars", icon: "trend", get: () => settings.hudBars, set: (v) => { settings.hudBars = v; save(); } },
       { tab: "hud", title: "Ammo", icon: "dice", get: () => settings.hudAmmo, set: (v) => { settings.hudAmmo = v; save(); } },
+      { tab: "game", title: "Game Crosshair", icon: "target", get: () => settings.gxOn, set: (v) => { settings.gxOn = v; save(); } },
+      { tab: "game", title: "Team Colors", icon: "plus", get: () => settings.gcTeam, set: (v) => { settings.gcTeam = v; save(); } },
+      { tab: "game", title: "Death Screen", icon: "bolt", get: () => settings.dcOn, set: (v) => { settings.dcOn = v; save(); } },
+      { tab: "game", title: "Hitmarker", icon: "dice", get: () => settings.ghOn, set: (v) => { settings.ghOn = v; save(); } },
+      { tab: "game", title: "Damage Arcs", icon: "trend", get: () => settings.daOn, set: (v) => { settings.daOn = v; save(); } },
+      { tab: "game", title: "Money", icon: "coin", get: () => settings.mnOn, set: (v) => { settings.mnOn = v; save(); } },
       { tab: "fx", title: "Tracers", icon: "bolt", get: () => settings.atTracers, set: (v) => { settings.atTracers = v; save(); } },
       { tab: "fx", title: "Muzzle", icon: "sun", get: () => settings.mzOn, set: (v) => { settings.mzOn = v; save(); } },
       { tab: "fx", title: "Impact", icon: "spark", get: () => settings.imOn, set: (v) => { settings.imOn = v; save(); } },
@@ -3645,7 +3777,7 @@
 
       // Collect minimal cards once, transplant their rows into lunar drawers
       const pool = new Map();
-      for (const c of [...cardsFor("hud"), ...cardsFor("world"), ...cardsFor("chams"), ...cardsFor("crosshair"), ...cardsFor("fx"), ...(devUnlocked ? devCards() : [])]) {
+      for (const c of [...cardsFor("hud"), ...cardsFor("world"), ...cardsFor("chams"), ...cardsFor("crosshair"), ...cardsFor("fx"), ...cardsFor("game"), ...(devUnlocked ? devCards() : [])]) {
         const t = c.querySelector(".sk-card-title strong");
         if (t && !pool.has(t.textContent)) pool.set(t.textContent, c);
       }
@@ -3742,6 +3874,7 @@
       const NAV = [
         { id: "all", label: "All" },
         { id: "hud", label: "HUD" },
+        { id: "game", label: "Game" },
         {
           id: "visuals", label: "Visuals",
           children: [["world", "World"], ["chams", "Chams"], ["crosshair", "Cross"], ["fx", "FX"]]
@@ -4205,6 +4338,55 @@
               row("Opacity", null, rangeField(settings.moOp ?? 0.5, 0.1, 1, 0.05, (v) => { settings.moOp = v; save(); })),
               row("Color", null, colorField(settings.moColor || "#ffd6e4", (v) => { settings.moColor = v; save(); })),
               row("Drift", "Sideways sway", rangeField(settings.moDrift ?? 12, 0, 40, 1, (v) => { settings.moDrift = v; save(); }))
+            ])
+        ];
+      }
+      if (id === "game") {
+        const gxPresets = [["custom", "Custom"], ["classic", "Classic green"], ["cyan", "Cyan"], ["yellow", "Yellow"], ["red", "Red"], ["white", "White"], ["pink", "Pink"]];
+        const gxHex = { classic: "#3cff5a", cyan: "#00e5ff", yellow: "#ffe14d", red: "#ff4d4d", white: "#ffffff", pink: "#ff6b9d" };
+        return [
+          moduleCard("Game Crosshair", "Styles the game's own crosshair. Needs it visible (Cross tab).", settings.gxOn,
+            (v) => { settings.gxOn = v; save(); }, [
+              row("Preset", null, selectField(settings.gxPreset || "custom", gxPresets, (v) => {
+                settings.gxPreset = v;
+                if (gxHex[v]) settings.gxColor = gxHex[v];
+                save();
+              })),
+              row("Color", null, colorField(settings.gxColor || "#3cff5a", (v) => { settings.gxColor = v; settings.gxPreset = "custom"; save(); })),
+              row("Opacity", null, rangeField(settings.gxAlpha ?? 1, 0.1, 1, 0.05, (v) => { settings.gxAlpha = v; save(); })),
+              row("Length", null, rangeField(settings.gxLen ?? 6, 1, 30, 1, (v) => { settings.gxLen = v; save(); })),
+              row("Thickness", null, rangeField(settings.gxThick ?? 2, 1, 10, 1, (v) => { settings.gxThick = v; save(); })),
+              row("Gap", null, rangeField(settings.gxGap ?? 3, 0, 30, 1, (v) => { settings.gxGap = v; save(); })),
+              row("Dot", null, toggleSwitch(settings.gxDot, (v) => { settings.gxDot = v; save(); })),
+              row("Outline", null, toggleSwitch(settings.gxOutline !== false, (v) => { settings.gxOutline = v; save(); })),
+              row("Outline width", null, rangeField(settings.gxOutw ?? 1, 0, 5, 1, (v) => { settings.gxOutw = v; save(); })),
+              row("Alt style", "Second crosshair shape", toggleSwitch(settings.gxStyle, (v) => { settings.gxStyle = v ? 1 : 0; save(); })),
+              row("Sniper width", "Scope line thickness", rangeField(settings.gxSniper ?? 2, 1, 12, 1, (v) => { settings.gxSniper = v; save(); }))
+            ]),
+          moduleCard("Team Colors", "Recolor CT / T theming.", settings.gcTeam,
+            (v) => { settings.gcTeam = v; save(); }, [
+              row("CT blue", null, colorField(settings.gcCT || "#7db8f0", (v) => { settings.gcCT = v; save(); })),
+              row("T gold", null, colorField(settings.gcT || "#eabe54", (v) => { settings.gcT = v; save(); }))
+            ]),
+          moduleCard("Death Screen", "Restyle the death vignette.", settings.dcOn,
+            (v) => { settings.dcOn = v; save(); }, [
+              row("Vignette opacity", null, rangeField(settings.dcOp ?? 0.6, 0, 1, 0.05, (v) => { settings.dcOp = v; save(); })),
+              row("Vignette color", "Empty = game red", colorField(settings.dcColor || "#e0342c", (v) => { settings.dcColor = v; save(); })),
+              row("Killcard accent", "Empty = game red", colorField(settings.dcAccent || "#e05a4e", (v) => { settings.dcAccent = v; save(); }))
+            ]),
+          moduleCard("Hitmarker", "Restyle the game's hitmarker.", settings.ghOn,
+            (v) => { settings.ghOn = v; save(); }, [
+              row("Color", null, colorField(settings.ghColor || "#ffffff", (v) => { settings.ghColor = v; save(); })),
+              row("Headshot", null, colorField(settings.ghHs || "#ff4040", (v) => { settings.ghHs = v; save(); })),
+              row("Size", null, rangeField(settings.ghSize ?? 1, 0.5, 2, 0.1, (v) => { settings.ghSize = v; save(); }))
+            ]),
+          moduleCard("Damage Arcs", "Recolor directional damage.", settings.daOn,
+            (v) => { settings.daOn = v; save(); }, [
+              row("Color", null, colorField(settings.daColor || "#e0342c", (v) => { settings.daColor = v; save(); }))
+            ]),
+          moduleCard("Money", "Recolor the money readout.", settings.mnOn,
+            (v) => { settings.mnOn = v; save(); }, [
+              row("Color", "Empty = team wash", colorField(settings.mnColor || "#ffffff", (v) => { settings.mnColor = v; save(); }))
             ])
         ];
       }
