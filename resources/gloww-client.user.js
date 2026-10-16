@@ -173,6 +173,33 @@
     armY: 0,
     armZ: 0,
     armHideName: "",
+    // Kill banner + combat stats + scope + menu studio
+    kbOn: false,
+    kbStyle: "both",
+    kbColor: "#ff6b9d",
+    kbSize: 22,
+    kbTime: 2.2,
+    kbCount: 60,
+    kbName: true,
+    kbMulti: true,
+    kbWindow: 4,
+    kbPos: "top",
+    scOn: false,
+    scStyle: "duplex",
+    scColor: "#111111",
+    scThick: 3,
+    scGap: 0.12,
+    vmPose: "custom",
+    vmInspectAuto: false,
+    mnAccentP: "custom",
+    mnOp: null,
+    mnBlur: null,
+    mnRad: null,
+    mnScale: 1,
+    uiMotion: true,
+    infoShots: true,
+    infoHits: true,
+    infoAcc: true,
     // Fire FX + atmosphere (visual only — overlay canvas cosmetics)
     atTracers: false,
     trStyle: "line",
@@ -254,6 +281,9 @@
     infoKills: true,
     infoDeaths: true,
     infoKD: true,
+    infoShots: true,
+    infoHits: true,
+    infoAcc: true,
     infoPos: "br",
     infoSize: 12,
     hudBars: false,
@@ -1407,6 +1437,157 @@
     ctx.restore();
     return ph;
   }
+  // ── Kill banner + combat counters (visual only, DOM reads) ──
+  // Watches the game's own #killcard for elims; shots/hits counted from local
+  // input + the game's hitmarker. Read-only.
+  var kbEl = null, kbWasShown = false, kbT = 0, kbName = "", kbKills = [];
+  var kbParts = [];
+  var stShots = 0, stHits = 0, stPrevMouse = false, stHitEl = null, stHitOn = false;
+  function stTrackCombat(g) {
+    if (!g || !isPlaying(g)) return;
+    const m = held.has("mouse1");
+    if (m && !stPrevMouse) stShots++;
+    stPrevMouse = m;
+    if (!stHitEl || !stHitEl.isConnected) {
+      try { stHitEl = document.getElementById("hitmark"); } catch (_) { stHitEl = null; }
+    }
+    let pop = false;
+    if (stHitEl) {
+      try { pop = stHitEl.classList.contains("pop") || Number(stHitEl.style.opacity || 0) > 0.05; } catch (_) {}
+    }
+    if (pop && !stHitOn) stHits++;
+    stHitOn = pop;
+  }
+  function stReset() { stShots = 0; stHits = 0; }
+  function tickKillBanner(rect, now, dt) {
+    if (!kbEl || !kbEl.isConnected) {
+      try { kbEl = document.getElementById("killcard"); } catch (_) { kbEl = null; }
+    }
+    let shown = false;
+    if (kbEl) {
+      try { shown = kbEl.classList.contains("show"); } catch (_) {}
+    }
+    if (shown && !kbWasShown) {
+      kbT = 1;
+      kbName = "";
+      try {
+        const nm = kbEl.querySelector(".kc-name");
+        if (nm) kbName = (nm.textContent || "").trim().slice(0, 24);
+      } catch (_) {}
+      kbKills.push(now / 1000);
+      const win = chNum(settings.kbWindow, 4);
+      while (kbKills.length && now / 1000 - kbKills[0] > win) kbKills.shift();
+      if ((settings.kbStyle || "both") !== "banner" && (settings.kbStyle || "both") !== "compact") {
+        const n = Math.max(0, Math.min(150, Math.round(Number(settings.kbCount) || 60)));
+        const cols = [settings.kbColor || "#ff6b9d", "#ffffff", "#ffd166"];
+        for (let i = 0; i < n; i++) {
+          kbParts.push({
+            x: rect.width / 2 + (Math.random() - 0.5) * 120,
+            y: rect.height * 0.22,
+            vx: (Math.random() - 0.5) * 260,
+            vy: -Math.random() * 260 - 60,
+            rot: Math.random() * Math.PI * 2,
+            vr: (Math.random() - 0.5) * 12,
+            w: 4 + Math.random() * 6, h: 6 + Math.random() * 8,
+            c: cols[i % cols.length], life: 1
+          });
+        }
+      }
+    }
+    kbWasShown = shown;
+    kbT = Math.max(0, kbT - dt / Math.max(0.5, Number(settings.kbTime) || 2.2));
+    const st = settings.kbStyle || "both";
+    const compact = st === "compact";
+    for (let i = kbParts.length - 1; i >= 0; i--) {
+      const p = kbParts[i];
+      p.life -= dt / Math.max(0.5, Number(settings.kbTime) || 2.2);
+      if (p.life <= 0) { kbParts.splice(i, 1); continue; }
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vy += 500 * dt;
+      p.rot += p.vr * dt;
+    }
+    if (kbT <= 0.01 && !kbParts.length) return;
+    const W = rect.width;
+    ctx.save();
+    if (st !== "confetti" && kbT > 0.01) {
+      const streak = kbKills.length;
+      let text = settings.kbName !== false && kbName ? `ELIMINATED ${kbName}` : "ELIMINATED";
+      if (settings.kbMulti !== false && streak >= 2) {
+        text = streak === 2 ? "DOUBLE KILL" : streak === 3 ? "TRIPLE KILL" : streak === 4 ? "QUAD KILL" : `RAMPAGE x${streak}`;
+        if (settings.kbName !== false && kbName) text += ` — ${kbName}`;
+      }
+      const fs = Math.max(12, Number(settings.kbSize) || 22) * (compact ? 0.65 : 1);
+      ctx.font = `800 ${fs}px ui-sans-serif,system-ui,sans-serif`;
+      const tw = ctx.measureText(text).width;
+      const pw = tw + 36, ph = fs + 22;
+      const y = (settings.kbPos || "top") === "center" ? rect.height * 0.32 : Math.max(70, rect.height * 0.16);
+      const x = W / 2 - pw / 2;
+      ctx.globalAlpha = Math.min(1, kbT * 2);
+      ctx.fillStyle = "rgba(22,8,16,0.78)";
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(x, y, pw, ph, 10);
+      else ctx.rect(x, y, pw, ph);
+      ctx.fill();
+      ctx.strokeStyle = settings.kbColor || "#ff6b9d";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.fillStyle = settings.kbColor || "#ff6b9d";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(text, W / 2, y + ph / 2 + 1);
+    }
+    for (const p of kbParts) {
+      ctx.globalAlpha = Math.max(0, Math.min(1, p.life * 1.5));
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rot);
+      ctx.fillStyle = p.c;
+      ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+  // ── Scope overlay (visual only — drawn when actually scoped) ──
+  function drawScope(rect, g) {
+    const W = rect.width, H = rect.height, cx = W / 2, cy = H / 2;
+    const r = Math.min(W, H) * 0.42;
+    const gap = r * clamp(Number(settings.scGap) ?? 0.12, 0, 0.4);
+    const st = settings.scStyle || "duplex";
+    const c = settings.scColor || "#111111";
+    ctx.save();
+    if (st !== "cross") {
+      ctx.fillStyle = "#000";
+      ctx.beginPath();
+      ctx.rect(0, 0, W, H);
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fill("evenodd");
+      ctx.strokeStyle = c;
+      ctx.lineWidth = Math.max(1, Number(settings.scThick) || 3);
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    if (st !== "ring") {
+      ctx.strokeStyle = st === "dot" ? c : "#000";
+      if (st === "dot") {
+        ctx.fillStyle = c;
+        ctx.beginPath();
+        ctx.arc(cx, cy, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.lineWidth = Math.max(1, (Number(settings.scThick) || 3) * 0.7);
+        ctx.beginPath();
+        ctx.moveTo(cx - r, cy); ctx.lineTo(cx - gap, cy);
+        ctx.moveTo(cx + gap, cy); ctx.lineTo(cx + r, cy);
+        ctx.moveTo(cx, cy - r); ctx.lineTo(cx, cy - gap);
+        ctx.moveTo(cx, cy + gap); ctx.lineTo(cx, cy + r);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
   function drawHudExtras(rect, now, dt, g) {
     const W = rect.width, H = rect.height;
     const playing = isPlaying(g);
@@ -1526,6 +1707,9 @@
       }
       if (settings.infoKills) lines.push(`K ${hudSes.kills} / D ${hudSes.deaths}`);
       if (settings.infoKD) lines.push(`K/D ${(hudSes.kills / Math.max(1, hudSes.deaths)).toFixed(2)}`);
+      if (settings.infoShots !== false) lines.push(`Shots ${stShots}`);
+      if (settings.infoHits !== false) lines.push(`Hits ${stHits}`);
+      if (settings.infoAcc !== false) lines.push(`Acc ${stShots ? Math.round(stHits / stShots * 100) : 0}%`);
       if (lines.length) hudPill(lines, settings.infoPos || "br", Math.max(9, Number(settings.infoSize) || 12), "#ff6b9d");
     }
     if (settings.hudBars && playing) {
@@ -3056,6 +3240,7 @@
   // are coalesced (change / weapon-switch / 1s re-assert) so we never fight
   // the game's own camera sync every frame.
   var vmStore = new WeakMap();
+  var vmAliveWas = true, vmInspectAt = 0;
   var vmFovCache = { want: null, for: null, at: 0 };
   function vmScopedNow() {
     try {
@@ -3134,6 +3319,17 @@
       if (sway < 1 && vm._sway) {
         if (isFinite(vm._sway.x)) vm._sway.x *= sway;
         if (isFinite(vm._sway.y)) vm._sway.y *= sway;
+      }
+      // Auto inspect on spawn.
+      const pl = g && g.player;
+      const aliveNow = !pl || pl.alive !== false;
+      if (settings.vmInspectAuto && !vmAliveWas && aliveNow) vmInspectAt = performance.now() + 800;
+      vmAliveWas = aliveNow;
+      if (vmInspectAt && performance.now() >= vmInspectAt) {
+        vmInspectAt = 0;
+        if (typeof vm.inspect === "function") {
+          try { vm.inspect(); } catch (_) {}
+        }
       }
     } catch (_) {}
     // Viewmodel camera FOV (coalesced — see vmEnforceFov).
@@ -3300,6 +3496,7 @@
     tickGameCrosshair();
     tickGameXh();
     tickGameCss();
+    stTrackCombat(g);
     tickMotionBlur(g);
 
     const inMatch = liveMatch(g);
@@ -3309,11 +3506,13 @@
     // fullscreen clearRect every one of those frames alone can saturate the
     // compositor — the window stutters while game logic stays smooth.
     const playing = isPlaying(g);
+    const scopedNow = !!(g && (g.scoped || (g.weapons && g.weapons.scopeLevel > 0)));
     const overlayActive =
       (settings.keystrokes && playing) ||
       (settings.crosshair && (playing || settings.chInLobby)) ||
       ((settings.hudWm || settings.hudFps || settings.hudInfo || settings.hudBars || settings.hudAmmo) && playing) ||
       ((settings.atTracers || settings.mzOn || settings.imOn || settings.wxOn || settings.moOn) && (playing || settings.wxLobby)) ||
+      ((settings.kbOn || settings.scOn) && playing) ||
       (devUnlocked && settings.fpsCounter);
     if (!overlayActive) {
       if (overlayDirty) {
@@ -3335,6 +3534,8 @@
     if (settings.crosshair && (isPlaying(g) || settings.chInLobby)) drawCrosshair(rect, now, dt, g);
     if ((settings.hudWm || settings.hudFps || settings.hudInfo || settings.hudBars || settings.hudAmmo) && isPlaying(g)) drawHudExtras(rect, now, dt, g);
     if ((settings.atTracers || settings.mzOn || settings.imOn || settings.wxOn || settings.moOn) && (isPlaying(g) || settings.wxLobby)) drawAtmoFX(rect, now, dt, g);
+    if (settings.kbOn && playing) tickKillBanner(rect, now, dt);
+    if (settings.scOn && playing && scopedNow) drawScope(rect, g);
     if (devUnlocked && settings.fpsCounter) {
       drawFps(rect, now);
     }
@@ -3788,6 +3989,38 @@
           settings.uiAccent = v; save();
           try { panelEl?.style.setProperty("--acc", v); } catch (_) {}
         })),
+        row("Accent preset", null, selectField(settings.mnAccentP || "custom", [["custom", "Custom"], ["sakura", "Sakura"], ["cyan", "Cyan"], ["green", "Green"], ["gold", "Gold"], ["purple", "Purple"], ["red", "Red"], ["white", "White"]], (v) => {
+          const C = { sakura: "#ff6b9d", cyan: "#22d3ee", green: "#4ade80", gold: "#facc15", purple: "#a78bfa", red: "#ef4444", white: "#ffffff" };
+          settings.mnAccentP = v;
+          if (C[v]) {
+            settings.uiAccent = C[v];
+            try { panelEl?.style.setProperty("--acc", C[v]); } catch (_) {}
+          }
+          save();
+        })),
+        row("Panel opacity", null, rangeField(settings.mnOp ?? menuStock("op"), 0.3, 1, 0.05, (v) => { settings.mnOp = v; save(); applyMenuVars(); })),
+        row("Panel blur", "Backdrop px", rangeField(settings.mnBlur ?? menuStock("blur"), 0, 40, 1, (v) => { settings.mnBlur = v; save(); applyMenuVars(); })),
+        row("Roundness", "Corner radius", rangeField(settings.mnRad ?? menuStock("rad"), 6, 28, 1, (v) => { settings.mnRad = v; save(); applyMenuVars(); })),
+        row("Menu scale", null, rangeField(settings.mnScale ?? 1, 0.8, 1.3, 0.05, (v) => { settings.mnScale = v; save(); applyMenuVars(); })),
+        row("Animations", "UI motion pack", toggleSwitch(settings.uiMotion !== false, (v) => { settings.uiMotion = v; save(); applyMenuVars(); })),
+        row("Export config", "Copy settings JSON", actionBtn("Copy", () => {
+          try {
+            const json = JSON.stringify(settings);
+            if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(json).catch(() => window.prompt("Copy your config:", json));
+            else window.prompt("Copy your config:", json);
+          } catch (_) {}
+        })),
+        row("Import config", "Paste settings JSON", actionBtn("Paste", () => {
+          try {
+            const json = window.prompt("Paste config JSON:");
+            if (!json) return;
+            const obj = JSON.parse(json);
+            for (const k of Object.keys(obj)) if (k in DEFAULTS) settings[k] = obj[k];
+            save();
+            rebuildPanel();
+            applyMenuVars();
+          } catch (_) {}
+        })),
         row("Menu size", null, selectField(settings.uiSize, [["compact", "Compact"], ["normal", "Normal"], ["large", "Large"]], (v) => {
           settings.uiSize = v; save(); rebuildPanel();
         })),
@@ -3819,6 +4052,7 @@
       charms: '<path d="M6 21 21 6l-3-3L3 18l3 3z"/><path d="M14 5l3 3"/>',
       chams: '<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/>',
       target: '<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.5"/>',
+      scope: '<circle cx="12" cy="12" r="8"/><path d="M12 1v6M12 17v6M1 12h6M17 12h6"/>',
       spark: '<path d="M12 2v6M12 16v6M2 12h6M16 12h6"/><circle cx="12" cy="12" r="2.5"/>',
       rain: '<path d="M7 15a4 4 0 1 1 1-7.9A5.5 5.5 0 0 1 18.5 9 3.5 3.5 0 0 1 17.5 16H7z"/><path d="M8 18l-1 3M12 18l-1 3M16 18l-1 3"/>',
       radar: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><path d="M12 12l5-5"/>',
@@ -3868,6 +4102,8 @@
       { tab: "crosshair", title: "Animation", icon: "refresh", get: () => settings.chPulse || settings.chSpin || settings.chRainbow, set: (v) => { settings.chPulse = v; settings.chSpin = v; settings.chRainbow = v; save(); } },
       { tab: "crosshair", title: "Visibility", icon: "image", toggle: null },
       { tab: "crosshair", title: "Custom Draw", icon: "plus", toggle: null },
+      { tab: "crosshair", title: "Scope", icon: "scope", get: () => settings.scOn, set: (v) => { settings.scOn = v; save(); } },
+      { tab: "hud", title: "Kill Banner", icon: "gift", get: () => settings.kbOn, set: (v) => { settings.kbOn = v; save(); } },
       { tab: "beta", title: "Interface", icon: "sliders", toggle: null }
     ];
     if (settings.uiStyle === "lunar" && betaUnlocked) return buildLunarPanel();
@@ -4214,10 +4450,14 @@
               row("Kills / deaths", null, toggleSwitch(settings.infoKills !== false, (v) => { settings.infoKills = v; save(); })),
               row("Deaths", null, toggleSwitch(settings.infoDeaths !== false, (v) => { settings.infoDeaths = v; save(); })),
               row("K/D ratio", null, toggleSwitch(settings.infoKD !== false, (v) => { settings.infoKD = v; save(); })),
+              row("Shots", "Trigger pulls this session", toggleSwitch(settings.infoShots !== false, (v) => { settings.infoShots = v; save(); })),
+              row("Hits", "Hitmarks this session", toggleSwitch(settings.infoHits !== false, (v) => { settings.infoHits = v; save(); })),
+              row("Accuracy", "Hits / shots", toggleSwitch(settings.infoAcc !== false, (v) => { settings.infoAcc = v; save(); })),
               row("Position", null, selectField(settings.infoPos || "br", [["tl", "Top left"], ["tr", "Top right"], ["bl", "Bottom left"], ["br", "Bottom right"]], (v) => { settings.infoPos = v; save(); })),
               row("Size", null, rangeField(settings.infoSize, 9, 20, 1, (v) => { settings.infoSize = v; save(); })),
               row("Reset session", "Zero timer and counters", actionBtn("Reset", () => {
                 hudSes.t0 = 0; hudSes.kills = 0; hudSes.deaths = 0; hudSes.lastKills = null;
+                stReset();
               }))
             ]),
           moduleCard("Health Bars", "Custom HP / armor bars.", settings.hudBars,
@@ -4242,6 +4482,18 @@
               row("Warn at", null, rangeField(settings.ammoLowAt ?? 6, 0, 30, 1, (v) => { settings.ammoLowAt = v; save(); })),
               row("Color", null, colorField(settings.ammoColor || "#ffffff", (v) => { settings.ammoColor = v; save(); })),
               row("Background", null, toggleSwitch(settings.ammoBg !== false, (v) => { settings.ammoBg = v; save(); }))
+            ]),
+          moduleCard("Kill Banner", "Celebrate elims with banner + confetti.", settings.kbOn,
+            (v) => { settings.kbOn = v; save(); }, [
+              row("Style", null, selectField(settings.kbStyle || "both", [["both", "Banner + confetti"], ["banner", "Banner"], ["confetti", "Confetti"], ["compact", "Compact banner"]], (v) => { settings.kbStyle = v; save(); })),
+              row("Color", null, colorField(settings.kbColor || "#ff6b9d", (v) => { settings.kbColor = v; save(); })),
+              row("Size", null, rangeField(settings.kbSize, 12, 40, 1, (v) => { settings.kbSize = v; save(); })),
+              row("Duration", "Seconds", rangeField(settings.kbTime, 0.5, 5, 0.1, (v) => { settings.kbTime = v; save(); })),
+              row("Confetti", "Pieces per kill", rangeField(settings.kbCount ?? 60, 0, 150, 5, (v) => { settings.kbCount = v; save(); })),
+              row("Show name", "Name the victim", toggleSwitch(settings.kbName !== false, (v) => { settings.kbName = v; save(); })),
+              row("Multikill", "Streak callouts", toggleSwitch(settings.kbMulti !== false, (v) => { settings.kbMulti = v; save(); })),
+              row("Streak window", "Seconds", rangeField(settings.kbWindow ?? 4, 2, 8, 0.5, (v) => { settings.kbWindow = v; save(); })),
+              row("Position", null, selectField(settings.kbPos || "top", [["top", "Top"], ["center", "Center"]], (v) => { settings.kbPos = v; save(); }))
             ])
         ];
       }
@@ -4335,6 +4587,27 @@
             row("Tilt X", "Degrees", rangeField(settings.vmRX ?? 0, -15, 15, 0.5, (v) => { settings.vmRX = v; save(); })),
             row("Tilt Y", "Degrees", rangeField(settings.vmRY ?? 0, -15, 15, 0.5, (v) => { settings.vmRY = v; save(); })),
             row("Roll", "Degrees", rangeField(settings.vmRZ ?? 0, -15, 15, 0.5, (v) => { settings.vmRZ = v; save(); })),
+            row("Pose preset", null, selectField(settings.vmPose || "custom", [["custom", "Custom"], ["default", "Default"], ["centered", "Centered"], ["low", "Low rider"], ["close", "Close-up"], ["left", "Left lean"], ["right", "Right lean"]], (v) => {
+              const P = {
+                default: [0, 0, 0, 0, 0, 0], centered: [0, -0.02, 0.05, 0, 0, 0],
+                low: [0, -0.08, 0, 0, 0, 0], close: [0, -0.01, 0.12, 0, 0, 0],
+                left: [-0.1, 0, 0.02, 0, 0, -4], right: [0.08, 0, 0.02, 0, 0, 4]
+              }[v];
+              settings.vmPose = v;
+              if (P) {
+                settings.vmX = P[0]; settings.vmY = P[1]; settings.vmZ = P[2];
+                settings.vmRX = P[3]; settings.vmRY = P[4]; settings.vmRZ = P[5];
+              }
+              save();
+              rebuildPanel();
+            })),
+            row("Inspect", "Play inspect animation", actionBtn("Inspect", () => {
+              try {
+                const vm = getGame()?.viewmodel;
+                if (vm && typeof vm.inspect === "function") vm.inspect();
+              } catch (_) {}
+            })),
+            row("Auto inspect", "Inspect on every spawn", toggleSwitch(settings.vmInspectAuto, (v) => { settings.vmInspectAuto = v; save(); })),
             row("Custom FOV", "Own camera zoom", toggleSwitch(settings.vmFovOn, (v) => { settings.vmFovOn = v; save(); })),
             row("FOV value", null, rangeField(settings.vmFov ?? 70, 30, 120, 1, (v) => { settings.vmFov = v; save(); })),
             row("Kick", "Recoil kick percent", rangeField(settings.vmKick ?? 100, 0, 100, 5, (v) => { settings.vmKick = v; save(); })),
@@ -4425,6 +4698,13 @@
               row("Mirror Y", "Mirror top / bottom", toggleSwitch(settings.chMirrorY !== false, (v) => { settings.chMirrorY = v; save(); })),
               row("Pixel size", "In-game render scale", rangeField(settings.chPxScale ?? 3, 1, 6, 1, (v) => { settings.chPxScale = v; save(); })),
               note("Left-drag paints, right-drag erases.")
+            ]),
+          moduleCard("Scope", "Custom scope overlay when actually scoped.", settings.scOn,
+            (v) => { settings.scOn = v; save(); }, [
+              row("Style", null, selectField(settings.scStyle || "duplex", [["duplex", "Ring + Cross"], ["ring", "Ring"], ["cross", "Cross"], ["dot", "Dot"]], (v) => { settings.scStyle = v; save(); })),
+              row("Color", null, colorField(settings.scColor || "#111111", (v) => { settings.scColor = v; save(); })),
+              row("Thickness", null, rangeField(settings.scThick, 1, 10, 1, (v) => { settings.scThick = v; save(); })),
+              row("Center gap", "Line-free middle", rangeField(settings.scGap ?? 0.12, 0, 0.4, 0.02, (v) => { settings.scGap = v; save(); }))
             ])
         ];
       }
@@ -4877,6 +5157,27 @@
   }
 
   var panelEl = null;
+  function menuStock(key) {
+    const lunar = settings.uiStyle === "lunar";
+    if (key === "op") return lunar ? 0.94 : 0.78;
+    if (key === "blur") return lunar ? 0 : 22;
+    if (key === "rad") return lunar ? 14 : 22;
+    return 1;
+  }
+  function applyMenuVars() {
+    if (!panelEl) return;
+    try {
+      const op = settings.mnOp, blur = settings.mnBlur, rad = settings.mnRad;
+      if (op == null) panelEl.style.removeProperty("--sk-op");
+      else panelEl.style.setProperty("--sk-op", clamp(chNum(op, 0.8), 0.3, 1));
+      if (blur == null) panelEl.style.removeProperty("--sk-blur");
+      else panelEl.style.setProperty("--sk-blur", chNum(blur, 22) + "px");
+      if (rad == null) panelEl.style.removeProperty("--sk-rad");
+      else panelEl.style.setProperty("--sk-rad", chNum(rad, 22) + "px");
+      panelEl.style.zoom = chNum(settings.mnScale, 1);
+      panelEl.classList.toggle("nomotion", settings.uiMotion === false);
+    } catch (_) {}
+  }
   function setMenuOpen(v) {
     menuOpen = v;
     hudEdit = v && settings.uiStyle === "lunar" && betaUnlocked;
@@ -4904,6 +5205,7 @@
       shadow.appendChild(style);
       panelEl = buildPanel();
       shadow.appendChild(panelEl);
+      applyMenuVars();
       requestAnimationFrame(() => panelEl.classList.add("shown"));
     }
     panelEl.classList.toggle("shown", v);
@@ -4930,8 +5232,8 @@
   :host { all: initial; }
   * { box-sizing: border-box; margin: 0; font-family: "Inter", "Segoe UI", system-ui, sans-serif; }
   .mn-panel { position: absolute; right: 24px; bottom: 24px; width: min(620px, calc(100vw - 48px)); max-height: min(480px, calc(100vh - 48px));
-    display: flex; gap: 10px; padding: 10px; border-radius: 22px; pointer-events: auto;
-    background: rgba(24,17,21,.78); backdrop-filter: blur(22px) saturate(150%); -webkit-backdrop-filter: blur(22px) saturate(150%);
+    display: flex; gap: 10px; padding: 10px; border-radius: var(--sk-rad, 22px); pointer-events: auto;
+    background: rgba(24,17,21,var(--sk-op,.78)); backdrop-filter: blur(var(--sk-blur,22px)) saturate(150%); -webkit-backdrop-filter: blur(var(--sk-blur,22px)) saturate(150%);
     box-shadow: 0 0 0 1px rgba(255,255,255,.06), inset 0 1px 0 rgba(255,255,255,.05), 0 30px 80px rgba(0,0,0,.55);
     opacity: 0; transform: translateY(18px) scale(.985); pointer-events: none; transition: opacity .35s ease, transform .45s cubic-bezier(.22,1,.36,1);
     color: #f6eef2; font-size: 13px; }
@@ -5014,7 +5316,7 @@
   .mn-search { width: 160px; margin-right: 2px; }
   /* Lunar (Beta) theme — same DOM, wider window, accent-driven */
   .mn-panel.lunar { width: min(780px, calc(100vw - 48px)); max-height: min(560px, calc(100vh - 48px));
-    background: rgba(13,14,20,.92); }
+    background: rgba(13,14,20,var(--sk-op,.92)); }
   .mn-panel.lunar .mn-side { width: 76px; }
   .mn-panel.lunar .mn-tab { width: 64px; height: 46px; }
   .mn-panel.lunar .mn-tab.active { color: var(--acc, #ff6b9d); background: rgba(255,255,255,.06); }
@@ -5035,7 +5337,9 @@
   .mn-panel.uisbig { font-size: 14px; width: min(780px, calc(100vw - 48px)); }
   /* Lunar window (Beta ghost-client look) */
   .mn-panel.ln { display: block; width: min(880px, calc(100vw - 48px)); max-height: min(620px, calc(100vh - 48px));
-    background: rgba(10,11,16,.94); border-radius: 14px; padding: 0; overflow: hidden; }
+    background: rgba(10,11,16,var(--sk-op,.94)); border-radius: var(--sk-rad,14px); padding: 0; overflow: hidden;
+    backdrop-filter: blur(var(--sk-blur,0px)); -webkit-backdrop-filter: blur(var(--sk-blur,0px)); }
+  .mn-panel.nomotion *, .mn-panel.nomotion *::before, .mn-panel.nomotion *::after { animation: none !important; transition: none !important; }
   .ln-head { display: flex; align-items: center; gap: 12px; padding: 12px 14px;
     border-bottom: 1px solid rgba(255,255,255,.07); cursor: grab; user-select: none; }
   .ln-brand { display: flex; align-items: center; gap: 8px; font-weight: 800; font-size: 15px; letter-spacing: .06em; }
