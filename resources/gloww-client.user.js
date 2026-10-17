@@ -1904,10 +1904,12 @@
   // ── "Under cover" gate ──
   // The world paths draw particles in front of everything (the canvas
   // fallbacks have no depth test and the harvested cloud drops rain wherever
-  // it likes), so weather indoors or right behind a wall reads as fake. Probe
-  // the map's own meshes instead of guessing: a solid box overhead is a roof,
-  // solid boxes on three sides is a room/corridor, and a big solid box just
-  // in front of the eye is cover you are tucked behind. Read-only, cached.
+  // it likes), so weather indoors or right behind a wall reads as fake. The
+  // game's own collision grid answers this exactly: a ray straight up finds
+  // the room's ceiling, a short ray forward finds the crate in front of you,
+  // and four side rays recognise a room/corridor. Mask 1 is the level-bit the
+  // game's own ground/step checks use, so bots never count. If a future build
+  // stops exposing physics, the mesh-AABB probe below still answers. Read-only.
   var wxOccl = { box: null, list: [], listAt: -1e9 };
   var wxCover = false, wxCoverAt = -1e9, wxCoverElV = null, wxCoverTxt = "";
   function wxCoverEl() {
@@ -1923,6 +1925,50 @@
     if (txt === wxCoverTxt) return;
     wxCoverTxt = txt;
     try { if (wxCoverElV && wxCoverElV.isConnected) wxCoverElV.textContent = txt; } catch (_) {}
+  }
+  function wxFwdXZ(g, p) {
+    let fwx = 0, fwz = -1;
+    const cam = g && g.camera;
+    if (cam && cam.matrixWorld && cam.matrixWorld.elements) {
+      const e = cam.matrixWorld.elements;
+      fwx = -e[8]; fwz = -e[10];
+    } else if (p && isFinite(p.yaw)) { fwx = -Math.sin(p.yaw); fwz = -Math.cos(p.yaw); }
+    const fl = Math.hypot(fwx, fwz) || 1;
+    return [fwx / fl, fwz / fl];
+  }
+  // physics probe: null when the API is unusable, else { on, why }
+  function wxCoveredPhys(phys, g, p) {
+    const eye = p.y + (isFinite(p.eyeH) ? p.eyeH : 1.6);
+    const ray = (ox, oy, oz, dx, dy, dz, dist) => {
+      try { return phys.raycast(ox, oy, oz, dx, dy, dz, dist, 1); } catch (_) { return undefined; }
+    };
+    // anything solid directly overhead (the game's own head-clearance probe)
+    const up = ray(p.x, eye, p.z, 0, 1, 0, 8);
+    if (up === undefined) return null;
+    if (up && !wxIsShell(g, up)) return { on: true, why: `roof ${Math.round(up.t * 10) / 10}m` };
+    const [fwx, fwz] = wxFwdXZ(g, p);
+    const chest = eye - 0.3;
+    // solid right in front of the face = the cover you are tucked behind
+    if (ray(p.x, chest, p.z, fwx, 0, fwz, 1.8)) return { on: true, why: "front" };
+    // walls on three sides = room or corridor
+    let sides = 0;
+    if (ray(p.x, chest, p.z, 1, 0, 0, 2.4)) sides++;
+    if (ray(p.x, chest, p.z, -1, 0, 0, 2.4)) sides++;
+    if (ray(p.x, chest, p.z, 0, 0, 1, 2.4)) sides++;
+    if (ray(p.x, chest, p.z, 0, 0, -1, 2.4)) sides++;
+    return sides >= 3 ? { on: true, why: "room" } : { on: false, why: "" };
+  }
+  // a map's own bounding box/ceiling brush covers everything, so it must not
+  // read as a roof or the whole map would count as indoors
+  function wxIsShell(g, hit) {
+    const b = hit.b, mp = g && g.map;
+    if (b && isFinite(b.minX) && isFinite(b.maxX) && (b.maxX - b.minX) * (b.maxZ - b.minZ) > 20000) return true;
+    if (mp && isFinite(mp.ceilY) && isFinite(hit.y) && Math.abs(hit.y - mp.ceilY) < 2.5) return true;
+    if (b && mp && mp.min && mp.max && isFinite(b.minX)) {
+      const mx = mp.max[0] - mp.min[0], mz = mp.max[2] - mp.min[2];
+      if (mx > 0 && mz > 0 && (b.maxX - b.minX) > mx * 0.8 && (b.maxZ - b.minZ) > mz * 0.8) return true;
+    }
+    return false;
   }
   function wxUnderCam(o, cam) {
     for (let a = o; a; a = a.parent) if (a === cam) return true;
@@ -1969,24 +2015,14 @@
     wxOccl.listAt = now;
     return wxOccl;
   }
-  function wxCovered(g, now) {
-    if (settings.wxCoverHide === false) { wxSetCover("off", false); return false; }
+  // mesh-AABB fallback: only used when the physics API is unavailable
+  function wxCoveredMesh(g, now) {
     const p = g && g.player, scene = g && g.scene;
-    if (!p || !scene || !isFinite(p.x) || !isFinite(p.y) || !isFinite(p.z)) { wxSetCover("clear", false); return false; }
-    if (now - wxCoverAt < 180) return wxCover;
-    wxCoverAt = now;
+    if (!p || !scene) return null;
     const K = wxOccluders(scene, now, g.camera);
-    if (!K || !K.list.length) { wxSetCover("—", false); return false; }
-    const px = p.x, py = p.y, pz = p.z, eye = py + 1.6;
-    // horizontal forward: the camera's own axis when present, else player yaw
-    let fwx = 0, fwz = -1;
-    const cam = g.camera;
-    if (cam && cam.matrixWorld && cam.matrixWorld.elements) {
-      const e = cam.matrixWorld.elements;
-      fwx = -e[8]; fwz = -e[10];
-    } else if (isFinite(p.yaw)) { fwx = -Math.sin(p.yaw); fwz = -Math.cos(p.yaw); }
-    const fl = Math.hypot(fwx, fwz) || 1;
-    fwx /= fl; fwz /= fl;
+    if (!K || !K.list.length) return null;
+    const px = p.x, py = p.y, pz = p.z, eye = py + (isFinite(p.eyeH) ? p.eyeH : 1.6);
+    const [fwx, fwz] = wxFwdXZ(g, p);
     const fx1 = px + fwx * 1.6, fz1 = pz + fwz * 1.6;
     const inBox = (o, x, y, z) => x > o[0] && x < o[3] && y > o[1] && y < o[4] && z > o[2] && z < o[5];
     let roof = false, front = false, sides = 0;
@@ -2000,9 +2036,19 @@
         else if (inBox(o, px, eye - 0.4, pz - 2.2)) sides++;
       }
     }
-    const covered = roof || front || sides >= 3;
-    wxSetCover(covered ? "covered" : "clear", covered);
-    return covered;
+    return { on: roof || front || sides >= 3, why: "mesh" };
+  }
+  function wxCovered(g, now) {
+    if (settings.wxCoverHide === false) { wxSetCover("off", false); return false; }
+    const p = g && g.player;
+    if (!p || !isFinite(p.x) || !isFinite(p.y) || !isFinite(p.z)) { wxSetCover("clear", false); return false; }
+    if (now - wxCoverAt < 180) return wxCover;
+    wxCoverAt = now;
+    const phys = g.physics && typeof g.physics.raycast === "function" ? g.physics : null;
+    const r = (phys && wxCoveredPhys(phys, g, p)) || wxCoveredMesh(g, now);
+    const on = !!(r && r.on);
+    wxSetCover(r ? (on ? r.why : ("clear" + (r.why ? " " + r.why : ""))) : "—", on);
+    return on;
   }
   function tickWeather3D(g, dt, now) {
     try {
