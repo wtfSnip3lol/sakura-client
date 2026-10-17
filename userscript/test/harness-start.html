@@ -29,7 +29,17 @@ try {
 } catch (_) {}
 </script>
 
-<script src="../dist/sakura.clutch.next.dev.js"></script>
+<script>
+// Which artifact to test: ?build=user loads the shipped (obfuscated) userscript,
+// which is the byte-for-byte file a real install fetches; the default is the
+// readable dev build. document.write keeps the timing honest — the bundle is
+// still parsed from <head>, while the document is loading.
+try {
+  const buildQ = new URLSearchParams(location.search).get("build") === "user" ? "user" : "dev";
+  window.__buildUnder = buildQ;
+  document.write('<script src="../dist/sakura.clutch.next.' + (buildQ === "user" ? "user" : "dev") + '.js"><\/script>');
+} catch (_) {}
+</script>
 </head>
 <body>
 

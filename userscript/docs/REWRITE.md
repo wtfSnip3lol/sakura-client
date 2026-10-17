@@ -356,11 +356,18 @@ Verified in the harness (rewrite build):
 Decision: the rewrite is v2 - it gets used on clutcher.io from here on, while the
 remaining groups are ported behind it (port first, delete the lifted menu after).
 
-Install: `dist/sakura.clutch.next.dev.js` is a complete userscript. Its header
-already targets `https://clutcher.io/*` at `@run-at document-start` with
-`@grant none`, so it installs as-is (Tampermonkey -> create a script -> paste the
-file, or install from its raw GitHub URL). A dev build on purpose: stack traces
-in the console are readable, and the whole file is one shared scope.
+Install: two artifacts of the same bundle, both carrying the same header
+(`@match https://clutcher.io/*`, `@run-at document-start`, `@grant none`):
+
+- `dist/sakura.clutch.next.user.js` — the shipped userscript (obfuscated). Only
+  a URL ending in `.user.js` gets Tampermonkey's one-click install prompt, so
+  this is the artifact to point at the raw GitHub URL.
+- `dist/sakura.clutch.next.dev.js` — the same bundle, un-obfuscated. Readable
+  stack traces (the scheduler, the panel and the guard all log through it), so
+  paste this one instead when reporting a bug.
+
+`test/harness-start.html?build=user` loads the shipped bytes from `<head>`, so
+the artifact a user installs is the artifact the fixture proves.
 
 One detail that only matters for a real install: at `document-start` there is no
 `<body>` yet, and `boot.js` mounts the host immediately. Attaching to `<html>`
@@ -425,7 +432,14 @@ Verified in the harness (real page loads, not unit stubs):
   created at all, host absent, warning names the loader
 - v2-arrives-late: setting `window.__sakuraTakeover` on a running page removes the
   host and stops the engine within 500 ms, with one warning
-- 50 verifier checks pass - 5 new: the guard sits before core in the bundle and is
-  not an IIFE, both bail conditions and the late-yield watcher must be present, and
-  the shipped header must stay installable - and 0 console errors
+- the shipped obfuscated artifact behaves identically (`?build=user`): host in
+  `<body>`, panel open, 10 tasks, 0 warnings, and the same two bail paths
+- with the panel open the `ext-mount` task's gate is satisfied (`when()` true) and
+  its `fn()` attaches the EXTRA tab, its pane and the FPS strip — so the new pane
+  shows up on the first tick the loop gets, not at load time (a hidden tab never
+  paints a frame at all, which is how this was found)
+- 51 verifier checks pass - 6 new: the guard sits before core in the bundle and is
+  not an IIFE, both bail conditions and the late-yield watcher must be present, the
+  host mount must wait for `<body>`, and the shipped header must stay installable -
+  and 0 console errors
 
