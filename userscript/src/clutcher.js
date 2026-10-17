@@ -242,6 +242,7 @@
     wxLobby: false,
     wxSwirl: false,
     wxMode: "screen",
+    wxCoverHide: true,
     moOn: false,
     moCount: 40,
     moSize: 1.5,
@@ -1422,6 +1423,109 @@
     wx3dScene = null;
     wx3dKey = "";
   }
+  // ── "Under cover" gate ──
+  // The world paths draw particles in front of everything (the canvas
+  // fallbacks have no depth test and the harvested cloud drops rain wherever
+  // it likes), so weather indoors or right behind a wall reads as fake. Probe
+  // the map's own meshes instead of guessing: a solid box overhead is a roof,
+  // solid boxes on three sides is a room/corridor, and a big solid box just
+  // in front of the eye is cover you are tucked behind. Read-only, cached.
+  var wxOccl = { box: null, list: [], listAt: -1e9 };
+  var wxCover = false, wxCoverAt = -1e9, wxCoverElV = null, wxCoverTxt = "";
+  function wxCoverEl() {
+    const s = document.createElement("span");
+    s.className = "sk-val";
+    s.style.minWidth = "90px";
+    s.textContent = wxCoverTxt || (settings.wxCoverHide === false ? "off" : (wxCover ? "covered" : "clear"));
+    wxCoverElV = s;
+    return s;
+  }
+  function wxSetCover(txt, covered) {
+    wxCover = !!covered;
+    if (txt === wxCoverTxt) return;
+    wxCoverTxt = txt;
+    try { if (wxCoverElV && wxCoverElV.isConnected) wxCoverElV.textContent = txt; } catch (_) {}
+  }
+  function wxUnderCam(o, cam) {
+    for (let a = o; a; a = a.parent) if (a === cam) return true;
+    return false;
+  }
+  function wxOccluders(scene, now, cam) {
+    if (wxOccl.box && now - wxOccl.listAt < 1000) return wxOccl;
+    let boxCls = wxOccl.box && wxOccl.box.constructor;
+    let vecCls = wxOccl.vec && wxOccl.vec.constructor;
+    if (!boxCls || !vecCls) {
+      let b = null, v = null;
+      try {
+        scene.traverse((o) => {
+          if (!b && o && o.isMesh && o.geometry) {
+            try { if (!o.geometry.boundingBox && o.geometry.computeBoundingBox) o.geometry.computeBoundingBox(); } catch (_) {}
+            if (o.geometry.boundingBox) b = o.geometry.boundingBox;
+          }
+          if (!v && o && o.position && o.position.constructor && o.position.constructor !== Object) v = o.position;
+        });
+      } catch (_) {}
+      if (!b || !v) return null;
+      wxOccl.box = new b.constructor();
+      wxOccl.vec = new v.constructor();
+    }
+    if (!wxOccl.box || typeof wxOccl.box.setFromObject !== "function") return null;
+    const list = [];
+    try {
+      scene.traverse((o) => {
+        if (list.length >= 900 || !o || !o.isMesh || !o.geometry) return;
+        if (o.children && o.children.length) return;
+        if (cam && wxUnderCam(o, cam)) return; // viewmodel rides the camera
+        const nm = `${o.name || ""} ${(o.geometry && o.geometry.name) || ""}`;
+        if (/sky|cloud|fog|dome|nodraw|tools/i.test(nm)) return;
+        const box = wxOccl.box;
+        try { box.setFromObject(o); } catch (_) { return; }
+        const sx = box.max.x - box.min.x, sy = box.max.y - box.min.y, sz = box.max.z - box.min.z;
+        if (!isFinite(sx) || !isFinite(sy) || !isFinite(sz)) return;
+        // skip paper-thin decals and whole-map shells (terrain, skybox)
+        if (sy < 0.03 || sx * sy * sz > 60000) return;
+        list.push([box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z, sx * sy * sz]);
+      });
+    } catch (_) {}
+    wxOccl.list = list;
+    wxOccl.listAt = now;
+    return wxOccl;
+  }
+  function wxCovered(g, now) {
+    if (settings.wxCoverHide === false) { wxSetCover("off", false); return false; }
+    const p = g && g.player, scene = g && g.scene;
+    if (!p || !scene || !isFinite(p.x) || !isFinite(p.y) || !isFinite(p.z)) { wxSetCover("clear", false); return false; }
+    if (now - wxCoverAt < 180) return wxCover;
+    wxCoverAt = now;
+    const K = wxOccluders(scene, now, g.camera);
+    if (!K || !K.list.length) { wxSetCover("—", false); return false; }
+    const px = p.x, py = p.y, pz = p.z, eye = py + 1.6;
+    // horizontal forward: the camera's own axis when present, else player yaw
+    let fwx = 0, fwz = -1;
+    const cam = g.camera;
+    if (cam && cam.matrixWorld && cam.matrixWorld.elements) {
+      const e = cam.matrixWorld.elements;
+      fwx = -e[8]; fwz = -e[10];
+    } else if (isFinite(p.yaw)) { fwx = -Math.sin(p.yaw); fwz = -Math.cos(p.yaw); }
+    const fl = Math.hypot(fwx, fwz) || 1;
+    fwx /= fl; fwz /= fl;
+    const fx1 = px + fwx * 1.6, fz1 = pz + fwz * 1.6;
+    const inBox = (o, x, y, z) => x > o[0] && x < o[3] && y > o[1] && y < o[4] && z > o[2] && z < o[5];
+    let roof = false, front = false, sides = 0;
+    for (const o of K.list) {
+      if (!roof && o[1] > py + 1.5 && o[1] < py + 9 && px > o[0] && px < o[3] && pz > o[2] && pz < o[5]) roof = true;
+      if (!front && o[6] >= 1.5 && inBox(o, fx1, eye - 0.2, fz1)) front = true;
+      if (sides < 4) {
+        if (inBox(o, px + 2.2, eye - 0.4, pz)) sides++;
+        else if (inBox(o, px - 2.2, eye - 0.4, pz)) sides++;
+        else if (inBox(o, px, eye - 0.4, pz + 2.2)) sides++;
+        else if (inBox(o, px, eye - 0.4, pz - 2.2)) sides++;
+      }
+    }
+    const covered = roof || front || sides >= 3;
+    wxSetCover(covered ? "covered" : "clear", covered);
+    return covered;
+  }
   function tickWeather3D(g, dt, now) {
     try {
       const scene = g && g.scene;
@@ -1657,15 +1761,20 @@
     if (!settings.imOn || !playing) { imParts.length = 0; imRings.length = 0; imRings._on = false; }
     // weather
     const wxType = settings.wxType || "petals";
+    const wxWorld = (settings.wxMode || "screen") === "world";
+    // under cover (indoors, or tucked behind a wall) the world-anchored
+    // weather would draw over geometry it should be behind — skip it.
+    const wxHidden = !!(wxWorld && settings.wxOn && playing && g && wxCovered(g, now));
+    if (!wxWorld || !settings.wxOn) wxSetCover(settings.wxOn ? "on screen" : "off", false);
     // world-space weather: real THREE.Points in the map when harvestable,
     // otherwise the projection fallback below (still parallax-correct).
     let wxDidWorld = false;
-    if (settings.wxOn && (settings.wxMode || "screen") === "world" && playing && g && g.scene) {
+    if (settings.wxOn && wxWorld && !wxHidden && playing && g && g.scene) {
       wxDidWorld = tickWeather3D(g, dt, now);
     } else {
       wxRemove3D();
     }
-    if (!wxDidWorld && settings.wxOn && (settings.wxMode || "screen") === "world" && playing && g && g.camera) {
+    if (!wxDidWorld && settings.wxOn && wxWorld && !wxHidden && playing && g && g.camera) {
       const cam = g.camera;
       const Vec3 = wxVecCls || (wxVecCls = cam.position && cam.position.constructor);
       if (Vec3) {
@@ -1766,7 +1875,7 @@
     // manual 3D fallback: world-anchored points projected with pure math.
     // Needs only player pos + yaw/pitch (which the game always exposes) —
     // no camera object, no three.js. Same parallax, no depth testing.
-    if (!wxDidWorld && settings.wxOn && (settings.wxMode || "screen") === "world" && playing) {
+    if (!wxDidWorld && settings.wxOn && wxWorld && !wxHidden && playing) {
       const pl = g && g.player;
       if (pl && [pl.x, pl.y, pl.z, pl.yaw, pl.pitch].every((v) => isFinite(v))) {
         const n = Math.max(0, Math.min(220, Math.round(Number(settings.wxCount) || 80)));
@@ -1868,7 +1977,7 @@
         }
       } else if (wxmKey) { wxmKey = ""; wxm = []; }
     }
-    if (settings.wxOn && !wxDidWorld && (playing || settings.wxLobby)) {
+    if (settings.wxOn && !wxDidWorld && !wxHidden && (playing || settings.wxLobby)) {
       wxSetBackend("screen");
       const n = Math.max(0, Math.min(220, Math.round(Number(settings.wxCount) || 80)));
       const key = `${wxType}|${n}`;
@@ -4413,6 +4522,7 @@
               row("Type", null, selectField(settings.wxType || "petals", [["petals", "Petals"], ["snow", "Snow"], ["rain", "Rain"], ["embers", "Embers"], ["leaves", "Leaves"]], (v) => { settings.wxType = v; save(); })),
               row("Placement", "Screen overlay vs in the map", selectField(settings.wxMode || "screen", [["screen", "On screen"], ["world", "In map (3D)"]], (v) => { settings.wxMode = v; save(); })),
               row("Engine", "Live backend", wxStatusEl()),
+              row("Under cover", "Indoors / behind a wall", wxCoverEl()),
               row("Count", null, rangeField(settings.wxCount ?? 80, 0, 220, 10, (v) => { settings.wxCount = v; save(); })),
               row("Size", null, rangeField(settings.wxSize ?? 1, 0.3, 4, 0.1, (v) => { settings.wxSize = v; save(); })),
               row("Speed", null, rangeField(settings.wxSpeed ?? 1, 0.1, 5, 0.1, (v) => { settings.wxSpeed = v; save(); })),
@@ -4421,6 +4531,7 @@
               row("Tint", "Empty = type color", colorField(settings.wxTint || "#ffb3c6", (v) => { settings.wxTint = v; save(); })),
               row("Twinkle", "Blink in and out", toggleSwitch(settings.wxTwinkle, (v) => { settings.wxTwinkle = v; save(); })),
               row("Swirl", "Sway side to side", toggleSwitch(settings.wxSwirl, (v) => { settings.wxSwirl = v; save(); })),
+              row("Hide in cover", "No 3D weather indoors / behind walls", toggleSwitch(settings.wxCoverHide !== false, (v) => { settings.wxCoverHide = v; save(); })),
               row("In menu", "Also outside matches", toggleSwitch(settings.wxLobby, (v) => { settings.wxLobby = v; save(); }))
             ]),
           moduleCard("Motes", "Slow drifting specks.", settings.moOn,
