@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>sakura — document-start install fixture</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #14161c; color: #8b93a1; font: 14px/1.5 system-ui; }
+  #hint { position: fixed; left: 16px; bottom: 12px; z-index: 5; font-size: 12px; opacity: .6; }
+</style>
+<!--
+  Same bundle as harness.html, but loaded from <head> so it runs while the
+  document is still parsing — the timing a userscript gets at @run-at
+  document-start, which is the only timing the real install ever sees.
+
+  What this page is for: prove that the client's host lands in <body> and not as
+  a child of <html>. harness.html cannot show that, because its bundle loads
+  after the body has already been parsed.
+-->
+<script>
+try { localStorage.removeItem("sakura.minimal.v1"); } catch (_) {}
+</script>
+
+<script>
+// Boot-guard fixtures, same as harness.html (see the notes there).
+try {
+  const bootQ = new URLSearchParams(location.search);
+  if (bootQ.get("takeover")) window.__sakuraTakeover = "sakura-harness-old";
+  if (bootQ.get("dup")) window.__sk = { core: true, stop() { this.stopped = true; } };
+} catch (_) {}
+</script>
+
+<script src="../dist/sakura.clutch.next.dev.js"></script>
+</head>
+<body>
+
+<h1>document-start install</h1>
+<p>The bundle above ran before this body existed.</p>
+<div id="hint"></div>
+
+<script>
+window.addEventListener("load", () => {
+  const say = (t) => { const d = document.createElement("div"); d.textContent = t; document.getElementById("hint").appendChild(d); };
+  const hosts = document.querySelectorAll("#sakura-ui");
+  const host = hosts[0];
+  say("hosts: " + hosts.length);
+  say("host parent: " + (host ? host.parentElement.tagName : "none"));
+  say("engine: " + (window.__sk && window.__sk.core ? "core" : "bailed"));
+  say("tasks: " + (window.__sk && window.__sk.tasks ? window.__sk.tasks().length : "-"));
+  if (window.__sk && window.__sk.panel) {
+    window.__sk.panel.open();
+    say("panel open: " + window.__sk.panel.isOpen());
+  }
+  document.title = "start:" + hosts.length + ":" + (host ? host.parentElement.tagName : "none");
+});
+</script>
+</body>
+</html>

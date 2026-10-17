@@ -187,17 +187,34 @@
   SK.stop = function () { running = false; };
 
   // ── dom ───────────────────────────────────────────────────────────────────
-  var host = null, shadow = null, cssEl = null;
+  var host = null, shadow = null, cssEl = null, hostPending = false;
   function mount() {
     if (host && host.isConnected) return shadow;
-    host = document.createElement("div");
-    host.id = "sakura-ui";
-    host.style.cssText = "position:fixed;inset:0;z-index:2147483647;pointer-events:none;";
-    shadow = host.attachShadow({ mode: "open" });
-    cssEl = document.createElement("style");
-    cssEl.textContent = SK.css || "";
-    shadow.appendChild(cssEl);
-    (document.body || document.documentElement).appendChild(host);
+    if (host && hostPending) return shadow;
+    if (!host) {
+      host = document.createElement("div");
+      host.id = "sakura-ui";
+      host.style.cssText = "position:fixed;inset:0;z-index:2147483647;pointer-events:none;";
+      shadow = host.attachShadow({ mode: "open" });
+      cssEl = document.createElement("style");
+      cssEl.textContent = SK.css || "";
+      shadow.appendChild(cssEl);
+    }
+    // A document-start install runs before <body> exists. Appending to <html>
+    // instead would leave the host outside the box the page actually paints (the
+    // parser never reparents children it did not create), so wait for it.
+    if (document.body) {
+      document.body.appendChild(host);
+      hostPending = false;
+    } else if (document.readyState === "loading" && !hostPending) {
+      hostPending = true;
+      document.addEventListener("readystatechange", function () {
+        hostPending = false;
+        try { (document.body || document.documentElement).appendChild(host); } catch (_) {}
+      }, { once: true });
+    } else {
+      try { (document.body || document.documentElement).appendChild(host); } catch (_) {}
+    }
     return shadow;
   }
   function el(tag, cls, text) {

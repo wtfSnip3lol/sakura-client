@@ -69,6 +69,18 @@ window.game = {
 try { localStorage.removeItem("sakura.minimal.v1"); } catch (_) {}
 </script>
 
+<script>
+// Boot-guard fixtures. The guard decides whether to run before anything mounts,
+// so its inputs have to exist before the bundle's <script> below gets parsed:
+//   ?takeover=1  the old client (v2) is already on the page
+//   ?dup=1       another copy of the rewrite is already on the page
+try {
+  const bootQ = new URLSearchParams(location.search);
+  if (bootQ.get("takeover")) window.__sakuraTakeover = "sakura-harness-old";
+  if (bootQ.get("dup")) window.__sk = { core: true, stop() { this.stopped = true; } };
+} catch (_) {}
+</script>
+
 <!-- The bundle under test. Kept as the .dev build so stack traces are readable. -->
 <script src="../dist/sakura.clutch.next.dev.js"></script>
 
@@ -76,6 +88,9 @@ try { localStorage.removeItem("sakura.minimal.v1"); } catch (_) {}
 // Open the panel so the screenshot shows the real UI, then report state.
 window.addEventListener("load", () => {
   const say = (t) => { const d = document.createElement("div"); d.textContent = t; document.getElementById("hint").appendChild(d); };
+  // The boot guard can stand the bundle down (?dup=1 / ?takeover=1 fixtures).
+  // Say so instead of throwing at the missing engine.
+  if (!window.__sk || !window.__sk.panel) { say("boot stood down (guard)"); document.title = "bailed"; return; }
   try {
     window.__sk.panel.open();
     say("panel open: " + window.__sk.panel.isOpen());

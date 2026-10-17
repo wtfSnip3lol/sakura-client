@@ -109,6 +109,10 @@ So this cannot be half-done by accident:
 - nothing regresses in the meantime: the lifted tabs stay exactly as they are
   until their replacement exists and the verifier proves coverage. No settings
   key is deleted by this work.
+- **the rewrite is usable today, in parallel with the port** (decision: "use v2
+  now" = run the rewrite on the real site). It has to be installable and it must
+  never share a page with the old client - see *Using the rewrite in the real
+  game* at the end of this file.
 
 ## Pass 1 — engine, panel, bundler (done)
 
@@ -346,4 +350,82 @@ Verified in the harness (rewrite build):
   and from `panel.gen.js`, so the v2 panel stays at 314 rows), `ptrGuard` must be
   a new-schema key rather than a v2 one, and the spike probe must report client
   cost separately - and 0 console errors
+
+## Using the rewrite in the real game (installable now)
+
+Decision: the rewrite is v2 - it gets used on clutcher.io from here on, while the
+remaining groups are ported behind it (port first, delete the lifted menu after).
+
+Install: `dist/sakura.clutch.next.dev.js` is a complete userscript. Its header
+already targets `https://clutcher.io/*` at `@run-at document-start` with
+`@grant none`, so it installs as-is (Tampermonkey -> create a script -> paste the
+file, or install from its raw GitHub URL). A dev build on purpose: stack traces
+in the console are readable, and the whole file is one shared scope.
+
+One detail that only matters for a real install: at `document-start` there is no
+`<body>` yet, and `boot.js` mounts the host immediately. Attaching to `<html>`
+instead would put the panel outside the box the page paints (the parser never
+reparents children it did not create), so `mount()` waits for the parser's body
+and attaches there — the harness already ran with a body present, which is why
+this only shows up on a real page.
+
+One client per page, enforced by `src/next/guard.js` - the first module in the
+bundle, deliberately not an IIFE. A bare top-level `return` exits the bundle, so
+the decision is made before any module has registered a task, painter or
+listener:
+
+| state when the bundle boots | what happens |
+| --- | --- |
+| nothing else on the page | the client runs normally |
+| `window.__sk.core` already set (second install, or a reload that kept the old engine) | stands down, `console.warn` - the first copy owns the page |
+| `window.__sakuraTakeover` already set (the old client's loader is installed and v2 booted first) | stands down with a warning naming the loader |
+| v2 arrives *after* us (our `document-start` beats the loader's fetch at `DOMContentLoaded`) | the watcher sees the takeover within 500 ms, stops the engine and removes the host, so v2 is not fighting a half-dead panel |
+
+The loader (`src/loader.js`) is the one thing to disable while testing the
+rewrite: on clutcher.io it fetches `dist/sakura.clutcher.js` and v2 claims the
+page, so the rewrite would stand down every time. Disabling it also disables the
+kour/2v2 clients it injects; keep them in a second browser profile if both are
+needed at once.
+
+What works today (everything ported so far):
+
+- the panel itself - lifted MODS/SETTINGS tabs, byte-identical to v2, 314 rows
+- the **EXTRA** tab: perf dashboard/strip/graph, rebindable hotkeys, the pointer
+  guard card, the movement meter, config profiles
+- the whole HUD group: keystrokes, watermark, FPS counter, info pill, health/
+  armour bars, ammo readout - all drawn by the new engine
+- the cover probe (feeds the weather groups when they land) and the pointer guard
+  that fixes the camera flicks
+
+What is still dead (tiles render and toggle a setting, but no engine reads it):
+
+- crosshair group, fx/weather (+ motes), chams, world (fog/sky/lighting), game
+  (misc match helpers), stats - i.e. everything after the HUD group in *Port
+  order*. Expect those tiles to do nothing until their pass lands.
+
+Settings carry over: the store key is unchanged (`sakura.minimal.v1`, profiles in
+`sakura.profiles.v1`), so an existing v2 config - keybinds, HUD placement, colours
+- applies immediately. Nothing in the rewrite writes settings the v2 schema does
+not have.
+
+Quick check that it is alive: `window.__sk.core` is true, the EXTRA tab renders its
+cards, the FPS strip is drawn, `window.__sk.tasks().length` is 10. Console
+diagnostics stay available: `SK.pointer.state()`, `__sk.fps()`, `__sk.frameMs()`.
+
+Revert: disable/remove the rewrite userscript and re-enable the loader - no state
+is shared beyond the settings store, and no game object is written.
+
+Verified in the harness (real page loads, not unit stubs):
+
+- normal load: engine boots, panel opens, 10 tasks, exactly one `#sakura-ui` host,
+  0 warnings
+- `?dup=1` fixture (pretends another copy is running): host absent, no tasks, no
+  panel, one warning - the pre-existing `__sk` is left untouched
+- `?takeover=1` fixture (pretends v2 owns the page): `window.__sk` is never
+  created at all, host absent, warning names the loader
+- v2-arrives-late: setting `window.__sakuraTakeover` on a running page removes the
+  host and stops the engine within 500 ms, with one warning
+- 50 verifier checks pass - 5 new: the guard sits before core in the bundle and is
+  not an IIFE, both bail conditions and the late-yield watcher must be present, and
+  the shipped header must stay installable - and 0 console errors
 

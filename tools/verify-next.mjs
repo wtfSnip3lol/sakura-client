@@ -112,11 +112,29 @@ check("new keys are distinct", new Set(extKeys).size === extKeys.length, `${extK
 check("new keys land in the live schema", /Object\.assign\(DEFAULTS/.test(extDefaults));
 
 const bundler = fs.readFileSync(path.join(root, "userscript", "build-next.mjs"), "utf8");
-const wantOrder = ["defaults.gen.js", "defaults.ext.js", "core.js", "game.js",
+const wantOrder = ["guard.js", "defaults.gen.js", "defaults.ext.js", "core.js", "game.js",
   "features/pointer.js", "features/perf.js", "features/keys.js", "features/move.js", "features/profiles.js",
   "features/hud.js", "ext.js", "panel.gen.js", "boot.js"];
 const gotOrder = [...bundler.matchAll(/\["src\/next\/([^"]+)"/g)].map((m) => m[1]);
 check("bundle order: new schema before core, features before boot", JSON.stringify(gotOrder) === JSON.stringify(wantOrder), gotOrder.join(" "));
+
+// ── boot guard (what makes the rewrite installable next to the old client) ──
+const guard = read("guard.js");
+check("guard runs before any module has a side effect",
+  bundle.indexOf("skBootDup") > 0 && bundle.indexOf("skBootDup") < bundle.indexOf("SK.core"),
+  `guard at ${bundle.indexOf("skBootDup")}, core at ${bundle.indexOf("SK.core")}`);
+check("guard stands down on a duplicate instance",
+  /window\.__sk && window\.__sk\.core/.test(guard) && /^\s*return;/m.test(guard) && !/^\s*\(function/m.test(guard));
+check("guard stands down when the old client owns the page",
+  /window\.__sakuraTakeover/.test(guard) && /old client \(v2\) owns this page/.test(guard));
+check("guard yields if the old client arrives later",
+  /setInterval\(/.test(guard) && /clearInterval\(/.test(guard) && /__sk\.stop/.test(guard) && /sakura-ui/.test(guard));
+check("dev build is installable as-is",
+  bundler.includes("@match        https://clutcher.io/*") && bundler.includes("@run-at       document-start") &&
+  bundler.includes("@grant        none") && bundler.includes("@noframes"));
+check("host mount survives a document-start install",
+  /document\.body\) \{\s*\n\s*document\.body\.appendChild\(host\)/.test(core) &&
+  /readyState === "loading"/.test(core) && /readystatechange/.test(core) && /hostPending/.test(core));
 
 check("hotkeys are a registry, not a hard-wired key", /function register\(/.test(keys) && /hkMenu/.test(keys) && !/e\.code === "Insert"/.test(boot));
 check("ext tab uses the panel's own vocabulary", /moduleCard\(/.test(ext) && /\brow\(/.test(ext) && !/class="sk-card"/.test(ext));

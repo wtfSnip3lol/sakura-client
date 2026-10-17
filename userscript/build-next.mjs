@@ -26,8 +26,11 @@ const checkOnly = args.includes("--check");
 
 // Order matters: defaults define DEFAULTS, core reads it, boot aliases names the
 // panel resolves at call time. defaults.ext.js must sit between the generated
-// schema and core, so the new modules' settings are part of the schema.
+// schema and core, so the new modules' settings are part of the schema. guard.js
+// is first on purpose: it can stand the whole bundle down before any module has
+// a side effect (duplicate install, or the old client already on the page).
 const MODULES = [
+  ["src/next/guard.js", "boot guard (one instance, no fight with the old client)"],
   ["src/next/defaults.gen.js", "settings schema (generated)"],
   ["src/next/defaults.ext.js", "settings schema (new modules)"],
   ["src/next/core.js", "engine core"],
