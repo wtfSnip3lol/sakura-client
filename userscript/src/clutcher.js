@@ -197,8 +197,6 @@
     mnRad: null,
     mnScale: 1,
     uiMotion: true,
-    // Keeps the client's own pointer-lock juggling from moving the camera
-    ptrGuard: true,
     // Fire FX + atmosphere (visual only — overlay canvas cosmetics)
     atTracers: false,
     trStyle: "line",
@@ -3970,7 +3968,6 @@
         row("Free keystrokes position", "Place with X / Y below", toggleSwitch(settings.ksFree, (v) => { settings.ksFree = v; save(); })),
         row("Free mouse on open", "Unlock cursor without pausing", toggleSwitch(settings.menuMouse !== false, (v) => { settings.menuMouse = v; save(); })),
         row("Re-lock on close", "Capture mouse when menu closes", toggleSwitch(settings.lockOnClose !== false, (v) => { settings.lockOnClose = v; save(); })),
-        row("Stabilise pointer", "Keep the freed cursor from dragging the camera", toggleSwitch(settings.ptrGuard !== false, (v) => { settings.ptrGuard = v; save(); })),
         row("Keystrokes X %", null, rangeField(settings.ksX, 0, 100, 1, (v) => { settings.ksX = v; save(); })),
         row("Keystrokes Y %", null, rangeField(settings.ksY, 0, 100, 1, (v) => { settings.ksY = v; save(); })),
         row("Tip", null, note("While this menu is open, enabled HUD elements with dashed outlines can be dragged directly on screen."))

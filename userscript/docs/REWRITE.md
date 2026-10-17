@@ -274,8 +274,11 @@ on `window`**, before the game's own listeners:
 - events raised inside the client's own shadow root are exempt (they retarget to
   the host element), so the panel, its hover states and the drag editor are
   untouched
-- `ptrGuard` is a real schema key with a new row ("Stabilise pointer" in the same
-  card as the lock rows) in both panels, so the guard itself can be switched off
+- `ptrGuard` lives in `defaults.ext.js` with the rest of the new schema, and its
+  control is the **Pointer card in the rewrite's EXTRA tab** - the v2 panel is
+  left byte-identical (its guard is unconditional, exactly like before this
+  change, so the "same UI" reference cannot drift). The card also shows the two
+  counters live.
 
 Known limit: movement over the client's own panel still reaches the game. That
 event has to be delivered to the panel, and a capture-phase stop would kill the
@@ -307,9 +310,12 @@ Verified in the harness (rewrite build):
   (`last: "lock-transition"`) and lets the third through
 - movement dispatched on the client's own host still reaches the host's own
   listener, so the panel is unaffected (and, per the known limit, the game too)
-- `ptrGuard = false` lets movement through unchanged
-- 45 verifier checks pass - 7 new: both clients must carry the same rule,
-  `ptrGuard` must be a v2 schema key (not an invented one) and must have a row in
-  both panels, and the spike probe must report client cost separately - and 0
-  console errors
+- the Pointer card's switch flips `aria-checked` and `settings.ptrGuard` together:
+  off -> the same movement reaches the game, on -> it does not, and the live
+  `Blocked` row counts 2 -> 3 with `cursor-freed`
+- 45 verifier checks pass - 7 new: both clients must carry the same rule, the
+  guard's row must be rewrite-only (present in `ext.js`, absent from the v2 panel
+  and from `panel.gen.js`, so the v2 panel stays at 314 rows), `ptrGuard` must be
+  a new-schema key rather than a v2 one, and the spike probe must report client
+  cost separately - and 0 console errors
 

@@ -153,8 +153,8 @@ check("pointer guard is armed for both directions of a lock change", ptrHooks.ev
 check("pointer guard only fires for the client's own freeing", /menuOpen\(\) && !document\.pointerLockElement && inMatch\(\)/.test(pointer));
 check("pointer guard exempts the client's own UI", /target === SK\.host\(\)/.test(pointer));
 check("v2 client carries the same guard", ["var ptrArmed", "cursor-freed", "lock-transition", "ptrGuard !== false"].every((s) => v2Ptr.includes(s)) && ptrHooks.every((s) => v2Ptr.includes(s)));
-check("ptrGuard is a v2 schema key, not an invented one", v2Keys.has("ptrGuard") && !extKeys.includes("ptrGuard"));
-check("the guard has a panel row in both clients", panel.includes("Stabilise pointer") && V2.includes("Stabilise pointer"));
+check("ptrGuard is a new-schema key, absent from the v2 panel", extKeys.includes("ptrGuard") && !v2Keys.has("ptrGuard"));
+check("the guard's row is rewrite-only", ext.includes("ptrGuard") && ext.includes("pointerCard") && !V2.includes("Stabilise pointer") && !panel.includes("Stabilise pointer"));
 check("slow-frame probe separates client cost from the frame gap", /__sakuraSpikes/.test(V2) && /spikeNote\(gap, tickMs \+/.test(V2));
 
 console.log(failures ? `\n${failures} check(s) FAILED` : "\nall checks passed");

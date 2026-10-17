@@ -31,5 +31,11 @@ Object.assign(DEFAULTS, {
   mvReady: 2,
   mvScale: 7,
   mvAutoScale: true,
-  mvSpeedText: true
+  mvSpeedText: true,
+
+  // Pointer hygiene: the guard that keeps the client's own pointer-lock
+  // juggling (freed cursor + re-lock delta) from moving the camera. The v2
+  // client has the same guard but no row for it, so the key lives here with
+  // the rest of the new schema.
+  ptrGuard: true
 });

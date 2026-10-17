@@ -206,13 +206,41 @@
     ]);
   }
 
+  // ── Pointer hygiene ──────────────────────────────────────────────────────
+  // The fix for the camera flicks. It has no v2 equivalent: the v2 client runs
+  // the same guard, but unconditionally and with no row, so the switch and the
+  // counters live here instead of in the lifted panel.
+  function pointerCard() {
+    var s = S();
+    var blocked = val("0");
+    live(blocked, function (el) {
+      var st = SK.pointer.state();
+      el.textContent = String(st.blocked) + (st.last ? "  " + st.last : "");
+      el.style.color = st.blocked ? "#7dff8a" : "";
+    });
+
+    var cursor = val("—");
+    live(cursor, function (el) {
+      var st = SK.pointer.state();
+      el.textContent = st.locked ? "locked" : st.freed ? "freed for menu" : "free";
+      if (st.armed) el.textContent += " · transition";
+    });
+
+    return moduleCard("Pointer", "The menu frees the cursor on purpose; this keeps that cursor - and the delta a re-lock carries - from moving the camera.", s.ptrGuard !== false, function (v) {
+      s.ptrGuard = v; SK.save();
+    }, [
+      row("Blocked", "Look events kept from the game since load", blocked),
+      row("Cursor", "Live pointer state", cursor)
+    ]);
+  }
+
   // ── pane + tab ───────────────────────────────────────────────────────────
   function paneCards() {
     var intro = document.createElement("div");
     intro.className = "sk-mdesc";
     intro.style.cssText = "padding:0 2px 8px;";
     intro.textContent = "New modules — features the v2 client never had, running on the rewrite's engine.";
-    return [intro, perfCard(), hotkeyCard(), moveCard(), profileCard()];
+    return [intro, perfCard(), hotkeyCard(), pointerCard(), moveCard(), profileCard()];
   }
 
   var mountedOn = null, tabBtn = null, pane = null, tabsRef = [];
