@@ -53,6 +53,22 @@ window.game = {
 };
 </script>
 
+<!-- The game's own HUD DOM: the client reads these, never writes them. -->
+<div id="hudfake" style="position:fixed;left:-9999px;top:0">
+  <div id="hp">62</div>
+  <div id="armor">41</div>
+  <div id="ammo">7</div>
+  <div id="reserve">30</div>
+  <div id="hitmark"></div>
+</div>
+<script>window.game.player.kills = 0;</script>
+
+<script>
+// Deterministic harness: the client's store is wiped before the bundle loads, so
+// every run starts from DEFAULTS instead of inheriting the last test's values.
+try { localStorage.removeItem("sakura.minimal.v1"); } catch (_) {}
+</script>
+
 <!-- The bundle under test. Kept as the .dev build so stack traces are readable. -->
 <script src="../dist/sakura.clutch.next.dev.js"></script>
 

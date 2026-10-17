@@ -48,13 +48,16 @@ function wxCoverEl() {
   return el;
 }
 
-// Session counters (the HUD that reads them lands with the hud pass).
-var hudSes = { t0: 0, kills: 0, deaths: 0, lastKills: null };
+// Session counters (the panel's stats card reads this object; the HUD group
+// features/hud.js maintains it, exactly as the v2 loop did).
+var hudSes = { t0: 0, kills: 0, deaths: 0, wasAlive: true, lastKills: null };
 function stReset() {
   hudSes.t0 = 0;
   hudSes.kills = 0;
   hudSes.deaths = 0;
+  hudSes.wasAlive = true;
   hudSes.lastKills = null;
+  if (SK.hud && SK.hud.resetShots) SK.hud.resetShots();
 }
 
 // Presets: the row still records the choice in settings; the styling lands with

@@ -186,3 +186,62 @@ Three bugs this pass caught:
 Not backported: these modules are rewrite-native. The v2 client (still the
 shipped payload) has none of them until the parity flip, or until they are
 deliberately backported.
+
+## Pass 3 â€” HUD group (done)
+
+Port of the v2 client's overlay HUD: keystrokes (`clutcher.js` 619-670), the pill
+helpers (912-969), watermark / FPS / clock+session / bars / ammo (1121-1324) and
+the drag editor (552-616) â€” one file, `src/next/features/hud.js`.
+
+This is a *port*, not a rewrite, and deliberately so: the drawing is the v2
+drawing (same literals: `rgba(22,8,16,0.7)` pills, `#ffb3c6` text, `#7dff8a` HP,
+`#ff4444` low, the same key-cap geometry). The verifier now fails if any of those
+literal signatures disappear, so a future "cleaner" repaint cannot silently break
+UI parity.
+
+What changed structurally:
+
+- all six widgets are **one painter** on `SK.paint`, so there is still exactly one
+  canvas, one clear and one rAF loop for the whole client
+- the painter is handed `(ctx, o, dt, ts)` instead of closing over a global loop,
+  which is what the FPS EMA, the session timer and the watermark clock need
+- session/shots/hits tracking runs **before** the in-match gate and outside every
+  widget branch, exactly like the v2 loop: switch every HUD row off and the
+  counters still accrue (the verifier asserts that ordering)
+- the drag editor only had to supply the *effect*: `setMenuOpen` in the lifted
+  panel already flips `hudEdit`, the overlay's `pointer-events` and the outlines,
+  so dragging writes `ksFree/ksX/ksY` and `fpsFree/fpsX/fpsY` into the same
+  settings the drawer reads
+
+Game contact is read-only, as always: `player.kills` / `player.alive` for the
+session, and the game's own HUD DOM (`#hp`, `#armor`, `#ammo`, `#reserve`,
+`#hitmark`) for the bars, ammo and hit counting. Nothing is written back.
+
+Verified in the browser (harness now wipes the client's store on load, so every
+run starts from DEFAULTS instead of inheriting the last test's values):
+
+- colour census over the overlay finds every signature: pill fills, `#ffb3c6`
+  text, `#7dff8a` HP and `#7db8f0` armor pixels, graph line
+- pixel probes: held `W` cap is accent-lit while idle `A` is dark, the gap
+  between caps is empty
+- FPS EMA live (142), 120-sample history feeding the graph
+- real input events: LMB x2 + RMB -> `2` and `1` CPS; held LMB -> shots; the
+  game's `#hitmark.pop` -> hits
+- session: `player.kills` 2 -> 3 counted cumulatively, `alive` flip -> deaths 1
+- drag editor: mousedown on the key block + mousemove moved the rect from
+  y=680 to y=372 and wrote `ksFree: true, ksY: 48`; overlay `pointer-events`
+  follows the menu (`auto` open, `none` closed)
+- 36 verifier checks pass, 0 console errors
+
+Two things this pass caught:
+
+1. **A ghost in the harness, not the client.** The overlay went blank mid-test
+   with no page errors. The cause was the *previous* test's settings surviving in
+   `localStorage`: `perfAuto` with an unreachable target, so auto quality was
+   (correctly) pausing every cosmetic task â€” including the overlay painter. The
+   harness now wipes the store per load, which makes verification reproducible.
+2. **The scheduler hides painter throws by design.** A throwing task is caught
+   and disabled with a warning, so the only symptom is a stopped widget and a
+   stale canvas. Worth remembering when a widget "just stops": check the console
+   for `task overlay-paint threw`, not the page's error list.
+

@@ -36,6 +36,7 @@ const MODULES = [
   ["src/next/features/keys.js", "feature: rebindable hotkeys"],
   ["src/next/features/move.js", "feature: movement meter"],
   ["src/next/features/profiles.js", "feature: config profiles"],
+  ["src/next/features/hud.js", "feature: HUD group (keystrokes, watermark, FPS, clock, bars, ammo)"],
   ["src/next/ext.js", "feature: EXTRA tab in the Lunar panel"],
   ["src/next/panel.gen.js", "panel (generated, lifted verbatim)"],
   ["src/next/boot.js", "boot seam"]

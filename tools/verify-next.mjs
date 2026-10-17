@@ -101,7 +101,8 @@ const extDefaults = read("defaults.ext.js");
 const ext = read("ext.js");
 const feat = (f) => read(`features/${f}`);
 const perf = feat("perf.js"), keys = feat("keys.js"), move = feat("move.js"), profiles = feat("profiles.js");
-const newFeatures = perf + keys + move + profiles + ext;
+const hud = feat("hud.js");
+const newFeatures = perf + keys + move + profiles + hud + ext;
 
 const extKeys = keysOf(extDefaults);
 const shadowed = extKeys.filter((k) => v2Keys.has(k));
@@ -112,7 +113,7 @@ check("new keys land in the live schema", /Object\.assign\(DEFAULTS/.test(extDef
 const bundler = fs.readFileSync(path.join(root, "userscript", "build-next.mjs"), "utf8");
 const wantOrder = ["defaults.gen.js", "defaults.ext.js", "core.js", "game.js",
   "features/perf.js", "features/keys.js", "features/move.js", "features/profiles.js",
-  "ext.js", "panel.gen.js", "boot.js"];
+  "features/hud.js", "ext.js", "panel.gen.js", "boot.js"];
 const gotOrder = [...bundler.matchAll(/\["src\/next\/([^"]+)"/g)].map((m) => m[1]);
 check("bundle order: new schema before core, features before boot", JSON.stringify(gotOrder) === JSON.stringify(wantOrder), gotOrder.join(" "));
 
@@ -123,6 +124,22 @@ check("new tasks register through the engine", ["perf-sample", "hotkey-conflicts
 check("auto quality can pause cosmetic work globally", /SK\.stopCosmetic/.test(core) && /t\.prio === 1 && \(cosmeticOff/.test(core) && /stopCosmetic\(true\)/.test(perf));
 check("profiles persist under their own key", /sakura\.profiles\./.test(profiles) && /localStorage\.setItem/.test(profiles));
 check("new features read the game, never write to it", !/(player|map|scene|hud|camera)\(\s*\)\s*\.\s*\w+\s*=/.test(newFeatures) && !/window\.game\s*\.\s*\w+\s*=/.test(newFeatures));
+
+// ── HUD group: a port, so it must still be the v2 drawing ──────────────────
+// These are the v2 literals a rewrite would quietly lose (panel pill fill, the
+// accent, the low-HP red, the key-cap geometry). If a future edit repaints the
+// HUD "cleanly", the UI stops matching and this fails.
+const V2_HUD = ["rgba(22,8,16,0.7)", "rgba(255,107,157,0.35)", "rgba(255,107,157,0.85)", "#ffb3c6",
+  "#7dff8a", "#7db8f0", "#ff4444", '"KeyW"', '"mouse1"', '"Space"', "hudRects"];
+const lostHud = V2_HUD.filter((s) => !hud.includes(s));
+check("hud group keeps the v2 drawing", lostHud.length === 0, lostHud.join(", "));
+check("hud covers every widget in the group", ["drawKeys", "hudWm", "hudFps", "hudInfo", "hudBars", "hudAmmo"].every((s) => hud.includes(s)));
+// Counters must accrue whether or not a widget is switched on: tracking is
+// called before the in-match gate, not inside a widget branch.
+check("hud counters are independent of the widget toggles", /trackCombat\(\);\s*\n\s*if \(!playing\) return false;/.test(hud));
+check("hud drag editor writes the free positions", /ksFree = true/.test(hud) && /fpsFree = true/.test(hud) && /SK\.save\(\)/.test(hud));
+check("panel session reset clears the combat counters", /SK\.hud\.resetShots/.test(boot));
+check("hud is one painter, not another canvas", (hud.match(/SK\.paint\(/g) || []).length === 1 && !/createElement\("canvas"\)/.test(hud));
 
 console.log(failures ? `\n${failures} check(s) FAILED` : "\nall checks passed");
 process.exit(failures ? 1 : 0);

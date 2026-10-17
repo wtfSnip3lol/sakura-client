@@ -142,12 +142,12 @@
   SK.task({
     name: "overlay-paint", hz: 0, prio: 1,
     when: function () { return painters.length > 0; },
-    fn: function () {
+    fn: function (dt, ts) {
       var o = SK.overlay();
       var ctx = o.begin();
       var drew = false;
       for (var i = 0; i < painters.length; i++) {
-        if (painters[i].fn(ctx, o) !== false) drew = true;
+        if (painters[i].fn(ctx, o, dt, ts) !== false) drew = true;
       }
       if (drew) o.end();
     }
