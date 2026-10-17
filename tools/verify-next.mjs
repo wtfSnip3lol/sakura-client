@@ -102,7 +102,8 @@ const ext = read("ext.js");
 const feat = (f) => read(`features/${f}`);
 const perf = feat("perf.js"), keys = feat("keys.js"), move = feat("move.js"), profiles = feat("profiles.js");
 const hud = feat("hud.js");
-const newFeatures = perf + keys + move + profiles + hud + ext;
+const pointer = feat("pointer.js");
+const newFeatures = perf + keys + move + profiles + hud + pointer + ext;
 
 const extKeys = keysOf(extDefaults);
 const shadowed = extKeys.filter((k) => v2Keys.has(k));
@@ -112,7 +113,7 @@ check("new keys land in the live schema", /Object\.assign\(DEFAULTS/.test(extDef
 
 const bundler = fs.readFileSync(path.join(root, "userscript", "build-next.mjs"), "utf8");
 const wantOrder = ["defaults.gen.js", "defaults.ext.js", "core.js", "game.js",
-  "features/perf.js", "features/keys.js", "features/move.js", "features/profiles.js",
+  "features/pointer.js", "features/perf.js", "features/keys.js", "features/move.js", "features/profiles.js",
   "features/hud.js", "ext.js", "panel.gen.js", "boot.js"];
 const gotOrder = [...bundler.matchAll(/\["src\/next\/([^"]+)"/g)].map((m) => m[1]);
 check("bundle order: new schema before core, features before boot", JSON.stringify(gotOrder) === JSON.stringify(wantOrder), gotOrder.join(" "));
@@ -140,6 +141,21 @@ check("hud counters are independent of the widget toggles", /trackCombat\(\);\s*
 check("hud drag editor writes the free positions", /ksFree = true/.test(hud) && /fpsFree = true/.test(hud) && /SK\.save\(\)/.test(hud));
 check("panel session reset clears the combat counters", /SK\.hud\.resetShots/.test(boot));
 check("hud is one painter, not another canvas", (hud.match(/SK\.paint\(/g) || []).length === 1 && !/createElement\("canvas"\)/.test(hud));
+
+// ── pointer hygiene: the camera-flick fix, in both clients ─────────────────
+// What gets swallowed has to be the same condition in both clients, or the
+// rewrite quietly loses the fix at the parity flip. The three anchors below are
+// the rule: arm on a lock change, eat the transition delta, and only take input
+// away from the game while the client is the reason the cursor is free.
+const v2Ptr = V2.slice(V2.indexOf("var ptrArmed"), V2.indexOf("function setMenuOpen"));
+const ptrHooks = ["pointerlockchange", "mousemove", "pointermove", "stopImmediatePropagation"];
+check("pointer guard is armed for both directions of a lock change", ptrHooks.every((s) => pointer.includes(s)) && /armed = 2/.test(pointer));
+check("pointer guard only fires for the client's own freeing", /menuOpen\(\) && !document\.pointerLockElement && inMatch\(\)/.test(pointer));
+check("pointer guard exempts the client's own UI", /target === SK\.host\(\)/.test(pointer));
+check("v2 client carries the same guard", ["var ptrArmed", "cursor-freed", "lock-transition", "ptrGuard !== false"].every((s) => v2Ptr.includes(s)) && ptrHooks.every((s) => v2Ptr.includes(s)));
+check("ptrGuard is a v2 schema key, not an invented one", v2Keys.has("ptrGuard") && !extKeys.includes("ptrGuard"));
+check("the guard has a panel row in both clients", panel.includes("Stabilise pointer") && V2.includes("Stabilise pointer"));
+check("slow-frame probe separates client cost from the frame gap", /__sakuraSpikes/.test(V2) && /spikeNote\(gap, tickMs \+/.test(V2));
 
 console.log(failures ? `\n${failures} check(s) FAILED` : "\nall checks passed");
 process.exit(failures ? 1 : 0);

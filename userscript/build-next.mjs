@@ -32,6 +32,7 @@ const MODULES = [
   ["src/next/defaults.ext.js", "settings schema (new modules)"],
   ["src/next/core.js", "engine core"],
   ["src/next/game.js", "game adapter"],
+  ["src/next/features/pointer.js", "feature: pointer hygiene (camera flicks)"],
   ["src/next/features/perf.js", "feature: perf dashboard + overlay painters"],
   ["src/next/features/keys.js", "feature: rebindable hotkeys"],
   ["src/next/features/move.js", "feature: movement meter"],

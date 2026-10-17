@@ -245,3 +245,71 @@ Two things this pass caught:
    stale canvas. Worth remembering when a widget "just stops": check the console
    for `task overlay-paint threw`, not the page's error list.
 
+## Camera flicks (v2 fix + the same guard in the rewrite, done)
+
+Reported from a live match: "hella camera flicks when playing". Nothing in the
+client moves the camera (the only game-object write in the whole v2 client is
+`renderer.toneMappingExposure`), so the flick had to be input, not view. The
+pointer-lock handling is the one place the client fights the game for the mouse,
+and both of its behaviours are ON by default:
+
+1. **"Free mouse on open"** (`menuMouse`) calls `exitPointerLock()` so the cursor
+   can work the menu without the game pausing. The game keeps reading mouse
+   movement as look input while it is unlocked - that is the whole point of not
+   pausing - so sweeping the cursor across the screen to reach the menu drags the
+   view with it.
+2. **"Re-lock on close"** (`lockOnClose`) calls `requestPointerLock()` on the game
+   canvas when the menu closes. Every lock transition delivers one movement event
+   carrying the delta accumulated while unlocked, which the game applies in a
+   single step.
+
+The fix is one routine, identical in both clients (v2 inline, rewrite in
+`src/next/features/pointer.js`), swallowing that movement in the **capture phase
+on `window`**, before the game's own listeners:
+
+- a `pointerlockchange` arms two events, covering both directions: the release
+  that frees the cursor and the re-lock that takes it back
+- movement is dropped only while the client is the reason the cursor is free:
+  `menuOpen && !document.pointerLockElement` and the game is live
+- events raised inside the client's own shadow root are exempt (they retarget to
+  the host element), so the panel, its hover states and the drag editor are
+  untouched
+- `ptrGuard` is a real schema key with a new row ("Stabilise pointer" in the same
+  card as the lock rows) in both panels, so the guard itself can be switched off
+
+Known limit: movement over the client's own panel still reaches the game. That
+event has to be delivered to the panel, and a capture-phase stop would kill the
+panel's own handlers with it. The panel is small and the sweep that matters - the
+cursor crossing the game area - is covered.
+
+Diagnostics, both console-callable:
+
+- `__sakuraPtr()` (v2) / `SK.pointer.state()` (rewrite): `blocked`, `last`
+  (`lock-transition` / `cursor-freed`), `armed`, `freed`, `locked`
+- `__sakuraSpikes()` (v2): every frame over 25 ms with the client's own cost split
+  out (`our` = ticks + overlay draw, not the frame gap), so a hitch can be
+  attributed to the client or to the game/GPU. Only logs when `devLog` is on.
+
+A/B checks that isolate the cause during one match, with no rebuild:
+
+- turn **Free mouse on open** off: if the flicks stop, it is case 1
+- turn **Re-lock on close** off: if they stop, it is case 2
+- if `__sakuraPtr().blocked` climbs while it still flicks, the game's look reader
+  sits upstream of the capture listener (a window-capture listener registered
+  before the client) and the next step is a virtual cursor over a still-locked
+  pointer
+
+Verified in the harness (rewrite build):
+
+- menu open + live + unlocked: a `mousemove` on `document.body` never reaches a
+  game-side listener, `defaultPrevented` true, `last: "cursor-freed"`
+- a synthetic `pointerlockchange` swallows exactly two movements
+  (`last: "lock-transition"`) and lets the third through
+- movement dispatched on the client's own host still reaches the host's own
+  listener, so the panel is unaffected (and, per the known limit, the game too)
+- `ptrGuard = false` lets movement through unchanged
+- 45 verifier checks pass - 7 new: both clients must carry the same rule,
+  `ptrGuard` must be a v2 schema key (not an invented one) and must have a row in
+  both panels, and the spike probe must report client cost separately - and 0
+  console errors
+

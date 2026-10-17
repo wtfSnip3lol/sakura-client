@@ -197,6 +197,8 @@
     mnRad: null,
     mnScale: 1,
     uiMotion: true,
+    // Keeps the client's own pointer-lock juggling from moving the camera
+    ptrGuard: true,
     // Fire FX + atmosphere (visual only — overlay canvas cosmetics)
     atTracers: false,
     trStyle: "line",
@@ -3396,18 +3398,41 @@
   // ── Main loop ──
   var loopLast = 0;
   var overlayDirty = false;
+  // Slow-frame probe: records hitches and how much of each one was this client's
+  // own work (ticks + overlay draw). A spike that is all game-side points at the
+  // renderer or the GPU rather than at the client — the difference between the
+  // client dragging the camera around and the game hitching on its own.
+  // Read it with __sakuraSpikes() in the console.
+  var spike = { count: 0, worst: 0, ourWorst: 0, at: 0, list: [] };
+  function spikeNote(gap, ours) {
+    if (!(gap > 25)) return;
+    spike.count++;
+    spike.at = Date.now();
+    if (gap > spike.worst) spike.worst = gap;
+    if (ours > spike.ourWorst) spike.ourWorst = ours;
+    spike.list.push({ gap: Math.round(gap), our: Math.round(ours * 10) / 10, at: spike.at });
+    if (spike.list.length > 12) spike.list.shift();
+    if (settings.devLog === true) console.log("[sakura] slow frame " + Math.round(gap) + "ms (client " + Math.round(ours * 10) / 10 + "ms)");
+  }
+  try {
+    window.__sakuraSpikes = function () {
+      return { count: spike.count, worst: Math.round(spike.worst), ourWorst: Math.round(spike.ourWorst * 10) / 10, list: spike.list.slice() };
+    };
+  } catch (_) {}
   function loop(now) {
     try {
       if (window.__sakuraTakeover !== SAKURA_ID) return;
       window.__sakuraBeat = Date.now();
     } catch (_) {}
     requestAnimationFrame(loop);
-    const dt = Math.min(0.1, (now - (loopLast || now)) / 1000);
+    const gap = now - (loopLast || now);
+    const dt = Math.min(0.1, gap / 1000);
     loopLast = now;
     const g = getGame();
 
     if (!g) return;
 
+    const tickAt = performance.now();
     worldTick(g);
     tickChams(g, now);
     tickViewmodel(g);
@@ -3416,6 +3441,7 @@
     tickGameCss();
     stTrackCombat(g);
     tickMotionBlur(g);
+    const tickMs = performance.now() - tickAt;
 
     const inMatch = liveMatch(g);
 
@@ -3438,10 +3464,12 @@
         ctx.clearRect(0, 0, size.w, size.h);
         overlayDirty = false;
       }
+      spikeNote(gap, tickMs);
       return;
     }
     overlayDirty = true;
 
+    const drawAt = performance.now();
     sizeOverlay();
     syncLayers();
     ctx.clearRect(0, 0, size.w, size.h);
@@ -3453,6 +3481,7 @@
     if ((settings.atTracers || settings.mzOn || settings.imOn || settings.wxOn || settings.moOn) && (playing || settings.wxLobby)) drawAtmoFX(rect, now, dt, g);
     if (settings.kbOn && playing) tickKillBanner(rect, now, dt);
     if (settings.scOn && playing && scopedNow) drawScope(rect, g);
+    spikeNote(gap, tickMs + (performance.now() - drawAt));
   }
 
   // ── Sakura logo ──
@@ -3941,6 +3970,7 @@
         row("Free keystrokes position", "Place with X / Y below", toggleSwitch(settings.ksFree, (v) => { settings.ksFree = v; save(); })),
         row("Free mouse on open", "Unlock cursor without pausing", toggleSwitch(settings.menuMouse !== false, (v) => { settings.menuMouse = v; save(); })),
         row("Re-lock on close", "Capture mouse when menu closes", toggleSwitch(settings.lockOnClose !== false, (v) => { settings.lockOnClose = v; save(); })),
+        row("Stabilise pointer", "Keep the freed cursor from dragging the camera", toggleSwitch(settings.ptrGuard !== false, (v) => { settings.ptrGuard = v; save(); })),
         row("Keystrokes X %", null, rangeField(settings.ksX, 0, 100, 1, (v) => { settings.ksX = v; save(); })),
         row("Keystrokes Y %", null, rangeField(settings.ksY, 0, 100, 1, (v) => { settings.ksY = v; save(); })),
         row("Tip", null, note("While this menu is open, enabled HUD elements with dashed outlines can be dragged directly on screen."))
@@ -4870,6 +4900,58 @@
       panelEl.classList.toggle("nomotion", settings.uiMotion === false);
     } catch (_) {}
   }
+  // ── Pointer hygiene ───────────────────────────────────────────────────────
+  // Two things yank the camera around while playing, both caused by the client's
+  // own pointer-lock juggling:
+  //   1. "Free mouse on open" releases pointer lock so the cursor can work the
+  //      menu, but the game keeps reading mouse movement as look input while it
+  //      is unlocked — so walking the cursor across the screen drags the view.
+  //   2. Every pointer-lock transition delivers a movement event carrying the
+  //      delta accumulated while unlocked, which the game applies in one go.
+  // Both are swallowed in the capture phase, before the game's own listeners.
+  // Movement over the client's own UI is left alone, so hovering, dragging and
+  // the panel all keep working.
+  var ptrArmed = 0, ptrArmedAt = 0, ptrBlocked = 0, ptrLastReason = "";
+  function ptrGuardOn() { return settings.ptrGuard !== false; }
+  function ptrWhyBlocked(e) {
+    if (!ptrGuardOn()) return "";
+    if (!e || typeof e.movementX !== "number") return "";
+    if (e.target && e.target === host) return "";
+    if (ptrArmed > 0) {
+      if (Date.now() - ptrArmedAt < 400) { ptrArmed--; return "lock-transition"; }
+      ptrArmed = 0;
+    }
+    if (menuOpen && !document.pointerLockElement && isPlaying(getGame())) return "cursor-freed";
+    return "";
+  }
+  function ptrSwallowMove(e) {
+    const why = ptrWhyBlocked(e);
+    if (!why) return;
+    ptrBlocked++;
+    ptrLastReason = why;
+    e.stopImmediatePropagation();
+    e.preventDefault();
+  }
+  function ptrArmTransition() {
+    ptrArmed = 2;
+    ptrArmedAt = Date.now();
+  }
+  window.addEventListener("pointerlockchange", ptrArmTransition, true);
+  window.addEventListener("mousemove", ptrSwallowMove, true);
+  window.addEventListener("pointermove", ptrSwallowMove, true);
+  try {
+    window.__sakuraPtr = function () {
+      return {
+        blocked: ptrBlocked,
+        last: ptrLastReason,
+        armed: ptrArmed,
+        guard: ptrGuardOn(),
+        freed: !!(menuOpen && !document.pointerLockElement),
+        locked: !!document.pointerLockElement
+      };
+    };
+  } catch (_) {}
+
   function setMenuOpen(v) {
     menuOpen = v;
     hudEdit = v && settings.uiStyle === "lunar" && betaUnlocked;
