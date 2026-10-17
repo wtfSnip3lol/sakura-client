@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>sakura — loader path fixture</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #14161c; color: #8b93a1; font: 14px/1.5 system-ui; }
+  #hint { position: fixed; left: 16px; bottom: 12px; z-index: 5; font-size: 12px; opacity: .6; }
+</style>
+<script>
+try { localStorage.removeItem("sakura.minimal.v1"); } catch (_) {}
+</script>
+
+<script>
+// The loader's runtime path, minus the site table: fetch the payload the loader
+// now points at for clutcher.io and run it the way the loader does (page-context
+// script tag, eval as the documented CSP fallback). Same seam, same bytes.
+//   ?path=eval forces the fallback branch, so both are testable.
+const LOADER_USE_EVAL = new URLSearchParams(location.search).get("path") === "eval";
+window.__loaderPath = "none";
+fetch("../dist/sakura.clutch.next.user.js", { cache: "no-store" })
+  .then((r) => {
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return r.text();
+  })
+  .then((code) => {
+    if (LOADER_USE_EVAL) {
+      window.__loaderPath = "eval (forced)";
+      (0, eval)(code);
+      return;
+    }
+    window.__loaderPath = "script-tag";
+    const s = document.createElement("script");
+    s.textContent = code;
+    (document.head || document.documentElement).appendChild(s);
+    s.remove();
+  })
+  .catch((e) => {
+    window.__loaderPath = "eval (fallback: " + (e && e.message) + ")";
+    return fetch("../dist/sakura.clutch.next.user.js", { cache: "no-store" })
+      .then((r) => r.text())
+      .then((code) => { (0, eval)(code); });
+  });
+</script>
+</head>
+<body>
+
+<h1>loader path</h1>
+<p>The payload above is fetched and run the way the loader runs it on clutcher.io.</p>
+<div id="hint"></div>
+
+<script>
+window.addEventListener("load", () => {
+  const say = (t) => { const d = document.createElement("div"); d.textContent = t; document.getElementById("hint").appendChild(d); };
+  const hosts = document.querySelectorAll("#sakura-ui");
+  const host = hosts[0];
+  say("path: " + window.__loaderPath);
+  say("hosts: " + hosts.length);
+  say("host parent: " + (host ? host.parentElement.tagName : "none"));
+  say("engine: " + (window.__sk && window.__sk.core ? "core" : "bailed"));
+  if (window.__sk && window.__sk.panel) {
+    window.__sk.panel.open();
+    say("panel open: " + window.__sk.panel.isOpen());
+  }
+  say("tasks: " + (window.__sk && window.__sk.tasks ? window.__sk.tasks().length : "-"));
+  document.title = "loader:" + window.__loaderPath + ":" + hosts.length + ":" + (host ? host.parentElement.tagName : "none");
+});
+</script>
+</body>
+</html>

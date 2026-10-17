@@ -388,11 +388,11 @@ listener:
 | `window.__sakuraTakeover` already set (the old client's loader is installed and v2 booted first) | stands down with a warning naming the loader |
 | v2 arrives *after* us (our `document-start` beats the loader's fetch at `DOMContentLoaded`) | the watcher sees the takeover within 500 ms, stops the engine and removes the host, so v2 is not fighting a half-dead panel |
 
-The loader (`src/loader.js`) is the one thing to disable while testing the
-rewrite: on clutcher.io it fetches `dist/sakura.clutcher.js` and v2 claims the
-page, so the rewrite would stand down every time. Disabling it also disables the
-kour/2v2 clients it injects; keep them in a second browser profile if both are
-needed at once.
+The loader (`src/loader.js`) no longer serves the old client - see *The loader
+serves the rewrite* below. The guard stays relevant for the transition: an
+already-installed older loader still fetches `dist/sakura.clutcher.js`, and in
+that case v2 claims the page and the rewrite stands down with a warning instead
+of fighting it.
 
 What works today (everything ported so far):
 
@@ -442,4 +442,45 @@ Verified in the harness (real page loads, not unit stubs):
   not an IIFE, both bail conditions and the late-yield watcher must be present, the
   host mount must wait for `<body>`, and the shipped header must stay installable -
   and 0 console errors
+
+## The loader serves the rewrite (decided + shipped)
+
+User: "i have the universal script loader on, but yet it still loads v1 which is
+meant to be fully deleted". So the flip happens at the loader, not by installing a
+second userscript. One string in `src/loader.js`:
+
+    clutcher.io:  sakura.clutcher.js  ->  sakura.clutch.next.user.js
+
+What that changes, and what it does not:
+
+- clutcher.io now loads the rewrite. kourstrike / overtide / 2v2 keep their
+  inlined UWMK payloads and astrastrike / cookieclicker are untouched.
+- `dist/sakura.loader.user.js` carries the change. The loader header has no
+  `@updateURL`, so Tampermonkey will not update it by itself: reinstall it once
+  from its raw URL (same name and namespace, so it replaces the old one). Artifact
+  and source must move together or a later rebuild silently flips it back - the
+  verifier now checks both.
+- after that one reinstall, the loader fetches the payload with `cache: "no-store"`
+  on every page load, so **every push here reaches the client on the next reload**.
+  That is the delivery path for the rewrite from now on: no reinstall per fix.
+- the standalone rewrite userscript stays valid but is optional; with both
+  installed the later copy stands down (guard), so it is only a convenience for
+  testing with the loader turned off, not a second client.
+- the guard's old-client rule is not dead code in the transition: a loader that
+  has not been reinstalled still fetches `sakura.clutcher.js`, and the rewrite
+  stands down with the warning instead of fighting v2 for the host.
+
+Rollback is the same one string. `src/clutcher.js` and `dist/sakura.clutcher.js`
+stay in the tree deliberately - as the rollback payload and as the extractor's
+source (`tools/extract-next-ui.mjs` lifts the panel from it). They disappear with
+the lifted menu, in the commit that retires the extractor.
+
+Verified through the loader's own seam, not a re-implementation of it:
+`test/harness-loader.html` fetches the payload the loader now names and runs it the
+way the loader does - a page-context `<script>` whose text is the artifact, with
+`?path=eval` forcing the documented CSP fallback - and both branches boot the
+client: `core ready`, `game adapter ready`, `boot complete · 8 tasks`, exactly one
+`#sakura-ui` in `<body>`, panel API present, 0 warnings. (8 tasks, not the 10 the
+other fixtures show: `wx-status` / `wx-cover` register when the FX card builds,
+which needs the panel open.)
 

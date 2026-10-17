@@ -2,41 +2,44 @@
  *
  * Runs at document-start and splits by site:
  *
- *   kourstrike.io / overtide.io  (same game build, identical Assembly-CSharp)
- *     UWMK + the Overtide payload are inlined into THIS file above it, and
- *     guarded to that hostname. They have to be inlined: UWMK patches fetch /
- *     WebAssembly.instantiate and must do it before Unity's boot scripts run,
- *     and a network fetch at document-start always loses that race.
+ *   kourstrike.io / overtide.io / 2v2.io
+ *     UWMK + the payload are inlined into THIS file above it, and
+ *     guarded to their hostnames. They have to be inlined: UWMK
+ *     patches fetch / WebAssembly.instantiate and must do it before
+ *     Unity's boot scripts run, and a network fetch at
+ *     document-start always loses that race.
  *
  *   everything else
- *     Detected by hostname here, then the matching payload is fetched from
- *     GitHub:
- *       clutcher.io     → sakura.clutcher.js (full client)
+ *     Detected by hostname here, then the matching payload is
+ *     fetched from GitHub:
+ *       clutcher.io     → sakura.clutch.next.user.js (rewrite client)
  *       astrastrike.fun → sakura.astra.js   (clean keystrokes overlay)
- *     Both append to document.body at top level, so they're deferred until
- *     the DOM is parsed.
+ *     Both append to document.body at top level, so they're deferred
+ *     until the DOM is parsed.
  *
- * The __SAKURA_RAW_BASE__ placeholder is replaced at build time with your
- * GitHub raw URL (see package.json → sakura.rawBase, or SAKURA_RAW_BASE env).
- * Keep this file readable — only the payloads are obfuscated.
+ * clutcher.io serves the rewrite now. The old client stays published as
+ * sakura.clutcher.js, so rolling back is this one string.
+ *
+ * The __SAKURA_RAW_BASE__ placeholder is replaced at build time with
+ * your GitHub raw URL (see package.json → sakura.rawBase, or
+ * SAKURA_RAW_BASE env). Keep this file readable — only the payloads
+ * are obfuscated.
  */
 
 (() => {
   "use strict";
 
   var HOST = location.hostname || "";
-  if (/(^|\.)(kourstrike\.io|overtide\.io)$/.test(HOST)) return; // handled by the inlined block above
+  if (/(^|\.)(kourstrike\.io|overtide\.io|2v2\.io)$/.test(HOST)) return; // handled by the inlined blocks above
 
   var IS_CLUTCHER = /(^|\.)clutcher\.io$/.test(HOST);
   var IS_ASTRA = /(^|\.)astrastrike\.fun$/.test(HOST);
-  var IS_2V2 = /(^|\.)2v2\.io$/.test(HOST);
   var IS_COOKIE = /(^|\.)orteil\.dashnet\.org$/.test(HOST) && /\/cookieclicker/i.test(location.pathname || "");
-  if (!IS_CLUTCHER && !IS_ASTRA && !IS_2V2 && !IS_COOKIE) return;
+  if (!IS_CLUTCHER && !IS_ASTRA && !IS_COOKIE) return;
 
   var BASE = "__SAKURA_RAW_BASE__";
-  var FILE = IS_CLUTCHER ? "sakura.clutcher.js"
+  var FILE = IS_CLUTCHER ? "sakura.clutch.next.user.js"
             : IS_ASTRA ? "sakura.astra.js"
-            : IS_2V2 ? "sakura.2v2.js"
             : "sakura.cc.js";
 
   function run(code) {

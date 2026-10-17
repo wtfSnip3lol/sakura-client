@@ -136,6 +136,17 @@ check("host mount survives a document-start install",
   /document\.body\) \{\s*\n\s*document\.body\.appendChild\(host\)/.test(core) &&
   /readyState === "loading"/.test(core) && /readystatechange/.test(core) && /hostPending/.test(core));
 
+// ── delivery: the loader hands clutcher.io the rewrite, not the old client ──
+const loaderSrc = fs.readFileSync(path.join(root, "userscript", "src", "loader.js"), "utf8");
+const loaderDist = fs.readFileSync(path.join(root, "userscript", "dist", "sakura.loader.user.js"), "utf8");
+const flip = /var FILE = IS_CLUTCHER \? "sakura\.clutch\.next\.user\.js"/;
+check("loader serves the rewrite on clutcher.io", flip.test(loaderSrc) && flip.test(loaderDist));
+check("loader dist and source agree on the payload", /var FILE = IS_CLUTCHER \? "([^"]+)"/.test(loaderSrc) &&
+  loaderSrc.match(/var FILE = IS_CLUTCHER \? "([^"]+)"/)[1] === loaderDist.match(/var FILE = IS_CLUTCHER \? "([^"]+)"/)[1],
+  (loaderSrc.match(/var FILE = IS_CLUTCHER \? "([^"]+)"/) || [])[1]);
+check("the payload the loader names is on disk",
+  fs.existsSync(path.join(root, "userscript", "dist", "sakura.clutch.next.user.js")));
+
 check("hotkeys are a registry, not a hard-wired key", /function register\(/.test(keys) && /hkMenu/.test(keys) && !/e\.code === "Insert"/.test(boot));
 check("ext tab uses the panel's own vocabulary", /moduleCard\(/.test(ext) && /\brow\(/.test(ext) && !/class="sk-card"/.test(ext));
 check("ext tab re-attaches after a panel rebuild", /name: "ext-mount"/.test(ext) && /isConnected/.test(ext));
