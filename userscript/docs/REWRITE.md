@@ -71,7 +71,7 @@ build-next.mjs       bundles modules → dist/sakura.clutch.next.js (obfuscated)
 ## Port order
 
 - [x] 0. UI + settings contract extracted (`tools/extract-next-ui.mjs`, `panel.gen.js`)
-- [ ] 1. core.js, game.js, ui.js, boot.js, build-next.mjs — panel loads, empty engine
+- [x] 1. Engine, panel and bundler live — see "Pass 1" below
 - [ ] 2. keys + overlay + HUD group (keystrokes, watermark, FPS graph, clock, bars, ammo)
 - [ ] 3. crosshair group (game crosshair, overlay crosshair, pixel editor, scope)
 - [ ] 4. fx group (tracers, muzzle, impact, weather + 3D/cover gate, motes)
@@ -81,3 +81,48 @@ build-next.mjs       bundles modules → dist/sakura.clutch.next.js (obfuscated)
 - [ ] 8. stats group (kill banner, session stats, combat tracking)
 - [ ] 9. parity pass: side-by-side checklist per card, then flip the default
 - [ ] 10. launcher pass (startup, injection, memory) once the payload is settled
+
+## Pass 1 — engine, panel, bundler (done)
+
+Files: `src/next/core.js` (engine), `src/next/game.js` (game adapter),
+`src/next/boot.js` (the seam), `build-next.mjs`, and the generated
+`defaults.gen.js` + `panel.gen.js`.
+
+How the panel is wired: `buildPanel()` is lifted verbatim and, in the v2 client,
+it is a *wrapper* — it declares `NAV`, `LN_ICONS` and `LUNAR_MODULES` in its own
+body and nests `show`, `rebuildPanel`, `interfaceCard`, `buildLunarPanel`,
+`cardsFor` and `note` inside itself. Lifting it whole is what keeps the UI
+identical; lifting those functions individually ships every row and tile twice.
+`tools/verify-next.mjs` fails the build if that lift list ever goes stale.
+
+The panel resolves `settings`, `save`, `getGame`, `applyPreset`, `chApplyPreset`,
+`stReset`, `hudSes`, `wxStatusEl`, `wxCoverEl` as bare names in the bundle scope,
+exactly as the v2 client provided them. `boot.js` supplies them; feature passes
+replace the stubs.
+
+Verified in a browser (`test/harness.html`, served over HTTP, fake `window.game`):
+
+| check | v2 client | next |
+| --- | --- | --- |
+| settings keys | 356 | 356 (same names) |
+| MODS tiles | 36 | 36 |
+| `row()` calls | 314 | 314 |
+| nav levels | 2 | 2 |
+| sliders / switches / selects / colors | — | 133 / 109 / 34 / 40 |
+| console errors | — | 0 |
+| persistence | 1 synchronous write per change | 1 deferred write per burst |
+
+Live in the new client already: the cover probe (ported from the v2 client and
+owned by the game adapter) answers through the panel — `Under cover = yes ·
+roof 4.8m` against the harness's fake roof brush.
+
+Two bugs this pass caught, both worth recording:
+
+1. **Double lift.** Lifting the nested panel functions alongside `buildPanel`
+   duplicated all 314 rows and 36 tiles (186 KB). The verifier now counts them
+   against the v2 UI region.
+2. **Budget starved everything.** The scheduler compared the wall-clock gap
+   between frames (~5 ms at 199 fps) against a 3.5 ms budget, so every cosmetic
+   task was skipped forever — the readouts never ticked. The budget now uses the
+   measured task-loop cost (EMA), which is what it was always meant to mean.
+

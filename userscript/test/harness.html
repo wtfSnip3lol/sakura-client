@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sakura next — panel harness</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #14161c; color: #8b93a1; font: 14px/1.5 system-ui; }
+  #bg { position: fixed; inset: 0; background:
+        radial-gradient(1200px 700px at 30% 20%, #2a2331, #14161c 60%),
+        repeating-linear-gradient(90deg, rgba(255,255,255,.03) 0 1px, transparent 1px 80px),
+        repeating-linear-gradient(0deg, rgba(255,255,255,.03) 0 1px, transparent 1px 80px); }
+  #hint { position: fixed; left: 16px; bottom: 12px; z-index: 5; font-size: 12px; opacity: .6; }
+</style>
+</head>
+<body>
+<div id="bg"></div>
+<div id="hint">harness: window.__sk.panel.open() / .close() · fake game at window.game</div>
+
+<!-- A stand-in for the game object, enough for the adapter to answer. -->
+<script>
+window.__err = [];
+window.addEventListener("error", (e) => window.__err.push(String(e.message || e.error)));
+window.addEventListener("unhandledrejection", (e) => window.__err.push("rejection: " + e.reason));
+
+window.game = {
+  state: "playing",
+  player: { x: 0, y: 1.6, z: 0, vx: 0, vy: 0, vz: 0, yaw: 0, pitch: 0, eyeH: 1.6256,
+            height: 1.8288, radius: 0.4064, health: 100, armor: 50, alive: true, team: "CT",
+            name: "harness", money: 4200 },
+  camera: { matrixWorld: { elements: [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1] } },
+  scene: null,
+  map: { min: [-100, -10, -100], max: [100, 40, 100], ceilY: 12, ambient: [1,1,1], skyLight: [1,1,1] },
+  hud: { xh: null },
+  physics: {
+    boxes: [
+      { minX: -6, maxX: 6, minY: 8, maxY: 9, minZ: -6, maxZ: 6, mask: 7 },   // a roof 6.5m up
+      { minX: 90, maxX: 110, minY: -10, maxY: 40, minZ: -110, maxZ: 110, mask: 7 } // map shell
+    ],
+    tris: [],
+    raycast: function (ox, oy, oz, dx, dy, dz, maxT, mask) {
+      // honest-enough stub: straight-up rays hit the roof brush above the origin
+      if (dy === 1 && Math.abs(dx) < 1e-6 && Math.abs(dz) < 1e-6 && Math.abs(ox) < 6 && Math.abs(oz) < 6) {
+        var t = 8 - oy;
+        if (t > 0 && t <= maxT) return { t: t, x: ox, y: 8, z: oz, nx: 0, ny: -1, nz: 0, mat: 0, b: this.boxes[0] };
+      }
+      return null;
+    }
+  },
+  renderer: { domElement: document.createElement("canvas") },
+  weapons: { scopeLevel: 0 },
+  scoped: false,
+  viewmodel: { current: null, root: null }
+};
+</script>
+
+<!-- The bundle under test. Kept as the .dev build so stack traces are readable. -->
+<script src="../dist/sakura.clutch.next.dev.js"></script>
+
+<script>
+// Open the panel so the screenshot shows the real UI, then report state.
+window.addEventListener("load", () => {
+  const say = (t) => { const d = document.createElement("div"); d.textContent = t; document.getElementById("hint").appendChild(d); };
+  try {
+    window.__sk.panel.open();
+    say("panel open: " + window.__sk.panel.isOpen());
+    say("tasks: " + window.__sk.tasks().length);
+    const p = window.__sk.panel.el();
+    say("panel element: " + (p ? p.className : "none") + " · children: " + (p ? p.children.length : 0));
+    say("cards built per tab: " + JSON.stringify(Object.keys(window.__sk.settings).length + " settings keys"));
+  } catch (e) {
+    say("OPEN FAILED: " + e.message);
+    console.error(e);
+  }
+  setTimeout(() => {
+    say("fps: " + window.__sk.fps() + " · frameMs: " + window.__sk.frameMs());
+    say("errors: " + JSON.stringify(window.__err));
+    document.title = "ready:" + window.__err.length;
+  }, 1500);
+});
+</script>
+</body>
+</html>

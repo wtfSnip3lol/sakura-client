@@ -1,9 +1,19 @@
-/* Generates userscript/src/next/panel.gen.js from the current client.
+/* Generates userscript/src/next/defaults.gen.js and panel.gen.js from the v2 client.
  *
- * The panel is the one thing that must NOT drift: it is 217 rows, a nav tree and
- * a 20 KB stylesheet that the user already knows by heart. So the definitions are
- * lifted verbatim (CSS, nav, module tiles, module cards) and emitted as data for
- * the rewritten engine to render. Everything else in the client is new code.
+ * "Same UI" is a hard requirement, so the panel is not re-typed — it is lifted
+ * verbatim: the stylesheet, the nav tree, the MODS tiles, every settings card
+ * (cardsFor), the interface card, the control vocabulary (row / selectField /
+ * rangeField / ...) and the panel shell. Same for the settings schema: all 356
+ * keys and their defaults come straight out of DEFAULTS.
+ *
+ * The lifted code is emitted as plain top-level statements, which is exactly how
+ * the v2 client was built: one scope, bare names. The bundle therefore
+ * concatenates the engine and the panel into a single IIFE, and the panel
+ * resolves `settings`, `save`, `getGame`, ... against the engine's aliases.
+ * Nothing is proxied, nothing is eval'd, and `node --check` validates it.
+ *
+ * Everything the rewrite owns — the scheduler, the overlay, the game adapter and
+ * every visual feature — is new code under src/next/*.
  *
  * Run: node tools/extract-next-ui.mjs
  */
@@ -15,8 +25,35 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, "..");
 const src = fs.readFileSync(path.join(root, "userscript", "src", "clutcher.js"), "utf8");
 
-// bracket-matched slice: everything between the marker and the matching closer
-function bracketSlice(marker, open = "[", close = "]", what = marker) {
+// ── primitives ─────────────────────────────────────────────────────────────
+function liftFn(name) {
+  const re = new RegExp(`^[ \\t]*(?:async\\s+)?function\\s+${name}\\s*\\(`, "m");
+  const m = re.exec(src);
+  if (!m) throw new Error(`lift: function ${name} not found`);
+  let depth = 0, started = false;
+  for (let j = m.index; j < src.length; j++) {
+    const ch = src[j];
+    if (ch === "{") { depth++; started = true; }
+    else if (ch === "}") { depth--; if (started && depth === 0) return src.slice(m.index, j + 1); }
+  }
+  throw new Error(`lift: ${name} never closed`);
+}
+
+function liftVar(name) {
+  const re = new RegExp(`^[ \\t]*(?:var|const|let)\\s+${name}\\s*=`, "m");
+  const m = re.exec(src);
+  if (!m) throw new Error(`lift: var ${name} not found`);
+  let depth = 0, started = false;
+  for (let j = m.index; j < src.length; j++) {
+    const ch = src[j];
+    if (ch === "{" || ch === "[" || ch === "(") { depth++; started = true; }
+    else if (ch === "}" || ch === "]" || ch === ")") depth--;
+    else if (ch === ";" && started && depth === 0) return src.slice(m.index, j + 1);
+  }
+  throw new Error(`lift: ${name} never terminated`);
+}
+
+function bracketSlice(marker, open, close, what) {
   const i = src.indexOf(marker);
   if (i < 0) throw new Error(`extract: start marker not found for ${what}`);
   const from = i + marker.length - 1;
@@ -30,7 +67,9 @@ function bracketSlice(marker, open = "[", close = "]", what = marker) {
   throw new Error(`extract: ${what} never closed`);
 }
 
-// ── CSS ───────────────────────────────────────────────────────────────────
+const esc = (s) => s.replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$\{/g, "\\${");
+
+// ── assets ─────────────────────────────────────────────────────────────────
 const css = (() => {
   const i = src.indexOf("var CSS = `");
   if (i < 0) throw new Error("extract: CSS not found");
@@ -39,122 +78,86 @@ const css = (() => {
   if (j < 0) throw new Error("extract: CSS end not found");
   return src.slice(from, j);
 })();
-if (css.length < 8000) throw new Error(`extract: CSS looks too short (${css.length})`);
+if (css.length < 8000) throw new Error(`extract: CSS too short (${css.length})`);
 
-// ── nav tree ──────────────────────────────────────────────────────────────
 const nav = bracketSlice("const NAV = [", "[", "]", "NAV");
-if (!nav.includes("children")) throw new Error("extract: NAV has no children — marker mismatch?");
-
-// ── module tiles (MODS grid) ──────────────────────────────────────────────
-const tiles = bracketSlice("var LUNAR_MODULES = [", "[", "]", "LUNAR_MODULES");
-const tileCount = (tiles.match(/\{ tab:/g) || []).length;
+if (!nav.includes("children")) throw new Error("extract: NAV shape changed");
+const tileCount = (bracketSlice("var LUNAR_MODULES = [", "[", "]", "LUNAR_MODULES").match(/\{ tab:/g) || []).length;
 if (tileCount < 30) throw new Error(`extract: only ${tileCount} module tiles`);
 
-// ── settings cards: split cardsFor() into moduleCard(...) calls ───────────
-const cardsBody = (() => {
-  const i = src.indexOf("function cardsFor(id) {");
-  if (i < 0) throw new Error("extract: cardsFor not found");
-  let depth = 0, started = false;
-  for (let j = i; j < src.length; j++) {
-    const ch = src[j];
-    if (ch === "{") { depth++; started = true; }
-    else if (ch === "}") { depth--; if (started && depth === 0) return src.slice(i, j + 1); }
-  }
-  throw new Error("extract: cardsFor braces never closed");
-})();
-
-// split on top-level `moduleCard(` occurrences (paren-balanced)
-const chunks = [];
-{
-  const re = /moduleCard\(/g;
-  let m;
-  while ((m = re.exec(cardsBody))) {
-    const start = m.index;
-    let depth = 0, j = start + "moduleCard".length;
-    for (; j < cardsBody.length; j++) {
-      const ch = cardsBody[j];
-      if (ch === "(") depth++;
-      else if (ch === ")") { depth--; if (depth === 0) { j++; break; } }
-    }
-    chunks.push({ at: start, src: cardsBody.slice(start, j) });
-  }
+// The wrapper must really contain the lunar panel and the cards, otherwise the
+// lift below would silently ship a panel with no settings in it.
+const wrapper = liftFn("buildPanel");
+if (wrapper.split("\n").length < 900) throw new Error("extract: buildPanel no longer wraps the panel — lift list is stale");
+for (const nested of ["function buildLunarPanel", "function cardsFor", "function interfaceCard", "function rebuildPanel"]) {
+  if (!wrapper.includes(nested)) throw new Error(`extract: buildPanel no longer contains ${nested} — lift list is stale`);
 }
-if (chunks.length < 30) throw new Error(`extract: only ${chunks.length} module cards`);
+const betaNav = (src.match(/if \(betaUnlocked\) CATEGORIES\.push\([^\n]*\);/m) || [])[0];
+if (!betaNav) throw new Error("extract: beta nav push not found");
+if (/^\s{2}(?:var|const|let)\s+(?:NAV|LN_ICONS|LUNAR_MODULES)\b/m.test(src)) throw new Error("extract: NAV/LN_ICONS/LUNAR_MODULES moved to top level — lift them explicitly again");
 
-// ── settings schema (every key + default, verbatim) ───────────────────────
+// ── settings schema (all 356 keys, verbatim) ───────────────────────────────
 const defaultsBlock = bracketSlice("var DEFAULTS = {", "{", "}", "DEFAULTS");
 const defaultKeys = (defaultsBlock.match(/^\s{4}[A-Za-z_$][\w$]*:/gm) || []).length;
 if (defaultKeys < 200) throw new Error(`extract: only ${defaultKeys} defaults parsed`);
 const storeKey = (src.match(/localStorage\.getItem\("([^"]+)"\)/) || [])[1] || "sakura.minimal.v1";
 
-// which tab does each chunk belong to? (`if (id === "hud") { return [ ... ] }`)
-const tabAt = (at) => {
-  const before = cardsBody.slice(0, at);
-  const m = [...before.matchAll(/id === "([a-z0-9_]+)"/g)];
-  return m.length ? m[m.length - 1][1] : "unknown";
-};
-
-// free identifiers the row/control source needs from the engine
-const BUILTIN = new Set([
-  "true", "false", "null", "undefined", "settings", "save", "return", "if", "else", "typeof", "new",
-  "Array", "Object", "Number", "String", "Math", "JSON", "Date", "isFinite", "parseInt", "parseFloat",
-  "row", "moduleCard", "selectField", "rangeField", "toggleSwitch", "colorField", "textField", "keyField",
-  "buttonField", "checkField", "note", "const", "let", "var", "function", "this", "of", "in", "for",
-  "v", "w", "e", "i", "n", "s", "t", "a", "b", "c", "d", "f", "g", "h", "j", "k", "l", "m", "o", "p", "q", "r", "u", "x", "y", "z"
-]);
-const freeIds = new Set();
-for (const c of chunks) {
-  const stripped = c.src
-    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
-    .replace(/'(?:[^'\\]|\\.)*'/g, "''")
-    .replace(/`(?:[^`\\]|\\.)*`/g, "``")
-    .replace(/\/\/[^\n]*/g, "")
-    .replace(/\.([A-Za-z_$][\w$]*)/g, ".");           // property reads
-  for (const m of stripped.matchAll(/\b([A-Za-z_$][\w$]*)\s*(\(|\.|,|\)|\]|\}|\s*:)/g)) {
-    const id = m[1];
-    if (!BUILTIN.has(id)) freeIds.add(id);
-  }
-}
-
-const tabCounts = {};
-for (const c of chunks) { const t = tabAt(c.at); tabCounts[t] = (tabCounts[t] || 0) + 1; }
-
-// ── write the generated module ────────────────────────────────────────────
-const esc = (s) => s.replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$\{/g, "\\${");
-
-const out = `// GENERATED by tools/extract-next-ui.mjs — do not edit by hand.
-// Panel definitions lifted verbatim from the v2 client so the UI cannot drift:
-// stylesheet, nav tree, MODS tiles, and every settings card.
-var NEXT_CSS = \`${esc(css)}\`;
-
-var NEXT_NAV = [
-${nav.trimEnd().replace(/^\s{6}/gm, "")}
+// ── the lifted UI layer ────────────────────────────────────────────────────
+// buildPanel is the wrapper: it declares NAV / LN_ICONS / LUNAR_MODULES itself
+// and nests show, rebuildPanel, interfaceCard, buildLunarPanel, cardsFor and
+// note inside its body (lines 3798-4845 of the v2 client). Lifting it verbatim
+// brings all of those with it — lifting them separately duplicated every row
+// and tile twice over. Only the top-level helpers are lifted individually.
+const FN = [
+  "sakuraLogoSvg", "editByHand", "shieldKeys", "ico", "toggleSwitch", "selectField", "numberField",
+  "rangeField", "chLoadGrid", "chLineCells", "pixelEditor", "colorField", "textField", "actionBtn",
+  "row", "moduleCard", "buildPanel", "saveUi", "menuStock", "applyMenuVars", "setMenuOpen", "toggleMenu"
 ];
+const lifted = FN.map(liftFn);
+const liftedLines = lifted.reduce((a, t) => a + t.split("\n").length, 0);
 
-var NEXT_STORE_KEY = ${JSON.stringify(storeKey)};
+// ICONS and CATEGORIES are declared above buildPanel, so they are lifted whole;
+// NAV / LN_ICONS / LUNAR_MODULES come with buildPanel's own body.
+const panel = `// GENERATED by tools/extract-next-ui.mjs — do not edit by hand.
+// The panel, lifted verbatim from the v2 client so the UI cannot drift.
+// Runs in the bundle's scope, exactly like the v2 client did: bare names.
+var CSS = \`${esc(css)}\`;
 
-var NEXT_DEFAULTS = {
-${defaultsBlock.replace(/^\s{4}/gm, "  ").trimEnd()}
-};
+// State the panel owns. host/shadow point at the engine's single shadow root,
+// assigned in boot before the panel is first built.
+var host = null;
+var shadow = null;
+var overlay = null;
+var betaUnlocked = true;
+var hudEdit = false;
+var hudDrag = null;
+var menuOpen = false;
+var uiState = {};
+var panelEl = null;
 
-var NEXT_TILES = [
-${tiles.trimEnd().replace(/^\s{6}/gm, "")}
-];
+${liftVar("ICONS")}
+${liftVar("CATEGORIES")}
+${betaNav.replace(/^\s{2}/m, "")}
+var CHDRAW_N = ${liftVar("CHDRAW_N").replace(/^[ \t]*(?:var|const|let)\s+CHDRAW_N\s*=\s*/, "").replace(/;$/, "")}
+${liftVar("isEditable")}
 
-var NEXT_CARDS = {
-${Object.entries(tabCounts).map(([t]) => `  ${JSON.stringify(t)}: [],`).join("\n")}
-};
-(function () {
-  var cards = NEXT_CARDS;
-  ${chunks.map((c) => `cards[${JSON.stringify(tabAt(c.at))}].push(${JSON.stringify(c.src)});`).join("\n  ")}
-})();
+${lifted.join("\n\n")}
 `;
 
-const dest = path.join(root, "userscript", "src", "next", "panel.gen.js");
-fs.mkdirSync(path.dirname(dest), { recursive: true });
-fs.writeFileSync(dest, out);
-console.log(`wrote ${path.relative(root, dest)} (${out.length} bytes)`);
-console.log(`css: ${css.length} chars | nav entries: ${(nav.match(/\{ id:/g) || []).length} | tiles: ${tileCount} | cards: ${chunks.length} | settings: ${defaultKeys}`);
-console.log("cards per tab:", JSON.stringify(tabCounts));
-console.log("\nengine helpers the panel source expects:");
-console.log([...freeIds].sort().join(", "));
+const defaults = `// GENERATED by tools/extract-next-ui.mjs — do not edit by hand.
+// Every settings key and its default, verbatim from the v2 client.
+var DEFAULTS = {
+${defaultsBlock.replace(/^\s{4}/gm, "  ").trimEnd()}
+};
+var SAKURA_STORE_KEY = ${JSON.stringify(storeKey)};
+`;
+
+const dir = path.join(root, "userscript", "src", "next");
+fs.mkdirSync(dir, { recursive: true });
+fs.writeFileSync(path.join(dir, "panel.gen.js"), panel);
+fs.writeFileSync(path.join(dir, "defaults.gen.js"), defaults);
+
+console.log(`panel.gen.js   ${(panel.length / 1024).toFixed(1)} KB  (css ${css.length} chars, ${FN.length} functions / ${liftedLines} lines lifted, incl. the panel wrapper)`);
+console.log(`defaults.gen.js ${(defaults.length / 1024).toFixed(1)} KB  (${defaultKeys} settings keys, store "${storeKey}")`);
+console.log(`\nthe panel expects these bare names from the engine (boot.js):`);
+console.log("  settings, save, getGame, applyPreset, chApplyPreset, stReset, hudSes, wxStatusEl, wxCoverEl");
