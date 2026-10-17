@@ -72,15 +72,43 @@ build-next.mjs       bundles modules → dist/sakura.clutch.next.js (obfuscated)
 
 - [x] 0. UI + settings contract extracted (`tools/extract-next-ui.mjs`, `panel.gen.js`)
 - [x] 1. Engine, panel and bundler live — see "Pass 1" below
-- [ ] 2. keys + overlay + HUD group (keystrokes, watermark, FPS graph, clock, bars, ammo)
-- [ ] 3. crosshair group (game crosshair, overlay crosshair, pixel editor, scope)
-- [ ] 4. fx group (tracers, muzzle, impact, weather + 3D/cover gate, motes)
-- [ ] 5. chams group (arm/gun/knife chams, viewmodel pose/fov, arm adjust)
-- [ ] 6. world group (lighting, sky, fog presets, grade, bloom, day cycle, motion blur)
-- [ ] 7. game group (team colors, death screen, hitmarker, damage arcs, money, radar)
-- [ ] 8. stats group (kill banner, session stats, combat tracking)
-- [ ] 9. parity pass: side-by-side checklist per card, then flip the default
-- [ ] 10. launcher pass (startup, injection, memory) once the payload is settled
+- [x] 2. new modules + EXTRA tab (perf, hotkeys, movement meter, profiles)
+- [x] 3. HUD group (keystrokes, watermark, FPS graph, clock, bars, ammo)
+- [x] 3b. pointer hygiene — the camera-flick fix, in both clients
+- [ ] 4. crosshair group (game crosshair, overlay crosshair, pixel editor, scope)
+- [ ] 5. fx group (tracers, muzzle, impact, weather + 3D/cover gate, motes)
+- [ ] 6. chams group (arm/gun/knife chams, viewmodel pose/fov, arm adjust)
+- [ ] 7. world group (lighting, sky, fog presets, grade, bloom, day cycle, motion blur)
+- [ ] 8. game group (team colors, death screen, hitmarker, damage arcs, money, radar)
+- [ ] 9. stats group (kill banner, session stats, combat tracking)
+- [ ] 10. new-pane coverage: every ported group's rows live in the new pane
+- [ ] 11. delete the lifted menu (`panel.gen.js`) and retire the generator
+- [ ] 12. launcher pass (startup, injection, memory) once the payload is settled
+
+## Direction: the new pane replaces the lifted menu (decided)
+
+Decided this session: the rewrite is **not** keeping two menus. The lifted
+MODS/SETTINGS panel is transitional — it is where the unported groups still live.
+Every port from here on adds its rows to the **new pane** (the EXTRA tab for now:
+same Lunar vocabulary, `moduleCard` / `row` / `toggleSwitch`, but written by the
+rewrite instead of lifted), and once the new pane covers every setting, the
+lifted panel and the generator are deleted in one commit.
+
+So this cannot be half-done by accident:
+
+- "covered" is checkable, not a feeling: every `DEFAULTS` key must be reachable
+  from the new-pane sources except an explicit allowlist (pure look keys such as
+  `uiStyle`, `betaUnlocked`, the `mn*` menu shape, and `chPixels` while the pixel
+  editor is still the lifted control). The verifier gets that check when the
+  first new-style pane replaces a lifted tab.
+- the generator is one-way today (`extract-next-ui.mjs` lifts from
+  `clutcher.js`), so deleting the lifted panel also deletes the rewrite's
+  dependency on the v2 client: from then on the generated file (or its
+  replacement) is the source of truth and the extractor is retired in the same
+  commit.
+- nothing regresses in the meantime: the lifted tabs stay exactly as they are
+  until their replacement exists and the verifier proves coverage. No settings
+  key is deleted by this work.
 
 ## Pass 1 — engine, panel, bundler (done)
 
