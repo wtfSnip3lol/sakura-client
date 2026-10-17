@@ -1905,12 +1905,18 @@
   // The world paths draw particles in front of everything (the canvas
   // fallbacks have no depth test and the harvested cloud drops rain wherever
   // it likes), so weather indoors or right behind a wall reads as fake. The
-  // game's own collision grid answers this exactly: a ray straight up finds
-  // the room's ceiling, a short ray forward finds the crate in front of you,
-  // and four side rays recognise a room/corridor. Mask 1 is the level-bit the
-  // game's own ground/step checks use, so bots never count. If a future build
-  // stops exposing physics, the mesh-AABB probe below still answers. Read-only.
+  // game's own collision is the honest answer here: rays up / forward / to the
+  // sides — the same probes the game runs for head clearance and step-ups —
+  // and, if every ray comes back empty, a direct scan of the collision
+  // brushes. Bots are handled per-entity by the game, so the static grid is
+  // level + props. Read-only, cached at 180 ms.
+  //
+  // The visual meshes are no good for this: the level ships as merged geometry
+  // (map.buildMesh), so its AABB is the whole map. Meshes are only the last
+  // fallback.
   var wxOccl = { box: null, list: [], listAt: -1e9 };
+  var wxMask = 1, wxMaskAt = -1e9, wxMaskN = -1;
+  var wxBrushAt = -1e9, wxBrushRes = -1;
   var wxCover = false, wxCoverAt = -1e9, wxCoverElV = null, wxCoverTxt = "";
   function wxCoverEl() {
     const s = document.createElement("span");
@@ -1936,16 +1942,60 @@
     const fl = Math.hypot(fwx, fwz) || 1;
     return [fwx / fl, fwz / fl];
   }
-  // physics probe: null when the API is unusable, else { on, why }
-  function wxCoveredPhys(phys, g, p) {
-    const eye = p.y + (isFinite(p.eyeH) ? p.eyeH : 1.6);
-    const ray = (ox, oy, oz, dx, dy, dz, dist) => {
-      try { return phys.raycast(ox, oy, oz, dx, dy, dz, dist, 1); } catch (_) { return undefined; }
+  // Every collision brush carries a mask byte and there is no documented bit
+  // for "the level". Ray with the union of every mask actually present, so
+  // whatever the map calls solid is solid for us too (the union never adds
+  // bits the level does not use).
+  function wxRayMask(phys, now) {
+    const n = ((phys.boxes && phys.boxes.length) || 0) + ((phys.tris && phys.tris.length) || 0);
+    if (now - wxMaskAt < 2000 && wxMaskN === n) return wxMask;
+    let m = 0;
+    const scan = (arr) => {
+      if (!arr) return;
+      const len = Math.min(arr.length, 20000);
+      for (let i = 0; i < len; i++) { const k = arr[i] && arr[i].mask; if (k) m |= k; }
     };
-    // anything solid directly overhead (the game's own head-clearance probe)
-    const up = ray(p.x, eye, p.z, 0, 1, 0, 8);
+    try { scan(phys.boxes); scan(phys.tris); } catch (_) {}
+    wxMask = m || 1;
+    wxMaskAt = now;
+    wxMaskN = n;
+    return wxMask;
+  }
+  // a map's own bounding box / ceiling brush covers everything, so it must not
+  // read as a roof or the whole map would count as indoors
+  function wxIsShellBox(g, b) {
+    const mp = g && g.map;
+    if (!b || !isFinite(b.minX)) return false;
+    if (mp && mp.min && mp.max) {
+      const mx = mp.max[0] - mp.min[0], mz = mp.max[2] - mp.min[2];
+      if (mx > 4 && mz > 4 && (b.maxX - b.minX) >= mx * 0.92 && (b.maxZ - b.minZ) >= mz * 0.92) return true;
+    }
+    return (b.maxX - b.minX) * (b.maxZ - b.minZ) > 20000;
+  }
+  function wxIsShell(g, hit) {
+    return !!(hit && wxIsShellBox(g, hit.b));
+  }
+  // physics probe: null when the API is unusable, else { on, why, tag }
+  function wxCoveredPhys(phys, g, p, now) {
+    const eye = p.y + (isFinite(p.eyeH) ? p.eyeH : 1.6);
+    const mask = wxRayMask(phys, now);
+    const ray = (ox, oy, oz, dx, dy, dz, dist) => {
+      try { return phys.raycast(ox, oy, oz, dx, dy, dz, dist, mask); } catch (_) { return undefined; }
+    };
+    // straight overhead first — the game's own stand-clearance probe
+    const up = ray(p.x, eye, p.z, 0, 1, 0, 12);
     if (up === undefined) return null;
     if (up && !wxIsShell(g, up)) return { on: true, why: `roof ${Math.round(up.t * 10) / 10}m` };
+    const tag = (up ? ` shell ${Math.round(up.t * 10) / 10}m` : "") + ` m${mask}`;
+    // angled overhead: leaning out from under a roof / standing in a doorway
+    let over = 0;
+    const off = [[1.5, 0], [-1.5, 0], [0, 1.5], [0, -1.5]];
+    for (const [ox, oz] of off) {
+      const h = ray(p.x + ox, eye, p.z + oz, 0, 1, 0, 12);
+      if (h === undefined) return null;
+      if (h && !wxIsShell(g, h)) over++;
+    }
+    if (over >= 2) return { on: true, why: "roof" };
     const [fwx, fwz] = wxFwdXZ(g, p);
     const chest = eye - 0.3;
     // solid right in front of the face = the cover you are tucked behind
@@ -1956,78 +2006,106 @@
     if (ray(p.x, chest, p.z, -1, 0, 0, 2.4)) sides++;
     if (ray(p.x, chest, p.z, 0, 0, 1, 2.4)) sides++;
     if (ray(p.x, chest, p.z, 0, 0, -1, 2.4)) sides++;
-    return sides >= 3 ? { on: true, why: "room" } : { on: false, why: "" };
+    if (sides >= 3) return { on: true, why: "room" };
+    return { on: false, why: "", tag };
   }
-  // a map's own bounding box/ceiling brush covers everything, so it must not
-  // read as a roof or the whole map would count as indoors
-  function wxIsShell(g, hit) {
-    const b = hit.b, mp = g && g.map;
-    if (b && isFinite(b.minX) && isFinite(b.maxX) && (b.maxX - b.minX) * (b.maxZ - b.minZ) > 20000) return true;
-    if (mp && isFinite(mp.ceilY) && isFinite(hit.y) && Math.abs(hit.y - mp.ceilY) < 2.5) return true;
-    if (b && mp && mp.min && mp.max && isFinite(b.minX)) {
-      const mx = mp.max[0] - mp.min[0], mz = mp.max[2] - mp.min[2];
-      if (mx > 0 && mz > 0 && (b.maxX - b.minX) > mx * 0.8 && (b.maxZ - b.minZ) > mz * 0.8) return true;
-    }
-    return false;
+  // Last resort: walk the collision brushes and ask whether any whole box sits
+  // above the player. AABBs only, and only when the brush clears the head, so
+  // walls, stairs and sloped hulls (whose AABB reaches the floor) cannot
+  // false-positive. Mask-free on purpose.
+  function wxBrushRoof(phys, g, p, now) {
+    if (now - wxBrushAt < 500) return wxBrushRes;
+    wxBrushAt = now;
+    wxBrushRes = -1;
+    const px = p.x, pz = p.z, lo = p.y + 1.2, hi = p.y + 12;
+    const scan = (arr) => {
+      if (!arr || wxBrushRes >= 0) return;
+      const len = Math.min(arr.length, 40000);
+      for (let i = 0; i < len; i++) {
+        const b = arr[i];
+        if (!b || !isFinite(b.minX)) continue;
+        if (!(px > b.minX && px < b.maxX && pz > b.minZ && pz < b.maxZ)) continue;
+        if (!(b.minY > lo && b.minY < hi)) continue;
+        if (wxIsShellBox(g, b)) continue;
+        wxBrushRes = Math.round((b.minY - p.y) * 10) / 10;
+        return;
+      }
+    };
+    try { scan(phys.boxes); scan(phys.tris); } catch (_) {}
+    return wxBrushRes;
   }
   function wxUnderCam(o, cam) {
     for (let a = o; a; a = a.parent) if (a === cam) return true;
     return false;
   }
-  function wxOccluders(scene, now, cam) {
-    if (wxOccl.box && now - wxOccl.listAt < 1000) return wxOccl;
-    let boxCls = wxOccl.box && wxOccl.box.constructor;
-    let vecCls = wxOccl.vec && wxOccl.vec.constructor;
-    if (!boxCls || !vecCls) {
-      let b = null, v = null;
-      try {
-        scene.traverse((o) => {
-          if (!b && o && o.isMesh && o.geometry) {
-            try { if (!o.geometry.boundingBox && o.geometry.computeBoundingBox) o.geometry.computeBoundingBox(); } catch (_) {}
-            if (o.geometry.boundingBox) b = o.geometry.boundingBox;
-          }
-          if (!v && o && o.position && o.position.constructor && o.position.constructor !== Object) v = o.position;
-        });
-      } catch (_) {}
-      if (!b || !v) return null;
-      wxOccl.box = new b.constructor();
-      wxOccl.vec = new v.constructor();
+  // Mesh layer (last resort). The level usually ships as merged geometry, so
+  // this reads each *geometry's* AABB and maps it through the object's own
+  // world matrix instead of recursing — grouped per-brush meshes therefore
+  // still count one by one, and the object's children cannot poison the box.
+  var wxGeoBox = new WeakMap();
+  var wxScratch = [0, 0, 0, 0, 0, 0, 0];
+  function wxWorldAABB(o, out) {
+    const geo = o.geometry, m = o.matrixWorld && o.matrixWorld.elements;
+    if (!geo || !m || m.length < 16) return false;
+    let loc = wxGeoBox.get(geo);
+    if (loc === undefined) {
+      let bb = geo.boundingBox;
+      if (!bb && typeof geo.computeBoundingBox === "function") { try { geo.computeBoundingBox(); bb = geo.boundingBox; } catch (_) {} }
+      loc = bb && bb.min && bb.max && isFinite(bb.min.x) && isFinite(bb.max.x)
+        ? [bb.min.x, bb.min.y, bb.min.z, bb.max.x, bb.max.y, bb.max.z] : null;
+      wxGeoBox.set(geo, loc);
     }
-    if (!wxOccl.box || typeof wxOccl.box.setFromObject !== "function") return null;
+    if (!loc) return false;
+    let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    for (let i = 0; i < 8; i++) {
+      const x = (i & 1) ? loc[3] : loc[0], y = (i & 2) ? loc[4] : loc[1], z = (i & 4) ? loc[5] : loc[2];
+      const wx = m[0] * x + m[4] * y + m[8] * z + m[12];
+      const wy = m[1] * x + m[5] * y + m[9] * z + m[13];
+      const wz = m[2] * x + m[6] * y + m[10] * z + m[14];
+      if (wx < minX) minX = wx;
+      if (wx > maxX) maxX = wx;
+      if (wy < minY) minY = wy;
+      if (wy > maxY) maxY = wy;
+      if (wz < minZ) minZ = wz;
+      if (wz > maxZ) maxZ = wz;
+    }
+    out[0] = minX; out[1] = minY; out[2] = minZ; out[3] = maxX; out[4] = maxY; out[5] = maxZ;
+    out[6] = (maxX - minX) * (maxY - minY) * (maxZ - minZ);
+    return true;
+  }
+  function wxOccluders(scene, now, cam) {
+    if (now - wxOccl.listAt < 1000) return wxOccl;
     const list = [];
     try {
       scene.traverse((o) => {
         if (list.length >= 900 || !o || !o.isMesh || !o.geometry) return;
-        if (o.children && o.children.length) return;
         if (cam && wxUnderCam(o, cam)) return; // viewmodel rides the camera
         const nm = `${o.name || ""} ${(o.geometry && o.geometry.name) || ""}`;
         if (/sky|cloud|fog|dome|nodraw|tools/i.test(nm)) return;
-        const box = wxOccl.box;
-        try { box.setFromObject(o); } catch (_) { return; }
-        const sx = box.max.x - box.min.x, sy = box.max.y - box.min.y, sz = box.max.z - box.min.z;
-        if (!isFinite(sx) || !isFinite(sy) || !isFinite(sz)) return;
+        if (!wxWorldAABB(o, wxScratch)) return;
+        const sy = wxScratch[4] - wxScratch[1];
         // skip paper-thin decals and whole-map shells (terrain, skybox)
-        if (sy < 0.03 || sx * sy * sz > 60000) return;
-        list.push([box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z, sx * sy * sz]);
+        if (!isFinite(sy) || sy < 0.03 || wxScratch[6] > 60000) return;
+        list.push(wxScratch.slice(0));
       });
     } catch (_) {}
     wxOccl.list = list;
     wxOccl.listAt = now;
     return wxOccl;
   }
-  // mesh-AABB fallback: only used when the physics API is unavailable
   function wxCoveredMesh(g, now) {
     const p = g && g.player, scene = g && g.scene;
     if (!p || !scene) return null;
     const K = wxOccluders(scene, now, g.camera);
-    if (!K || !K.list.length) return null;
+    if (!K.list.length) return null;
     const px = p.x, py = p.y, pz = p.z, eye = py + (isFinite(p.eyeH) ? p.eyeH : 1.6);
     const [fwx, fwz] = wxFwdXZ(g, p);
     const fx1 = px + fwx * 1.6, fz1 = pz + fwz * 1.6;
     const inBox = (o, x, y, z) => x > o[0] && x < o[3] && y > o[1] && y < o[4] && z > o[2] && z < o[5];
     let roof = false, front = false, sides = 0;
     for (const o of K.list) {
-      if (!roof && o[1] > py + 1.5 && o[1] < py + 9 && px > o[0] && px < o[3] && pz > o[2] && pz < o[5]) roof = true;
+      // roof-like = a slab overhead, not a whole building's bounding box
+      if (!roof && o[1] > py + 1.5 && o[1] < py + 9 && o[3] - o[0] <= 40 && o[5] - o[2] <= 40 && px > o[0] && px < o[3] && pz > o[2] && pz < o[5]) roof = true;
       if (!front && o[6] >= 1.5 && inBox(o, fx1, eye - 0.2, fz1)) front = true;
       if (sides < 4) {
         if (inBox(o, px + 2.2, eye - 0.4, pz)) sides++;
@@ -2036,7 +2114,7 @@
         else if (inBox(o, px, eye - 0.4, pz - 2.2)) sides++;
       }
     }
-    return { on: roof || front || sides >= 3, why: "mesh" };
+    return { on: roof || front || sides >= 3, why: roof ? "roof mesh" : front ? "front mesh" : "room mesh" };
   }
   function wxCovered(g, now) {
     if (settings.wxCoverHide === false) { wxSetCover("off", false); return false; }
@@ -2045,9 +2123,20 @@
     if (now - wxCoverAt < 180) return wxCover;
     wxCoverAt = now;
     const phys = g.physics && typeof g.physics.raycast === "function" ? g.physics : null;
-    const r = (phys && wxCoveredPhys(phys, g, p)) || wxCoveredMesh(g, now);
-    const on = !!(r && r.on);
-    wxSetCover(r ? (on ? r.why : ("clear" + (r.why ? " " + r.why : ""))) : "—", on);
+    const r = phys ? wxCoveredPhys(phys, g, p, now) : null;
+    let on = !!(r && r.on), txt = r ? r.why : "";
+    if (!on && r) {
+      const br = wxBrushRoof(phys, g, p, now);
+      if (br >= 0) { on = true; txt = `roof brush ${br}m`; }
+      else txt = "clear" + (r.tag || "");
+    }
+    if (!on) {
+      const m = wxCoveredMesh(g, now);
+      if (m && m.on) { on = true; txt = m.why; }
+      else if (!r) txt = m ? "clear mesh" : "—";
+      else if (m) txt += " mesh";
+    }
+    wxSetCover(txt || "—", on);
     return on;
   }
   function tickWeather3D(g, dt, now) {
