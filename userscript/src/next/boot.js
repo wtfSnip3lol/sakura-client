@@ -73,11 +73,9 @@ host = SK.host();
 shadow = SK.shadow();
 overlay = SK.overlayCanvas();
 
-// Insert toggles the menu. The game does not bind Insert, and this runs in the
-// capture phase so the game cannot swallow it first.
-window.addEventListener("keydown", function (e) {
-  if (e.code === "Insert") { e.preventDefault(); toggleMenu(); }
-}, true);
+// The menu key is owned by the hotkey registry (features/keys.js) so it is
+// rebindable; the core listener is capture-phase, so the game cannot swallow it
+// first. Nothing here hard-wires Insert any more.
 
 // Floating logo button — the one control that always works.
 var btnEl = document.createElement("div");
@@ -92,11 +90,14 @@ btnEl.onclick = function (e) { e.stopPropagation(); toggleMenu(); };
 // ── public surface (tests + later passes) ─────────────────────────────────
 // Note: rebuildPanel / cardsFor / show live inside buildPanel's body in the
 // v2 client, so they are not reachable from here — the cards call rebuildPanel
-// themselves. This surface is only what genuinely exists at bundle scope.
+// themselves. rebuild() reproduces its two lines for the new modules, which do
+// not sit inside that closure. This surface is only what genuinely exists at
+// bundle scope.
 SK.panel = {
   open: function () { setMenuOpen(true); },
   close: function () { setMenuOpen(false); },
   toggle: function () { toggleMenu(); },
+  rebuild: function () { if (panelEl) { panelEl.remove(); panelEl = null; } setMenuOpen(true); },
   el: function () { return panelEl; },
   isOpen: function () { return !!menuOpen; }
 };

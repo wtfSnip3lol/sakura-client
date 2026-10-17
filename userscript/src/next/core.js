@@ -95,7 +95,7 @@
   // climbs past the budget — the uncapped-framerate case, where the client is
   // the bottleneck and the game is fine.
   var tasks = [], byName = new Map(), frame = 0, lastNow = 0, running = false;
-  var budgetMs = 3.5, ourMs = 0, carryMs = 0;
+  var budgetMs = 3.5, ourMs = 0, carryMs = 0, cosmeticOff = false;
   var stats = { fps: 0, frameMs: 0, worstMs: 0, frames: 0, fpsAt: 0, skipped: 0, cost: {} };
 
   function task(def) {
@@ -128,6 +128,10 @@
   SK.stats = function () { return stats; };
   SK.setBudget = function (ms) { budgetMs = Math.max(0, chNum(ms, budgetMs)); };
   SK.budget = function () { return budgetMs; };
+  // Global cosmetic pause: the auto-quality feature flips this when the frame
+  // rate falls below its target, so every prio-1 task yields at once.
+  SK.stopCosmetic = function (on) { cosmeticOff = !!on; };
+  SK.cosmeticOff = function () { return cosmeticOff; };
 
   function tick(ts) {
     if (!running) return;
@@ -146,7 +150,7 @@
       if (t.off || !t.fn) continue;
       if (t.when && !safeWhen(t)) continue;
       if (ts < t.next) continue;
-      if (over && t.prio === 1) { stats.skipped++; t.next = ts + 16; continue; }
+      if (t.prio === 1 && (cosmeticOff || over)) { stats.skipped++; t.next = ts + 16; continue; }
       t.next = ts + (t.hz > 0 ? Math.max(1, 1000 / t.hz) : 0);
       var a = perfNow();
       try { t.fn(dt, ts); } catch (e) { t.off = true; SK.warn("task " + t.name + " threw, disabled:", e); }
@@ -261,6 +265,27 @@
   SK.overlayCanvas = function () { overlayCtx(); return overlay.cv; };
   SK.overlayRect = function () { return { left: 0, top: 0, right: overlay.w, bottom: overlay.h, width: overlay.w, height: overlay.h }; };
   on(W, "resize", function () { overlay.dirty = true; resizeOverlay(false); });
+
+  // ── toast: short confirmations, so an action never feels like it did nothing ──
+  var toastEl = null, toastTimer = 0;
+  function alert2(msg, ms) {
+    try {
+      mount();
+      if (!toastEl) {
+        toastEl = el("div", "sk-toast");
+        toastEl.style.cssText = "position:absolute;left:50%;bottom:34px;transform:translateX(-50%);padding:7px 13px;" +
+          "border-radius:9px;background:rgba(20,14,18,.92);color:#f6eef2;font:600 12px/1.3 'Inter',system-ui,sans-serif;" +
+          "box-shadow:0 0 0 1px rgba(255,107,157,.45),0 10px 26px rgba(0,0,0,.5);pointer-events:none;opacity:0;" +
+          "transition:opacity .18s ease;z-index:5;white-space:nowrap;";
+        shadow.appendChild(toastEl);
+      }
+      toastEl.textContent = String(msg);
+      toastEl.style.opacity = "1";
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(function () { if (toastEl) toastEl.style.opacity = "0"; }, Math.max(600, ms || 1600));
+    } catch (_) {}
+  }
+  SK.alert = alert2;
 
   // ── events (internal bus; features use it instead of polling) ─────────────
   var subs = {};

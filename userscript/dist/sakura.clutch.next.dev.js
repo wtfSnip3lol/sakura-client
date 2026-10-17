@@ -20,6 +20,44 @@ var DEFAULTS = {
 var SAKURA_STORE_KEY = "sakura.minimal.v1";
 
 
+// ── src/next/defaults.ext.js — settings schema (new modules) ──
+/* New settings keys for features the v2 client does not have.
+ *
+ * Loaded straight after defaults.gen.js and before core.js, so these keys are
+ * part of the schema when the engine snapshots it: they persist, they load, and
+ * the panel's own rows read the same values.
+ */
+Object.assign(DEFAULTS, {
+  // Perf dashboard: frame-time graph + panel strip + task cost table
+  perfOn: true,
+  perfStrip: true,
+  perfGraph: true,
+  perfGraphPos: "bl",
+  perfGraphScale: 33,
+  perfTable: true,
+  perfAuto: false,
+  perfAutoFps: 110,
+  perfBudget: 3.5,
+
+  // Hotkeys
+  hkOn: true,
+  hkMenu: "Insert",
+  hkGraph: "F8",
+  hkMove: "F9",
+  hkPerf: "F10",
+
+  // Movement meter (counter-strafe / stop-to-shoot)
+  mvOn: false,
+  mvStyle: "bar",
+  mvPos: "bottom",
+  mvColor: "#7de3ff",
+  mvReady: 2,
+  mvScale: 7,
+  mvAutoScale: true,
+  mvSpeedText: true
+});
+
+
 // ── src/next/core.js — engine core ──
 /* Sakura client — engine core (rewrite).
  *
@@ -118,7 +156,7 @@ var SAKURA_STORE_KEY = "sakura.minimal.v1";
   // climbs past the budget — the uncapped-framerate case, where the client is
   // the bottleneck and the game is fine.
   var tasks = [], byName = new Map(), frame = 0, lastNow = 0, running = false;
-  var budgetMs = 3.5, ourMs = 0, carryMs = 0;
+  var budgetMs = 3.5, ourMs = 0, carryMs = 0, cosmeticOff = false;
   var stats = { fps: 0, frameMs: 0, worstMs: 0, frames: 0, fpsAt: 0, skipped: 0, cost: {} };
 
   function task(def) {
@@ -151,6 +189,10 @@ var SAKURA_STORE_KEY = "sakura.minimal.v1";
   SK.stats = function () { return stats; };
   SK.setBudget = function (ms) { budgetMs = Math.max(0, chNum(ms, budgetMs)); };
   SK.budget = function () { return budgetMs; };
+  // Global cosmetic pause: the auto-quality feature flips this when the frame
+  // rate falls below its target, so every prio-1 task yields at once.
+  SK.stopCosmetic = function (on) { cosmeticOff = !!on; };
+  SK.cosmeticOff = function () { return cosmeticOff; };
 
   function tick(ts) {
     if (!running) return;
@@ -169,7 +211,7 @@ var SAKURA_STORE_KEY = "sakura.minimal.v1";
       if (t.off || !t.fn) continue;
       if (t.when && !safeWhen(t)) continue;
       if (ts < t.next) continue;
-      if (over && t.prio === 1) { stats.skipped++; t.next = ts + 16; continue; }
+      if (t.prio === 1 && (cosmeticOff || over)) { stats.skipped++; t.next = ts + 16; continue; }
       t.next = ts + (t.hz > 0 ? Math.max(1, 1000 / t.hz) : 0);
       var a = perfNow();
       try { t.fn(dt, ts); } catch (e) { t.off = true; SK.warn("task " + t.name + " threw, disabled:", e); }
@@ -284,6 +326,27 @@ var SAKURA_STORE_KEY = "sakura.minimal.v1";
   SK.overlayCanvas = function () { overlayCtx(); return overlay.cv; };
   SK.overlayRect = function () { return { left: 0, top: 0, right: overlay.w, bottom: overlay.h, width: overlay.w, height: overlay.h }; };
   on(W, "resize", function () { overlay.dirty = true; resizeOverlay(false); });
+
+  // ── toast: short confirmations, so an action never feels like it did nothing ──
+  var toastEl = null, toastTimer = 0;
+  function alert2(msg, ms) {
+    try {
+      mount();
+      if (!toastEl) {
+        toastEl = el("div", "sk-toast");
+        toastEl.style.cssText = "position:absolute;left:50%;bottom:34px;transform:translateX(-50%);padding:7px 13px;" +
+          "border-radius:9px;background:rgba(20,14,18,.92);color:#f6eef2;font:600 12px/1.3 'Inter',system-ui,sans-serif;" +
+          "box-shadow:0 0 0 1px rgba(255,107,157,.45),0 10px 26px rgba(0,0,0,.5);pointer-events:none;opacity:0;" +
+          "transition:opacity .18s ease;z-index:5;white-space:nowrap;";
+        shadow.appendChild(toastEl);
+      }
+      toastEl.textContent = String(msg);
+      toastEl.style.opacity = "1";
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(function () { if (toastEl) toastEl.style.opacity = "0"; }, Math.max(600, ms || 1600));
+    } catch (_) {}
+  }
+  SK.alert = alert2;
 
   // ── events (internal bus; features use it instead of polling) ─────────────
   var subs = {};
@@ -594,6 +657,852 @@ var SAKURA_STORE_KEY = "sakura.minimal.v1";
     live: function (g) { g = g || get(); var p = player(g); return playing(g) && !!scene(g) && !!p && p.alive !== false; }
   };
   SK.log("game adapter ready");
+})();
+
+
+// ── src/next/features/perf.js — feature: perf dashboard + overlay painters ──
+/* Perf dashboard (new, no v2 equivalent).
+ *
+ * Everything here reads the engine's own instrumentation, which is the point:
+ * the client's cost is measurable, so "is this feature eating my frames?" is a
+ * number in the panel instead of a guess.
+ *
+ *   - frame-time graph on the overlay (unified with the other widgets)
+ *   - one-line strip inside the panel header
+ *   - per-task cost table, sorted by what actually costs most
+ *   - auto quality: drop cosmetic tasks when the frame rate falls below target
+ */
+(function () {
+  "use strict";
+  var SK = window.__sk;
+
+  // ── frame samples (ring buffer, milliseconds) ─────────────────────────────
+  var N = 180;
+  var ring = new Float32Array(N);
+  var head = 0;
+  var filled = 0;
+  var peak = 16.7;
+
+  function sample(dtSec) {
+    var ms = dtSec * 1000;
+    ring[head] = ms;
+    head = (head + 1) % N;
+    if (filled < N) filled++;
+    if (ms > peak) peak = ms;
+    else peak = peak * 0.999 + ms * 0.001;   // decays back down
+  }
+  function series() {
+    var out = [];
+    for (var i = 0; i < filled; i++) out.push(ring[(head - filled + i + N * 2) % N]);
+    return out;
+  }
+  function avg() {
+    if (!filled) return 0;
+    var s = 0;
+    for (var i = 0; i < filled; i++) s += ring[i];
+    return s / filled;
+  }
+
+  // ── task cost table ──────────────────────────────────────────────────────
+  // `ms` is per invocation; `per` is what that invocation costs the frame
+  // (a 2 ms task at 10 Hz is 0.2 ms) — the number that decides whether a
+  // feature is affordable, and the one the budget reasons about.
+  function taskRows() {
+    var s = SK.stats();
+    var fps = Math.max(30, s.fps || 60);
+    return SK.tasks()
+      .map(function (t) {
+        var ms = Math.round((s.cost[t.name] || 0) * 1000) / 1000;
+        var per = t.hz > 0 ? ms * Math.min(1, t.hz / fps) : ms;
+        return {
+          name: t.name,
+          ms: ms,
+          per: Math.round(per * 1000) / 1000,
+          hz: t.hz === 0 ? "frame" : t.hz + "Hz",
+          prio: t.prio,
+          runs: t.runs,
+          off: !!t.off
+        };
+      })
+      .sort(function (a, b) { return b.per - a.per; });
+  }
+  function totalMs() {
+    var rows = taskRows(), sum = 0;
+    for (var i = 0; i < rows.length; i++) sum += rows[i].per;
+    return Math.round(sum * 1000) / 1000;
+  }
+
+  // ── summary line ─────────────────────────────────────────────────────────
+  function summary() {
+    var s = SK.stats();
+    return s.fps + " fps · " + s.frameMs.toFixed(1) + " ms · client " + totalMs().toFixed(2) + " ms/frame · " +
+      SK.tasks().length + " tasks" + (SK.cosmeticOff() ? " · cosmetic paused" : "") +
+      (SK.autopilot.active() ? " · AUTO" : "");
+  }
+
+  // ── sampling task (every frame, cosmetic) ────────────────────────────────
+  SK.task({
+    name: "perf-sample", hz: 0, prio: 1,
+    when: function () { return SK.settings.perfOn && (SK.settings.perfGraph || SK.settings.perfAuto); },
+    fn: function (dt) { sample(dt); }
+  });
+
+  // ── the graph ────────────────────────────────────────────────────────────
+  var graphTasks = false;
+  function pos() {
+    var p = SK.settings.perfGraphPos || "bl";
+    var w = 168, h = 46, pad = 12;
+    var W = window.innerWidth, H = window.innerHeight;
+    var x = p === "tr" || p === "br" ? W - w - pad : pad;
+    var y = p === "tl" || p === "tr" ? pad + 30 : H - h - pad;
+    return { x: x, y: y, w: w, h: h };
+  }
+  function drawGraph(ctx) {
+    var s = series();
+    if (!s.length) return;
+    var box = pos();
+    var scale = Math.max(8, SK.chNum(SK.settings.perfGraphScale, 33));
+    var bw = box.w / N;
+
+    ctx.save();
+    ctx.globalAlpha = 0.9;
+    ctx.fillStyle = "rgba(12,10,14,0.62)";
+    ctx.fillRect(box.x, box.y, box.w, box.h);
+
+    // budget line
+    var budgetY = box.y + box.h - Math.min(1, SK.budget() / scale) * box.h;
+    ctx.strokeStyle = "rgba(255,107,157,0.55)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(box.x, budgetY + 0.5);
+    ctx.lineTo(box.x + box.w, budgetY + 0.5);
+    ctx.stroke();
+
+    // 16.7 / 33.3 guides
+    ctx.strokeStyle = "rgba(255,255,255,0.10)";
+    [16.7, 33.3].forEach(function (g) {
+      if (g > scale) return;
+      var y = box.y + box.h - (g / scale) * box.h + 0.5;
+      ctx.beginPath();
+      ctx.moveTo(box.x, y);
+      ctx.lineTo(box.x + box.w, y);
+      ctx.stroke();
+    });
+
+    for (var i = 0; i < s.length; i++) {
+      var t = Math.min(s[i], scale);
+      var bh = Math.max(1, (t / scale) * box.h);
+      ctx.fillStyle = s[i] > 33.3 ? "#ff6b6b" : s[i] > 16.7 ? "#ffd166" : "#7de3ff";
+      ctx.fillRect(box.x + i * bw, box.y + box.h - bh, Math.max(1, bw - 0.4), bh);
+    }
+    ctx.restore();
+  }
+
+  // One overlay draw task for the engine; features add painters to it so there
+  // is still exactly one canvas and one clear per frame.
+  var painters = [];
+  SK.paint = function (name, fn) { painters.push({ name: name, fn: fn }); };
+  SK.task({
+    name: "overlay-paint", hz: 0, prio: 1,
+    when: function () { return painters.length > 0; },
+    fn: function () {
+      var o = SK.overlay();
+      var ctx = o.begin();
+      var drew = false;
+      for (var i = 0; i < painters.length; i++) {
+        if (painters[i].fn(ctx, o) !== false) drew = true;
+      }
+      if (drew) o.end();
+    }
+  });
+  SK.paint("perf-graph", function (ctx) {
+    if (!SK.settings.perfOn || !SK.settings.perfGraph) return false;
+    drawGraph(ctx);
+    return true;
+  });
+
+  // ── auto quality ─────────────────────────────────────────────────────────
+  var auto = { on: false, lowFor: 0, okFor: 0 };
+  SK.task({
+    name: "perf-auto", hz: 1, prio: 0,
+    when: function () { return !!SK.settings.perfAuto; },
+    fn: function () {
+      var fps = SK.stats().fps;
+      var target = SK.chNum(SK.settings.perfAutoFps, 110);
+      if (!fps) return;
+      if (fps < target * 0.92) {
+        auto.lowFor++; auto.okFor = 0;
+        if (auto.lowFor >= 2 && !SK.cosmeticOff()) { SK.stopCosmetic(true); auto.on = true; SK.log("auto quality: cosmetic tasks paused at", fps, "fps"); }
+      } else if (fps > target) {
+        auto.okFor++; auto.lowFor = 0;
+        if (auto.okFor >= 4 && SK.cosmeticOff()) { SK.stopCosmetic(false); auto.on = false; SK.log("auto quality: cosmetic tasks resumed at", fps, "fps"); }
+      } else { auto.lowFor = 0; auto.okFor = 0; }
+    }
+  });
+  SK.autopilot = {
+    active: function () { return auto.on; },
+    status: function () {
+      if (!SK.settings.perfAuto) return "off";
+      return auto.on ? "paused cosmetic (low fps)" : "watching";
+    }
+  };
+
+  // Turning the autopilot off must lift its pause immediately: the recovery
+  // branch lives inside a task that only runs while it is on, so without this
+  // the cosmetic half of the client would stay stopped until a reload.
+  SK.watch(["perfAuto"], function () {
+    if (!SK.settings.perfAuto) {
+      auto.on = false;
+      auto.lowFor = 0;
+      auto.okFor = 0;
+      if (SK.cosmeticOff()) { SK.stopCosmetic(false); SK.log("auto quality: off, cosmetic tasks resumed"); }
+    }
+  });
+
+  // ── budget wiring ────────────────────────────────────────────────────────
+  SK.watch(["perfBudget"], function () { SK.setBudget(SK.chNum(SK.settings.perfBudget, 3.5)); });
+  SK.setBudget(SK.chNum(SK.settings.perfBudget, 3.5));
+
+  SK.perf = {
+    series: series, avg: avg, peak: function () { return peak; },
+    taskRows: taskRows, totalMs: totalMs, summary: summary
+  };
+})();
+
+
+// ── src/next/features/keys.js — feature: rebindable hotkeys ──
+/* Hotkeys (new, no v2 equivalent).
+ *
+ * The v2 client had exactly one binding (Insert) hard-wired in a capture-phase
+ * listener, so two clients or a game that swallows Insert left you with nothing
+ * but the floating button. This is a registry instead: each hotkey has a setting
+ * key, a default, and an action, so it is rebindable from the panel and the
+ * panel's key-capture control cannot silently lose the old binding.
+ */
+(function () {
+  "use strict";
+  var SK = window.__sk;
+
+  var HKS = [];
+
+  function bound(h) {
+    var v = SK.settings[h.key];
+    return String(v == null || v === "" ? h.fallback : v);
+  }
+
+  function register(key, label, fallback, fn) {
+    var h = { key: key, label: label, fallback: fallback, fn: fn };
+    HKS.push(h);
+    return h;
+  }
+
+  function list() {
+    return HKS.map(function (h) {
+      return { key: h.key, label: h.label, code: bound(h), fallback: h.fallback };
+    });
+  }
+
+  // Two bindings on the same key: the first registration wins, so report it
+  // rather than letting the panel quietly show a key that does nothing.
+  function conflicts() {
+    var seen = {}, out = [];
+    HKS.forEach(function (h) {
+      var c = bound(h);
+      if (seen[c]) out.push(seen[c] + " + " + h.label + " = " + c);
+      else seen[c] = h.label;
+    });
+    return out;
+  }
+
+  SK.task({
+    name: "hotkey-conflicts", hz: 0.5, prio: 1,
+    when: function () { return SK.settings.hkOn !== false; },
+    fn: function () {
+      var c = conflicts();
+      if (c.length && !SK._hkWarned) { SK._hkWarned = true; SK.warn("hotkey conflict:", c.join("; ")); }
+      if (!c.length) SK._hkWarned = false;
+    }
+  });
+
+  SK.on2("key:down", function (code) {
+    if (SK.settings.hkOn === false) return;
+    for (var i = 0; i < HKS.length; i++) {
+      if (bound(HKS[i]) === code) {
+        try { HKS[i].fn(); } catch (e) { SK.warn("hotkey " + HKS[i].key, e); }
+        return;
+      }
+    }
+  });
+
+  // Panel control: click, then press. Escape cancels, Backspace clears.
+  function capture(key, fallback) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "sk-btn";
+    var paint = function () {
+      b.textContent = String(SK.settings[key] == null || SK.settings[key] === "" ? fallback : SK.settings[key]);
+      b.title = "Click, then press a key (Backspace clears)";
+    };
+    b.onclick = function (e) {
+      e.stopPropagation();
+      b.textContent = "press a key…";
+      var done = function (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        window.removeEventListener("keydown", done, true);
+        if (ev.code === "Escape") { /* cancel */ }
+        else if (ev.code === "Backspace" || ev.code === "Delete") { SK.settings[key] = ""; SK.save(); }
+        else { SK.settings[key] = ev.code; SK.save(); }
+        paint();
+      };
+      window.addEventListener("keydown", done, true);
+    };
+    paint();
+    return b;
+  }
+
+  // ── the bindings ─────────────────────────────────────────────────────────
+  register("hkMenu", "Menu", "Insert", function () {
+    if (SK.panel) SK.panel.toggle();
+  });
+  register("hkGraph", "Frame graph", "F8", function () {
+    SK.settings.perfGraph = SK.settings.perfGraph === false;
+    SK.save();
+  });
+  register("hkPerf", "Dashboard (graph + strip)", "F10", function () {
+    SK.settings.perfOn = !SK.settings.perfOn;
+    SK.save();
+  });
+  register("hkMove", "Movement meter", "F9", function () {
+    SK.settings.mvOn = !SK.settings.mvOn;
+    SK.save();
+  });
+
+  SK.hotkeys = { register: register, list: list, capture: capture, conflicts: conflicts };
+})();
+
+
+// ── src/next/features/move.js — feature: movement meter ──
+/* Movement meter (new, no v2 equivalent).
+ *
+ * Stop-to-shoot discipline is the one mechanical skill that costs clutch rounds
+ * and it is invisible in the HUD: you cannot see that your horizontal speed is
+ * still 3.4 m/s when you pull the trigger. This reads the player's own velocity
+ * (game.player.vx/vz — nothing is written back) and shows the current speed, a
+ * scale, and a threshold marker, so "READY" means "your bullets will go where
+ * the crosshair is".
+ *
+ * The scale auto-fits to the fastest you have actually moved this session, so it
+ * reads correctly whatever units the map's movement uses.
+ */
+(function () {
+  "use strict";
+  var SK = window.__sk;
+
+  var speed = 0, peak = 3, ready = false, samples = 0;
+
+  function sample() {
+    var p = SK.game.player();
+    var vx = p && Number.isFinite(p.vx) ? p.vx : 0;
+    var vz = p && Number.isFinite(p.vz) ? p.vz : 0;
+    speed = Math.sqrt(vx * vx + vz * vz);
+    if (speed > peak) peak = speed;
+    else peak = peak * 0.9995 + speed * 0.0005;
+    ready = speed <= SK.chNum(SK.settings.mvReady, 2);
+    samples++;
+    return speed;
+  }
+
+  function scale() {
+    var fixed = SK.chNum(SK.settings.mvScale, 7);
+    if (SK.settings.mvAutoScale === false) return Math.max(1, fixed);
+    return Math.max(2.5, peak * 1.05);
+  }
+
+  function color() {
+    return ready ? "#6ee7a8" : (SK.settings.mvColor || "#7de3ff");
+  }
+
+  // ── overlay widget ───────────────────────────────────────────────────────
+  SK.paint("move-meter", function (ctx, o) {
+    if (!SK.settings.mvOn) return false;
+    if (!SK.game.live()) return false;
+    sample();
+
+    var style = SK.settings.mvStyle || "bar";
+    var top = (SK.settings.mvPos || "bottom") === "top";
+    var W = o.w || window.innerWidth;
+    var readyNow = ready;
+
+    ctx.save();
+    ctx.textBaseline = "middle";
+    ctx.font = '600 11px "Inter", system-ui, sans-serif';
+
+    if (style === "ready") {
+      // just a badge; nothing on screen while you are moving
+      var bw = 74, bh = 20, bx = (W - bw) / 2, by = top ? 54 : (o.h || window.innerHeight) - 74;
+      if (readyNow) {
+        ctx.fillStyle = "rgba(110,231,168,0.16)";
+        ctx.strokeStyle = color();
+        ctx.lineWidth = 1;
+        roundRect(ctx, bx, by, bw, bh, 6);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = color();
+        ctx.textAlign = "center";
+        ctx.fillText("READY", bx + bw / 2, by + bh / 2 + 0.5);
+      }
+      ctx.restore();
+      return true;
+    }
+
+    var compact = style === "compact";
+    var w = compact ? 132 : 236;
+    var h = compact ? 8 : 12;
+    var x = (W - w) / 2;
+    var y = top ? 54 : (o.h || window.innerHeight) - 74;
+    var sc = scale();
+
+    ctx.fillStyle = "rgba(12,10,14,0.60)";
+    roundRect(ctx, x, y, w, h, h / 2);
+    ctx.fill();
+
+    var frac = Math.max(0, Math.min(1, speed / sc));
+    ctx.fillStyle = color();
+    roundRect(ctx, x, y, Math.max(2, w * frac), h, h / 2);
+    ctx.fill();
+
+    // threshold marker
+    var tx = x + w * Math.max(0, Math.min(1, SK.chNum(SK.settings.mvReady, 2) / sc));
+    ctx.strokeStyle = "rgba(255,255,255,0.75)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(tx + 0.5, y - 2);
+    ctx.lineTo(tx + 0.5, y + h + 2);
+    ctx.stroke();
+
+    if (SK.settings.mvSpeedText !== false) {
+      ctx.textAlign = "right";
+      ctx.fillStyle = color();
+      ctx.fillText(speed.toFixed(1) + " m/s", x + w, y - 8);
+      if (readyNow) {
+        ctx.textAlign = "left";
+        ctx.fillText("READY", x, y - 8);
+      }
+    }
+    ctx.restore();
+    return true;
+  });
+
+  function roundRect(ctx, x, y, w, h, r) {
+    var rr = Math.min(r, h / 2, w / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.lineTo(x + w - rr, y);
+    ctx.arcTo(x + w, y, x + w, y + rr, rr);
+    ctx.lineTo(x + w, y + h - rr);
+    ctx.arcTo(x + w, y + h, x + w - rr, y + h, rr);
+    ctx.lineTo(x + rr, y + h);
+    ctx.arcTo(x, y + h, x, y + h - rr, rr);
+    ctx.lineTo(x, y + rr);
+    ctx.arcTo(x, y, x + rr, y, rr);
+    ctx.closePath();
+  }
+
+  // 20 Hz is plenty for a number a human reads, and it keeps working when the
+  // overlay painter is skipped (menu open and graph hidden, say).
+  SK.task({
+    name: "move-sample", hz: 20, prio: 1,
+    when: function () { return !!SK.settings.mvOn; },
+    fn: sample
+  });
+
+  SK.move = {
+    sample: sample,
+    speed: function () { return speed; },
+    peak: function () { return peak; },
+    scale: scale,
+    ready: function () { return ready; },
+    samples: function () { return samples; },
+    status: function () {
+      if (!SK.settings.mvOn) return "off";
+      if (!SK.game.live()) return "waiting for a match";
+      return speed.toFixed(2) + " m/s · " + (ready ? "ready" : "moving") + " · scale " + scale().toFixed(1);
+    }
+  };
+})();
+
+
+// ── src/next/features/profiles.js — feature: config profiles ──
+/* Config profiles (new, no v2 equivalent).
+ *
+ * The v2 client has Export/Import as a JSON blob through the clipboard, which
+ * means one config at a time and a text field in the way. This keeps several
+ * named snapshots inside the same localStorage the client already uses, so a
+ * profile is one click to save and one click to switch back.
+ */
+(function () {
+  "use strict";
+  var SK = window.__sk;
+  var KEY = "sakura.profiles.v1";
+
+  function all() {
+    try {
+      var raw = JSON.parse(localStorage.getItem(KEY) || "{}");
+      return raw && typeof raw === "object" ? raw : {};
+    } catch (_) { return {}; }
+  }
+  function write(obj) {
+    try { localStorage.setItem(KEY, JSON.stringify(obj)); SK.alert("profiles saved"); } catch (e) { SK.warn("profile write", e); }
+  }
+  function names() { return Object.keys(all()).sort(); }
+
+  function saveAs(name) {
+    name = String(name || "").trim();
+    if (!name) return false;
+    var o = all();
+    o[name] = JSON.parse(JSON.stringify(SK.settings));
+    write(o);
+    SK.log("profile saved:", name, "(" + Object.keys(o[name]).length + " keys)");
+    return true;
+  }
+
+  function load(name) {
+    var snap = all()[name];
+    if (!snap) return false;
+    var n = 0;
+    for (var k in snap) {
+      if (Object.prototype.hasOwnProperty.call(SK.settings, k)) { SK.settings[k] = snap[k]; n++; }
+    }
+    SK.save();
+    SK.flush();          // write through now: a load that is not persisted is a trap
+    SK.log("profile loaded:", name, "(" + n + " keys)");
+    return true;
+  }
+
+  function del(name) {
+    var o = all();
+    if (!o[name]) return false;
+    delete o[name];
+    write(o);
+    return true;
+  }
+
+  function size(name) {
+    var s = all()[name];
+    return s ? Object.keys(s).length + " keys" : "";
+  }
+
+  SK.profiles = { names: names, save: saveAs, load: load, del: del, size: size, key: KEY };
+})();
+
+
+// ── src/next/ext.js — feature: EXTRA tab in the Lunar panel ──
+/* EXTRA tab (new).
+ *
+ * The panel is lifted verbatim from the v2 client, so the new modules cannot be
+ * added by editing it — and they should not be: "same UI" is only true if the
+ * lifted panel stays lifted. Instead this layer attaches a third tab to the
+ * Lunar panel after it is built, and builds its cards with the panel's own
+ * vocabulary (row / toggleSwitch / rangeField / selectField / actionBtn /
+ * moduleCard), so everything here looks native without touching generated code.
+ *
+ * The panel is destroyed and rebuilt by rebuildPanel(), so attaching is a small
+ * idempotent mount that the engine re-runs whenever the tab goes missing.
+ */
+(function () {
+  "use strict";
+  var SK = window.__sk;
+  function S() { return SK.settings; }
+
+  // ── live elements: one 2 Hz task refreshes them, disconnected ones are
+  // dropped, so a panel rebuild cannot leak readers. ─────────────────────────
+  var liveList = [];
+  function live(el, fn) { liveList.push({ el: el, fn: fn }); return el; }
+  SK.task({
+    name: "ext-live", hz: 2, prio: 1,
+    when: function () { return liveList.length > 0; },
+    fn: function () {
+      for (var i = liveList.length - 1; i >= 0; i--) {
+        var it = liveList[i];
+        if (!it.el.isConnected) { liveList.splice(i, 1); continue; }
+        try { it.fn(it.el); } catch (e) { SK.warn("ext live", e); }
+      }
+    }
+  });
+
+  function group() {
+    var g = document.createElement("div");
+    g.style.cssText = "display:flex;gap:6px;align-items:center;";
+    for (var i = 0; i < arguments.length; i++) g.appendChild(arguments[i]);
+    return g;
+  }
+  function val(text) {
+    var s = document.createElement("span");
+    s.className = "sk-val";
+    s.textContent = text;
+    return s;
+  }
+
+  // ── Performance ──────────────────────────────────────────────────────────
+  function perfCard() {
+    var s = S();
+    var autoVal = val(SK.autopilot.status());
+    live(autoVal, function (el) { el.textContent = SK.autopilot.status(); });
+
+    var table = document.createElement("div");
+    table.style.cssText = "font:500 11px/1.65 ui-monospace,Menlo,Consolas,monospace;opacity:.75;white-space:pre;overflow-x:auto;padding:2px 0 0;";
+    live(table, function (el) {
+      if (s.perfTable === false) { el.textContent = ""; return; }
+      var rows = SK.perf.taskRows().slice(0, 8);
+      el.textContent = "ms/frame   task                     cadence (per run)" + rows.map(function (r) {
+        return "\n" + r.per.toFixed(3).padStart(7) + "   " + r.name.padEnd(22) + "  " + r.hz +
+          (r.hz === "frame" ? "" : " (" + r.ms.toFixed(2) + "ms)") + (r.off ? "  OFF" : "");
+      }).join("");
+    });
+
+    return moduleCard("Performance", "Frame graph, per-task cost, and auto quality. All of it reads the client's own instrumentation.", s.perfOn, function (v) {
+      s.perfOn = v; SK.save();
+    }, [
+      row("Panel strip", "FPS / frame time / client cost, in the header", toggleSwitch(s.perfStrip !== false, function (v) { s.perfStrip = v; SK.save(); })),
+      row("Frame graph", "Frame time on the overlay", toggleSwitch(s.perfGraph !== false, function (v) { s.perfGraph = v; SK.save(); })),
+      row("Graph corner", null, selectField(s.perfGraphPos || "bl", [["bl", "Bottom left"], ["br", "Bottom right"], ["tl", "Top left"], ["tr", "Top right"]], function (v) { s.perfGraphPos = v; SK.save(); })),
+      row("Graph scale", "Worst frame time shown, ms", rangeField(SK.chNum(s.perfGraphScale, 33), 12, 100, 1, function (v) { s.perfGraphScale = v; SK.save(); })),
+      row("Cosmetic budget", "Cosmetic tasks yield above this client cost, ms", rangeField(SK.chNum(s.perfBudget, 3.5), 0.5, 12, 0.5, function (v) { s.perfBudget = v; SK.save(); })),
+      row("Auto quality", "Pause cosmetic tasks while FPS is under target", toggleSwitch(!!s.perfAuto, function (v) { s.perfAuto = v; SK.save(); })),
+      row("Target FPS", null, rangeField(SK.chNum(s.perfAutoFps, 110), 30, 240, 5, function (v) { s.perfAutoFps = v; SK.save(); })),
+      row("Auto state", "Live", autoVal),
+      row("Reset cost", "Clear the per-task averages", actionBtn("Reset", function () {
+        var c = SK.stats().cost;
+        for (var k in c) delete c[k];
+        SK.alert("task costs reset");
+      })),
+      table
+    ]);
+  }
+
+  // ── Hotkeys ──────────────────────────────────────────────────────────────
+  function hotkeyCard() {
+    var s = S();
+    var warn = val("no conflicts");
+    live(warn, function (el) {
+      var c = SK.hotkeys.conflicts();
+      el.textContent = c.length ? c.join(" · ") : "no conflicts";
+      el.style.color = c.length ? "#ffb86b" : "";
+    });
+
+    var rows = SK.hotkeys.list().map(function (h) {
+      return row(h.label, "Click, then press a key", SK.hotkeys.capture(h.key, h.fallback));
+    });
+    rows.push(row("Conflicts", "Two modules on one key", warn));
+
+    return moduleCard("Hotkeys", "Rebindable client keys. The menu key is no longer welded to Insert.", s.hkOn !== false, function (v) {
+      s.hkOn = v; SK.save();
+    }, rows);
+  }
+
+  // ── Movement meter ───────────────────────────────────────────────────────
+  function moveCard() {
+    var s = S();
+    var status = val(SK.move.status());
+    live(status, function (el) {
+      el.textContent = SK.move.status();
+      el.style.color = SK.move.ready() ? "#6ee7a8" : "";
+    });
+
+    return moduleCard("Movement meter", "Stop-to-shoot discipline: your horizontal speed and whether a shot would fly straight.", !!s.mvOn, function (v) {
+      s.mvOn = v; SK.save();
+    }, [
+      row("Status", "Live", status),
+      row("Style", null, selectField(s.mvStyle || "bar", [["bar", "Bar + speed"], ["compact", "Compact"], ["ready", "READY badge only"]], function (v) { s.mvStyle = v; SK.save(); })),
+      row("Position", null, selectField(s.mvPos || "bottom", [["bottom", "Bottom"], ["top", "Top"]], function (v) { s.mvPos = v; SK.save(); })),
+      row("Colour", "Used while moving", colorField(s.mvColor || "#7de3ff", function (v) { s.mvColor = v; SK.save(); })),
+      row("Ready under", "Speed that counts as stopped, m/s", rangeField(SK.chNum(s.mvReady, 2), 0.1, 10, 0.1, function (v) { s.mvReady = v; SK.save(); })),
+      row("Auto scale", "Fit the bar to your fastest observed speed", toggleSwitch(s.mvAutoScale !== false, function (v) { s.mvAutoScale = v; SK.save(); })),
+      row("Fixed scale", "Used when auto scale is off, m/s", rangeField(SK.chNum(s.mvScale, 7), 1, 40, 1, function (v) { s.mvScale = v; SK.save(); })),
+      row("Speed text", null, toggleSwitch(s.mvSpeedText !== false, function (v) { s.mvSpeedText = v; SK.save(); }))
+    ]);
+  }
+
+  // ── Config profiles ──────────────────────────────────────────────────────
+  function profileCard() {
+    var sel = document.createElement("select");
+    sel.className = "sk-field";
+    var sig = null;
+    live(sel, function (el) {
+      var names = SK.profiles.names();
+      var key = names.join("|");
+      if (key === sig) return;
+      sig = key;
+      var keep = el.value;
+      el.replaceChildren();
+      if (!names.length) {
+        var o = document.createElement("option");
+        o.value = ""; o.textContent = "no profiles yet";
+        el.appendChild(o);
+        el.disabled = true;
+      } else {
+        el.disabled = false;
+        names.forEach(function (n) {
+          var op = document.createElement("option");
+          op.value = n; op.textContent = n + "  (" + SK.profiles.size(n) + ")";
+          el.appendChild(op);
+        });
+        if (keep) el.value = keep;
+      }
+    });
+
+    var input = document.createElement("input");
+    input.className = "sk-field";
+    input.type = "text";
+    input.placeholder = "New profile name";
+    input.setAttribute("spellcheck", "false");
+
+    return moduleCard("Profiles", "Named snapshots of every setting, kept in the client's own storage.", true, null, [
+      row("Saved profiles", "Load or delete", sel),
+      row("Name", "Save the current settings under", input),
+      row("Actions", null, group(
+        actionBtn("Save", function () {
+          var n = String(input.value || "").trim();
+          if (!n) { SK.alert("give the profile a name"); return; }
+          if (SK.profiles.save(n)) { input.value = ""; SK.alert("saved “" + n + "”"); }
+        }),
+        actionBtn("Load", function () {
+          var n = sel.value;
+          if (!n) return;
+          if (SK.profiles.load(n)) {
+            SK.alert("loaded “" + n + "”");
+            SK.panel.rebuild();      // every other row re-reads the settings
+            mountExt();
+          }
+        }),
+        actionBtn("Delete", function () {
+          var n = sel.value;
+          if (!n) return;
+          SK.profiles.del(n);
+          SK.alert("deleted “" + n + "”");
+        })
+      )),
+      row("Copy JSON", "Same shape as the v2 Export row", actionBtn("Copy", function () {
+        var text = JSON.stringify(SK.settings, null, 2);
+        try {
+          navigator.clipboard.writeText(text);
+          SK.alert("settings copied");
+        } catch (_) { SK.alert("clipboard blocked"); }
+      })),
+      row("Paste JSON", "Replace settings from the clipboard", actionBtn("Paste", function () {
+        try {
+          navigator.clipboard.readText().then(function (t) {
+            var o = JSON.parse(t);
+            var n = 0;
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(SK.settings, k)) { SK.settings[k] = o[k]; n++; }
+            SK.save(); SK.flush();
+            SK.alert("applied " + n + " keys");
+            SK.panel.rebuild();
+            mountExt();
+          }, function () { SK.alert("clipboard blocked"); });
+        } catch (_) { SK.alert("clipboard blocked"); }
+      }))
+    ]);
+  }
+
+  // ── pane + tab ───────────────────────────────────────────────────────────
+  function paneCards() {
+    var intro = document.createElement("div");
+    intro.className = "sk-mdesc";
+    intro.style.cssText = "padding:0 2px 8px;";
+    intro.textContent = "New modules — features the v2 client never had, running on the rewrite's engine.";
+    return [intro, perfCard(), hotkeyCard(), moveCard(), profileCard()];
+  }
+
+  var mountedOn = null, tabBtn = null, pane = null, tabsRef = [];
+
+  function renderPane() {
+    if (!pane) return;
+    pane.replaceChildren.apply(pane, paneCards());
+  }
+
+  function activate(mine) {
+    tabBtn.classList.toggle("active", mine);
+    var p = mountedOn;
+    var grid = p.querySelector(".ln-grid");
+    var side = p.querySelector(".ln-side");
+    var setPane = p.querySelector(".ln-settings");
+    var srch = p.querySelector(".ln-search");
+    if (mine) {
+      // The lifted tabs only deactivate each other when one of them is clicked,
+      // so selecting EXTRA has to stand MODS/SETTINGS down itself.
+      tabsRef.forEach(function (b) { b.classList.remove("active"); });
+      if (grid) grid.style.display = "none";
+      if (side) side.style.display = "none";
+      if (setPane) setPane.style.display = "none";
+      if (srch) srch.style.visibility = "hidden";
+      pane.style.display = "";
+      renderPane();
+    } else {
+      pane.style.display = "none";
+    }
+  }
+
+  function mountStrip(head) {
+    if (head.querySelector(".sk-strip")) return;
+    var strip = document.createElement("span");
+    strip.className = "sk-strip";
+    strip.style.cssText = "margin-left:auto;margin-right:10px;font-size:10px;font-weight:600;opacity:.6;white-space:nowrap;";
+    live(strip, function (el) {
+      var off = S().perfStrip === false;
+      el.style.display = off ? "none" : "";
+      if (!off) el.textContent = SK.perf.summary();
+    });
+    head.insertBefore(strip, head.querySelector(".ln-search"));
+  }
+
+  function mountExt() {
+    var p = panelEl;
+    if (!p) return;
+    if (mountedOn !== p) { mountedOn = p; tabBtn = null; pane = null; tabsRef = []; }
+    var head = p.querySelector(".ln-head");
+    var bar = p.querySelector(".ln-tabs");
+    var bodyEl = p.querySelector(".ln-body");
+    if (!head || !bar || !bodyEl) return;
+    mountStrip(head);
+    if (tabBtn && tabBtn.isConnected) return;
+
+    var existing = [].slice.call(bar.querySelectorAll(".ln-tab"));
+    tabsRef = existing;
+    tabBtn = document.createElement("button");
+    tabBtn.type = "button";
+    tabBtn.className = "ln-tab";
+    tabBtn.textContent = "EXTRA";
+    bar.appendChild(tabBtn);
+
+    pane = document.createElement("div");
+    pane.className = "ln-settings sk-extra-pane";
+    pane.style.display = "none";
+    bodyEl.appendChild(pane);
+    renderPane();
+
+    tabBtn.onclick = function () { activate(true); };
+    // The lifted handlers are onclick properties assigned before these, so they
+    // restore MODS/SETTINGS first and this only hides the extra pane.
+    existing.forEach(function (b) {
+      b.addEventListener("click", function () { if (pane) pane.style.display = "none"; tabBtn.classList.remove("active"); });
+    });
+    SK.log("EXTRA tab attached");
+  }
+
+  SK.task({
+    name: "ext-mount", hz: 10, prio: 0,
+    when: function () { return !!panelEl && (!tabBtn || !tabBtn.isConnected || mountedOn !== panelEl); },
+    fn: mountExt
+  });
+
+  SK.ext = {
+    mount: mountExt,
+    pane: function () { return pane; },
+    tab: function () { return tabBtn; },
+    cards: function () { return liveList.length; }
+  };
 })();
 
 
@@ -2333,11 +3242,9 @@ host = SK.host();
 shadow = SK.shadow();
 overlay = SK.overlayCanvas();
 
-// Insert toggles the menu. The game does not bind Insert, and this runs in the
-// capture phase so the game cannot swallow it first.
-window.addEventListener("keydown", function (e) {
-  if (e.code === "Insert") { e.preventDefault(); toggleMenu(); }
-}, true);
+// The menu key is owned by the hotkey registry (features/keys.js) so it is
+// rebindable; the core listener is capture-phase, so the game cannot swallow it
+// first. Nothing here hard-wires Insert any more.
 
 // Floating logo button — the one control that always works.
 var btnEl = document.createElement("div");
@@ -2352,11 +3259,14 @@ btnEl.onclick = function (e) { e.stopPropagation(); toggleMenu(); };
 // ── public surface (tests + later passes) ─────────────────────────────────
 // Note: rebuildPanel / cardsFor / show live inside buildPanel's body in the
 // v2 client, so they are not reachable from here — the cards call rebuildPanel
-// themselves. This surface is only what genuinely exists at bundle scope.
+// themselves. rebuild() reproduces its two lines for the new modules, which do
+// not sit inside that closure. This surface is only what genuinely exists at
+// bundle scope.
 SK.panel = {
   open: function () { setMenuOpen(true); },
   close: function () { setMenuOpen(false); },
   toggle: function () { toggleMenu(); },
+  rebuild: function () { if (panelEl) { panelEl.remove(); panelEl = null; } setMenuOpen(true); },
   el: function () { return panelEl; },
   isOpen: function () { return !!menuOpen; }
 };

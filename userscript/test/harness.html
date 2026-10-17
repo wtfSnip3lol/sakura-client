@@ -14,7 +14,7 @@
 </head>
 <body>
 <div id="bg"></div>
-<div id="hint">harness: window.__sk.panel.open() / .close() · fake game at window.game</div>
+<div id="hint">harness: window.__sk.panel.open() / .close() · fake game at window.game · new modules: __sk.ext / __sk.hotkeys / __sk.move / __sk.profiles</div>
 
 <!-- A stand-in for the game object, enough for the adapter to answer. -->
 <script>
@@ -28,7 +28,7 @@ window.game = {
             height: 1.8288, radius: 0.4064, health: 100, armor: 50, alive: true, team: "CT",
             name: "harness", money: 4200 },
   camera: { matrixWorld: { elements: [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1] } },
-  scene: null,
+  scene: { children: [], traverse: function () {}, add: function () {} },
   map: { min: [-100, -10, -100], max: [100, 40, 100], ceilY: 12, ambient: [1,1,1], skyLight: [1,1,1] },
   hud: { xh: null },
   physics: {
@@ -73,6 +73,10 @@ window.addEventListener("load", () => {
   }
   setTimeout(() => {
     say("fps: " + window.__sk.fps() + " · frameMs: " + window.__sk.frameMs());
+    const sr = document.getElementById("sakura-ui").shadowRoot;
+    say("strip: " + (sr.querySelector(".sk-strip") || {}).textContent);
+    say("tabs: " + [].map.call(sr.querySelectorAll(".ln-tab"), (b) => b.textContent).join("/"));
+    say("hotkeys: " + window.__sk.hotkeys.list().map((h) => h.label + "=" + h.code).join(" · "));
     say("errors: " + JSON.stringify(window.__err));
     document.title = "ready:" + window.__err.length;
   }, 1500);

@@ -126,3 +126,63 @@ Two bugs this pass caught, both worth recording:
    task was skipped forever — the readouts never ticked. The budget now uses the
    measured task-loop cost (EMA), which is what it was always meant to mean.
 
+
+## Pass 2 — new modules (done)
+
+The v2 client is frozen as the rollback reference, so the new work could not be
+added by editing it. Instead the rewrite gains modules the v2 client never had,
+each built on the engine's own surfaces (`SK.task`, `SK.watch`, `SK.paint`,
+`SK.hotkeys`), and a third tab in the Lunar panel that hosts their cards.
+
+New settings live in `src/next/defaults.ext.js`, which the bundler loads between
+the generated schema and `core.js` — so the new keys are part of the schema
+before the engine snapshots it, and they persist like every other key (22 keys,
+379 total, no overlap with a v2 key; `tools/verify-next.mjs` fails on a clash).
+
+| module | what it does |
+| --- | --- |
+| `features/perf.js` | frame-time graph on the overlay, panel header strip, per-task cost table (amortised ms/frame), auto quality |
+| `features/keys.js` | hotkey *registry* — each binding has a setting key, a default and an action, so the menu key is rebindable instead of welded to Insert |
+| `features/move.js` | movement meter: horizontal speed, threshold marker, READY state (reads `player.vx/vz`, never writes) |
+| `features/profiles.js` | named config snapshots in the client's own storage, alongside the v2 Export/Import blob |
+| `ext.js` | the EXTRA tab: cards built with the panel's *own* vocabulary (`row`, `toggleSwitch`, `rangeField`, `selectField`, `actionBtn`, `moduleCard`) so nothing is hand-rolled |
+
+The EXTRA tab attaches *after* `buildPanel()` returns, because the lifted panel
+cannot be edited without breaking "same UI". `rebuildPanel()` destroys and
+rebuilds the whole panel, so attaching is an idempotent 10 Hz mount that the
+engine re-runs only while the tab is missing (one extra run per rebuild, then it
+gates itself off — visible in the cost table as `ext-mount 10Hz`).
+
+Auto quality is the one feature that reaches into the scheduler: `SK.stopCosmetic`
+pauses every prio-0… prio-1 cosmetic task at once when fps sits under the target.
+
+Verified in the browser, on top of pass 1's parity checks:
+
+- EXTRA tab renders 4 cards / 27 rows; selecting it stands MODS and SETTINGS
+  down and restores them on the way back.
+- Header strip live: `191 fps · 5.2 ms · client 0.33 ms/frame · 10 tasks`.
+- Frame graph and movement meter both paint (pixels sampled: `#7de3ff` fill at
+  the meter, translucent `rgba(12,10,14,.62)` under the graph).
+- Hotkeys: `Insert` toggles the menu through the registry; binding two modules to
+  one key reports `Frame graph + Movement meter = F9` and the first wins.
+- Profiles: save → mutate → load restored the value; delete emptied the list.
+- Panel rebuild: EXTRA and the strip re-attach themselves, cards intact.
+- Auto quality: cosmetic tasks ran 0 times while paused, essential `settings`
+  task kept its 12 Hz, and the pause lifted the moment auto was switched off.
+- 31 verifier checks pass (`node tools/verify-next.mjs`), 0 console errors.
+
+Three bugs this pass caught:
+
+1. **The pause outlived the autopilot.** Switching auto quality off while it had
+   paused cosmetic work left the pause on forever: the recovery branch lives in a
+   task that only runs while the feature is on. Now a `SK.watch(["perfAuto"])`
+   lifts it.
+2. **A one-shot task read as per-frame cost.** `ext-mount` runs once and costs
+   2.2 ms; reported as-is it dominated the panel and made the client look slow.
+   The table now reports amortised ms/frame (`2.40 ms @10Hz → 0.124`).
+3. **Two tabs active at once.** The lifted tabs only deactivate each other when
+   one of *them* is clicked, so selecting EXTRA needed to stand them down itself.
+
+Not backported: these modules are rewrite-native. The v2 client (still the
+shipped payload) has none of them until the parity flip, or until they are
+deliberately backported.

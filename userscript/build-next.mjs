@@ -25,11 +25,18 @@ const noObfuscate = args.includes("--no-obfuscate");
 const checkOnly = args.includes("--check");
 
 // Order matters: defaults define DEFAULTS, core reads it, boot aliases names the
-// panel resolves at call time.
+// panel resolves at call time. defaults.ext.js must sit between the generated
+// schema and core, so the new modules' settings are part of the schema.
 const MODULES = [
   ["src/next/defaults.gen.js", "settings schema (generated)"],
+  ["src/next/defaults.ext.js", "settings schema (new modules)"],
   ["src/next/core.js", "engine core"],
   ["src/next/game.js", "game adapter"],
+  ["src/next/features/perf.js", "feature: perf dashboard + overlay painters"],
+  ["src/next/features/keys.js", "feature: rebindable hotkeys"],
+  ["src/next/features/move.js", "feature: movement meter"],
+  ["src/next/features/profiles.js", "feature: config profiles"],
+  ["src/next/ext.js", "feature: EXTRA tab in the Lunar panel"],
   ["src/next/panel.gen.js", "panel (generated, lifted verbatim)"],
   ["src/next/boot.js", "boot seam"]
 ];

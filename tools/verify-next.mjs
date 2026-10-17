@@ -94,5 +94,35 @@ check("bundle parses", true, `${(bundle.length / 1024).toFixed(0)} KB`);
 check("bundle is one shared scope", bundle.startsWith("(function () {"));
 check("bundle exposes the engine + panel surface", ["window.__sk", "SK.start()", "SK.panel =", "cardsFor", "buildLunarPanel"].every((s) => bundle.includes(s)));
 
+// ── new modules (features the v2 client never had) ─────────────────────────
+// These are additions, so the parity checks above cannot see them. What matters
+// here is that they are wired in and cannot break the lifted half:
+const extDefaults = read("defaults.ext.js");
+const ext = read("ext.js");
+const feat = (f) => read(`features/${f}`);
+const perf = feat("perf.js"), keys = feat("keys.js"), move = feat("move.js"), profiles = feat("profiles.js");
+const newFeatures = perf + keys + move + profiles + ext;
+
+const extKeys = keysOf(extDefaults);
+const shadowed = extKeys.filter((k) => v2Keys.has(k));
+check("new keys do not shadow a v2 key", shadowed.length === 0, shadowed.length ? shadowed.join(", ") : `${extKeys.length} new keys`);
+check("new keys are distinct", new Set(extKeys).size === extKeys.length, `${extKeys.length} keys`);
+check("new keys land in the live schema", /Object\.assign\(DEFAULTS/.test(extDefaults));
+
+const bundler = fs.readFileSync(path.join(root, "userscript", "build-next.mjs"), "utf8");
+const wantOrder = ["defaults.gen.js", "defaults.ext.js", "core.js", "game.js",
+  "features/perf.js", "features/keys.js", "features/move.js", "features/profiles.js",
+  "ext.js", "panel.gen.js", "boot.js"];
+const gotOrder = [...bundler.matchAll(/\["src\/next\/([^"]+)"/g)].map((m) => m[1]);
+check("bundle order: new schema before core, features before boot", JSON.stringify(gotOrder) === JSON.stringify(wantOrder), gotOrder.join(" "));
+
+check("hotkeys are a registry, not a hard-wired key", /function register\(/.test(keys) && /hkMenu/.test(keys) && !/e\.code === "Insert"/.test(boot));
+check("ext tab uses the panel's own vocabulary", /moduleCard\(/.test(ext) && /\brow\(/.test(ext) && !/class="sk-card"/.test(ext));
+check("ext tab re-attaches after a panel rebuild", /name: "ext-mount"/.test(ext) && /isConnected/.test(ext));
+check("new tasks register through the engine", ["perf-sample", "hotkey-conflicts", "move-sample", "ext-live", "ext-mount"].every((n) => bundle.includes(n)));
+check("auto quality can pause cosmetic work globally", /SK\.stopCosmetic/.test(core) && /t\.prio === 1 && \(cosmeticOff/.test(core) && /stopCosmetic\(true\)/.test(perf));
+check("profiles persist under their own key", /sakura\.profiles\./.test(profiles) && /localStorage\.setItem/.test(profiles));
+check("new features read the game, never write to it", !/(player|map|scene|hud|camera)\(\s*\)\s*\.\s*\w+\s*=/.test(newFeatures) && !/window\.game\s*\.\s*\w+\s*=/.test(newFeatures));
+
 console.log(failures ? `\n${failures} check(s) FAILED` : "\nall checks passed");
 process.exit(failures ? 1 : 0);
