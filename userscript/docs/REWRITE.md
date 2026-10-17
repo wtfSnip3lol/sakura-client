@@ -384,9 +384,15 @@ listener:
 | state when the bundle boots | what happens |
 | --- | --- |
 | nothing else on the page | the client runs normally |
-| `window.__sk.core` already set (second install, or a reload that kept the old engine) | stands down, `console.warn` - the first copy owns the page |
-| `window.__sakuraTakeover` already set (the old client's loader is installed and v2 booted first) | stands down with a warning naming the loader |
-| v2 arrives *after* us (our `document-start` beats the loader's fetch at `DOMContentLoaded`) | the watcher sees the takeover within 500 ms, stops the engine and removes the host, so v2 is not fighting a half-dead panel |
+| `window.__sk.core` already set (second install, or a reload that kept the old engine) | stands down, `console.warn` - the first copy owns the page, so the client is on screen anyway |
+| `window.__sakuraTakeover` already set (the old client's loader is installed and v2 booted first) | stands down with a warning **and a note on the page** naming the fix |
+| v2 arrives *after* us (our `document-start` beats the loader's fetch at `DOMContentLoaded`) | the watcher sees the takeover within 500 ms, stops the engine, removes the host and posts the same kind of note, so v2 is not fighting a half-dead panel |
+
+The on-page note exists because this client's only UI is the panel it never mounts:
+a console-only stand-down reads as "the rewrite aint there", which is exactly how
+this was reported. It is plain DOM (`#sakura-boot-note`, distinct from the
+`sakura-ui` host that the old client removes), click to dismiss, self-removing
+after 12 s.
 
 The loader (`src/loader.js`) no longer serves the old client - see *The loader
 serves the rewrite* below. The guard stays relevant for the transition: an
@@ -431,16 +437,20 @@ Verified in the harness (real page loads, not unit stubs):
 - `?takeover=1` fixture (pretends v2 owns the page): `window.__sk` is never
   created at all, host absent, warning names the loader
 - v2-arrives-late: setting `window.__sakuraTakeover` on a running page removes the
-  host and stops the engine within 500 ms, with one warning
+  host and stops the engine within 500 ms, with one warning and the note
+- a stand-down is visible without devtools: `?takeover=1` (and the shipped build
+  via `?build=user&takeover=1`) posts `#sakura-boot-note` on the page with the fix
+  in it, while a normal boot posts none
 - the shipped obfuscated artifact behaves identically (`?build=user`): host in
   `<body>`, panel open, 10 tasks, 0 warnings, and the same two bail paths
 - with the panel open the `ext-mount` task's gate is satisfied (`when()` true) and
   its `fn()` attaches the EXTRA tab, its pane and the FPS strip — so the new pane
   shows up on the first tick the loop gets, not at load time (a hidden tab never
   paints a frame at all, which is how this was found)
-- 51 verifier checks pass - 6 new: the guard sits before core in the bundle and is
-  not an IIFE, both bail conditions and the late-yield watcher must be present, the
-  host mount must wait for `<body>`, and the shipped header must stay installable -
+- 55 verifier checks pass - 10 new: the guard sits before core in the bundle and is
+  not an IIFE, both bail conditions, the late-yield watcher and the on-page note
+  must be present, the host mount must wait for `<body>`, the shipped header must
+  stay installable, and the loader must name the rewrite in source and artifact -
   and 0 console errors
 
 ## The loader serves the rewrite (decided + shipped)

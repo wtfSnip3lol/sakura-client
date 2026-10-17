@@ -129,6 +129,10 @@ check("guard stands down when the old client owns the page",
   /window\.__sakuraTakeover/.test(guard) && /old client \(v2\) owns this page/.test(guard));
 check("guard yields if the old client arrives later",
   /setInterval\(/.test(guard) && /clearInterval\(/.test(guard) && /__sk\.stop/.test(guard) && /sakura-ui/.test(guard));
+check("a stand-down is visible on the page, not only in the console",
+  /sakura-boot-note/.test(guard) && /function skBootNote\(/.test(guard) &&
+  /skBootNote\("Sakura \(next\) stood down"/.test(guard) &&
+  /skBootNote\("Sakura \(next\) handed the page over"/.test(guard));
 check("dev build is installable as-is",
   bundler.includes("@match        https://clutcher.io/*") && bundler.includes("@run-at       document-start") &&
   bundler.includes("@grant        none") && bundler.includes("@noframes"));
